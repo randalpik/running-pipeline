@@ -1,5 +1,4 @@
-*.nc
 __pycache__/
 
+data/
 output/
-data/historical_daily.csv
