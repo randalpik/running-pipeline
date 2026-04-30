@@ -1,0 +1,241 @@
+date,year,race_seq,fatigued,distance_m,time_sec,pace_sec_per_mi,location,temp_c,weather,conditions,shoes,surface,event,note,surface_source,workout_raw,source_file
+2008-04-26,2008,1,False,5000,1729.0,556.5111552000001,"Redmond, WA",,,,,Road,Hawk Walk and Run,,addition,,snapshot:additions
+2008-05-10,2008,1,False,5000,1844.0,593.5260672,"Seattle, WA",,,,,Road,Nike 5K For Kids,,addition,,snapshot:additions
+2008-07-04,2008,1,False,5000,1600.3,515.08664064,"Carnation, WA",,,,,Road,Run for the Pies,,addition,,snapshot:additions
+2009-04-25,2009,1,False,5000,1570.0,505.334016,"Redmond, WA",,,,,Road,Hawk Walk and Run,,addition,,snapshot:additions
+2009-07-04,2009,1,False,5000,1524.2,490.59242496,"Carnation, WA",,,,,Road,Run for the Pies,,addition,,snapshot:additions
+2010-01-01,2010,1,False,5000,1736.0,558.7642368,"Seattle, WA",,,,,Road,Club Northwest Resolution Run,,addition,,snapshot:additions
+2013-07-04,2013,1,False,5000,1420.2,457.11806976,"Carnation, WA",,,,,Road,Run for the Pies,,addition,,snapshot:additions
+2013-07-13,2013,1,False,5000,1404.0,451.9037952,"Redmond, WA",,,,,Road,Redmond Derby Days Dash,,addition,,snapshot:additions
+2013-08-31,2013,1,False,5000,1294.0,416.49822720000003,"Redmond, WA",,,,,XC,Redmond time trial,,addition,,snapshot:additions
+2013-09-07,2013,1,False,3000,908.0,487.094784,"Maple Valley, WA",,,,,XC,Tahoma Coed Relays,,addition,,snapshot:additions
+2013-09-12,2013,1,False,5000,1210.0,389.461248,"Seattle, WA",,,,,XC,KingCo 4A Preview,,addition,,snapshot:additions
+2013-09-18,2013,1,False,4828,1162.0,387.3359005799503,"Issaquah, WA",,,,,XC,Ballard & Redmond @ Issaquah,,addition,,snapshot:additions
+2013-09-21,2013,1,False,5000,1234.4,397.31484672000005,"Lakewood, WA",,,,,XC,Fort Steilacoom Invitational,,addition,,snapshot:additions
+2013-09-25,2013,1,False,5000,1217.0,391.71432960000004,"Redmond, WA",,,,,XC,Bothell @ Redmond,,addition,,snapshot:additions
+2013-10-05,2013,1,False,5000,1185.0,381.414528,"Marysville, WA",,,,,XC,Twilight XC Invitational,,addition,,snapshot:additions
+2013-10-09,2013,1,False,5000,1193.0,383.9894784,"Kenmore, WA",,,,,XC,Redmond @ Inglemoor,,addition,,snapshot:additions
+2013-10-16,2013,1,False,5000,1171.0,376.9083648,"Redmond, WA",,,,,XC,Woodinville & Eastlake @ Redmond,,addition,,snapshot:additions
+2013-10-24,2013,1,False,5000,1136.4,365.77170432,"Seattle, WA",,,,,XC,KingCo 4A Championships,,addition,,snapshot:additions
+2013-12-07,2013,1,False,3218,778.0,389.0831671845867,"Seattle, WA",,,,,Road,New Balance Winter Grand Prix,,addition,,snapshot:additions
+2014-01-01,2014,1,False,4828,1115.0,371.66913007456503,"Seattle, WA",,,,,Road,Club Northwest Resolution Run,,addition,,snapshot:additions
+2014-01-18,2014,1,False,3218,745.0,372.579639527657,"Seattle, WA",,,,,Road,New Balance Winter Grand Prix,,addition,,snapshot:additions
+2014-03-20,2014,1,False,3200,652.2,328.00442400000003,"Redmond, WA",,,,,Track,Issaquah & Monroe @ Redmond,,addition,,snapshot:additions
+2014-03-29,2014,1,False,1600,307.4,309.19521599999996,"Kent, WA",,,,,Track,Kent-Meridian Invitational,,addition,,snapshot:additions
+2014-04-03,2014,1,False,800,142.2,286.06089599999996,"Bellevue, WA",,,,,Track,Redmond & Roosevelt @ Newport,,addition,,snapshot:additions
+2014-04-17,2014,1,False,3200,649.5,326.64654,"Sammamish, WA",,,,,Track,Redmond @ Eastlake,,addition,,snapshot:additions
+2014-04-24,2014,1,False,1600,298.22,299.96160480000003,"Kenmore, WA",,,,,Track,Redmond @ Inglemoor,,addition,,snapshot:additions
+2014-05-01,2014,1,False,3200,639.3,321.516756,"Woodinville, WA",,,,,Track,Redmond @ Woodinville,,addition,,snapshot:additions
+2014-05-08,2014,1,False,3200,662.2,333.03362400000003,"Redmond, WA",,,,,Track,Roosevelt @ Redmond,,addition,,snapshot:additions
+2014-07-04,2014,1,False,5000,1106.9,356.27657472000004,"Carnation, WA",,,,,Road,Run for the Pies,,addition,,snapshot:additions
+2014-07-12,2014,1,False,5000,1114.0,358.5618432,"Redmond, WA",,,,,Road,Redmond Derby Days Dash,,addition,,snapshot:additions
+2014-08-30,2014,1,False,5000,1120.0,360.493056,"Redmond, WA",,,,,XC,Redmond time trial,,addition,,snapshot:additions
+2014-09-06,2014,1,False,3000,779.0,417.892992,"Maple Valley, WA",,,,,XC,Tahoma Coed Relays,,addition,,snapshot:additions
+2014-09-10,2014,1,False,5000,1086.0,349.5495168,"Sammamish, WA",,,,,XC,KingCo 4A Preview,,addition,,snapshot:additions
+2014-09-17,2014,1,False,5000,1118.0,359.8493184,"Kenmore, WA",,,,,XC,Redmond & Eastlake @ Inglemoor,,addition,,snapshot:additions
+2014-09-20,2014,1,False,5000,1093.0,351.8025984,"Langley, WA",,,,,XC,South Whidbey Invitational,,addition,,snapshot:additions
+2014-10-04,2014,1,False,5000,1097.0,353.09007360000004,"Marysville, WA",,,,,XC,Twilight XC Invitational,,addition,,snapshot:additions
+2015-03-19,2015,1,False,3200,677.1,340.527132,"Issaquah, WA",,,,,Track,Redmond @ Issaquah,,addition,,snapshot:additions
+2015-03-26,2015,1,False,1600,314.9,316.739016,"Redmond, WA",,,,,Track,Mt. Si @ Redmond,,addition,,snapshot:additions
+2015-04-02,2015,1,False,800,143.6,288.877248,"Kenmore, WA",,,,,Track,Redmond @ Inglemoor,,addition,,snapshot:additions
+2015-04-16,2015,1,False,3200,667.2,335.548224,"Redmond, WA",,,,,Track,Eastlake @ Redmond,,addition,,snapshot:additions
+2015-04-23,2015,1,False,1600,310.21,312.0216264,"Bothell, WA",,,,,Track,Redmond @ Bothell,,addition,,snapshot:additions
+2015-04-30,2015,1,False,3200,660.7,332.279244,"Redmond, WA",,,,,Track,Inglemoor & Skyline @ Redmond,,addition,,snapshot:additions
+2015-05-07,2015,1,False,1600,315.62,317.4632208,"Woodinville, WA",,,,,Track,Redmond & Newport @ Woodinville,,addition,,snapshot:additions
+2015-07-04,2015,1,False,5000,1186.2,381.80077056000005,"Carnation, WA",,,,,Road,Run for the Pies,,addition,,snapshot:additions
+2015-07-11,2015,1,False,5000,1129.0,363.3898752,"Redmond, WA",,,,,Road,Redmond Derby Days Dash,,addition,,snapshot:additions
+2015-08-29,2015,1,False,5000,1180.0,379.805184,"Redmond, WA",,,,,XC,Redmond time trial,,addition,,snapshot:additions
+2015-09-09,2015,1,False,5000,1100.0,354.05568,"Sammamish, WA",,,,,XC,KingCo 4A Preview,,addition,,snapshot:additions
+2015-09-12,2015,1,False,3218,702.0,351.0750428837788,"Bellingham, WA",,,,,XC,Sehome Invitational,,addition,,snapshot:additions
+2015-09-16,2015,1,False,5000,1105.0,355.665024,"Redmond, WA",,,,,XC,Inglemoor & Eastlake @ Redmond,,addition,,snapshot:additions
+2015-09-19,2015,1,False,5000,1089.4,350.64387072000005,"Lakewood, WA",,,,,XC,Fort Steilacoom Invitational,,addition,,snapshot:additions
+2015-09-23,2015,1,False,5000,1129.0,363.3898752,"Snoqualmie, WA",,,,,XC,Woodinville & Redmond @ Mount Si,,addition,,snapshot:additions
+2015-10-03,2015,1,False,5000,1086.0,349.5495168,"Marysville, WA",,,,,XC,Twilight XC Invitational,,addition,,snapshot:additions
+2015-10-07,2015,1,False,5000,1113.0,358.2399744,"Bothell, WA",,,,,XC,Newport & Redmond @ Bothell,,addition,,snapshot:additions
+2015-10-14,2015,1,False,5000,1096.0,352.76820480000003,"Issaquah, WA",,,,,XC,Redmond & Skyline @ Issaquah,,addition,,snapshot:additions
+2015-10-24,2015,1,False,5000,1090.7,351.06230016,"Sammamish, WA",,,,,XC,KingCo 4A Championships,,addition,,snapshot:additions
+2016-01-09,2016,1,False,3200,662.0,332.93304,"Seattle, WA",0.0,foggy,,,Road,New Balance Winter Grand Prix,,adjustment,"9j, 4rec/t, 3200r@11:02, 17j [New Balance Winter Grand Prix]",Running_Log_2016.xlsx
+2016-01-23,2016,1,False,3000,707.0,379.268736,"Seattle, WA",7.0,drizzle,,,XC,New Balance Winter Grand Prix,,adjustment,"10j, 4rec/t, 3000r@11:47, 6j [New Balance Winter Grand Prix]",Running_Log_2016.xlsx
+2016-02-06,2016,1,False,3218,635.0,317.5678806712244,"Seattle, WA",6.0,overcast,,,Road,New Balance Winter Grand Prix,,adjustment,"11j, 5rec/t, 3218r@10:35, 10j [New Balance Winter Grand Prix]",Running_Log_2016.xlsx
+2016-02-15,2016,1,False,5000,1044.0,336.03102720000004,"Redmond, WA",11.0,drizzle,,,Track,Time trial,,adjustment,"12j, 5000r@17:24, 13j [Time trial]",Running_Log_2016.xlsx
+2016-02-20,2016,1,False,3200,649.0,326.39508,"Seattle, WA",4.0,clouds,,,Track,New Balance Winter Grand Prix,,rule,"13j, 3rec/t, 3200r@10:49, 8j [New Balance Winter Grand Prix]",Running_Log_2016.xlsx
+2016-02-29,2016,1,False,400,62.0,249.44832,"Redmond, WA",12.0,clouds,,,Track,Redmond time trial,,rule,rec@7:46/400r@62 [Redmond time trial],Running_Log_2016.xlsx
+2016-03-01,2016,1,False,1600,297.0,298.73448,"Redmond, WA",10.0,showers,,,Track,Redmond time trial,,rule,"15j, 400t, 1600r@4:57, 25j [Redmond time trial]",Running_Log_2016.xlsx
+2016-03-17,2016,1,False,3200,613.1,308.340252,"Redmond, WA",14.0,clear,,,Track,Issaquah @ Redmond,,rule,"15j, 5rec/t, 3200r@10:13.1, 6j [Issaquah @ Redmond]",Running_Log_2016.xlsx
+2016-03-24,2016,1,False,1600,292.94,294.6507696,"Snoqualmie, WA",11.0,overcast,,,Track,Redmond @ Mount Si,,rule,"11j, 5rec/t, 1600r@4:52.94, 11j [Redmond @ Mount Si]",Running_Log_2016.xlsx
+2016-03-31,2016,1,False,800,131.9,265.340592,"Redmond, WA",20.0,clear,,,Track,Inglemoor @ Redmond,,rule,"11j, 5rec/t, 800r@2:11.9, 7j, 400r@59.3 [Inglemoor @ Redmond]",Running_Log_2016.xlsx
+2016-03-31,2016,2,True,400,59.3,238.58524799999998,"Redmond, WA",20.0,clear,,,Track,Inglemoor @ Redmond,,rule,"11j, 5rec/t, 800r@2:11.9, 7j, 400r@59.3 [Inglemoor @ Redmond]",Running_Log_2016.xlsx
+2016-04-02,2016,1,False,21098,6692.0,510.4621313868613,"Oak Harbor, WA",11.0,overcast,,,XC,Deception Pass Half Marathon,,adjustment,"9j, 1t, 21098r@1:51:32 [Deception Pass Half Marathon]",Running_Log_2016.xlsx
+2016-04-13,2016,1,False,1600,288.47,290.15466480000003,"Sammamish, WA",15.0,clouds,,,Track,Redmond @ Eastlake,,rule,"12j, 5rec/t, 1600r@4:48.47, 10j [Redmond @ Eastlake]",Running_Log_2016.xlsx
+2016-04-16,2016,1,False,3200,611.77,307.6713684,"Tacoma, WA",20.0,clear,,,Track,Tacoma Invitational,,rule,"10j, 5rec/t, 3200r@10:11.77, 5j [Tacoma Invitational]",Running_Log_2016.xlsx
+2016-04-21,2016,1,False,1600,282.75,284.40126,"Redmond, WA",22.0,clouds,,,Track,Bothell @ Redmond,,rule,"12j, 5rec/t, 1600r@4:42.75, 6j [Bothell @ Redmond]",Running_Log_2016.xlsx
+2016-04-28,2016,1,False,3200,608.93,306.2430756,"Kenmore, WA",15.0,overcast,,,Track,Skyline & Redmond @ Inglemoor,,rule,"11j, 5rec/t, 3200r@10:08.93, 5j [Skyline & Redmond @ Inglemoor]",Running_Log_2016.xlsx
+2016-04-30,2016,1,False,1600,291.2,292.900608,"Shoreline, WA",16.0,clear,,,Track,Shoreline Invitational,DMR split,rule,"12j, 5rec/t, 1600r@4:51.2, 9j [Shoreline Invitational]",Running_Log_2016.xlsx
+2016-05-05,2016,1,False,3200,605.78,304.6588776,"Woodinville, WA",17.0,clouds,,,Track,Newport & Redmond @ Woodinville,,rule,"9j, 5rec/t, 3200r@10:05.78, 6j [Newport & Redmond @ Woodinville]",Running_Log_2016.xlsx
+2016-05-12,2016,1,False,1600,280.54,282.17835360000004,"Kenmore, WA",25.0,clear,,,Track,JV KingCo 4A,,rule,"9j, 4rec/t, 1600r@4:40.54, 10j [JV KingCo 4A]",Running_Log_2016.xlsx
+2016-05-14,2016,1,False,5000,1087.0,349.8713856,"Redmond, WA",14.0,clouds,,,Road,Redmond Color Run,,rule,"11j, 5000r@18:07, 9j [Redmond Color Run]",Running_Log_2016.xlsx
+2016-07-04,2016,1,False,5000,1015.3,326.79339264,"Carnation, WA",14.0,overcast,,,Road,Run for the Pies,,rule,"14j, 5rec/t, 5000r@16:55.3, 7j [Run for the Pies]",Running_Log_2016.xlsx
+2016-07-08,2016,1,False,5000,1023.0,329.2717824,"Redmond, WA",22.0,clear,,,Road,Redmond Derby Days Dash,,rule,"12j, 5rec/t, 5000r@17:03, 15j [Redmond Derby Days Dash]",Running_Log_2016.xlsx
+2016-08-27,2016,1,False,5000,1081.0,347.9401728,"Redmond, WA",16.0,overcast,,,XC,Redmond time trial,,rule,"10j, 5rec/t, 5000r@18:01, 9j [Redmond time trial]",Running_Log_2016.xlsx
+2016-09-07,2016,1,False,3218,637.94,319.03819495338723,"Sammamish, WA",15.0,overcast,,,XC,KingCo 3A Preview,,adjustment,"10j, 5rec/t, 3218r@10:37.94, 10j [KingCo 3A Preview]",Running_Log_2016.xlsx
+2016-09-14,2016,1,False,5000,1059.0,340.8590592,"Mercer Island, WA",26.0,clear,,,XC,Redmond & Liberty @ Mercer Island,,rule,"11j, 4rec/t, 5000r@17:39, 7j [Redmond & Liberty @ Mercer Island]",Running_Log_2016.xlsx
+2016-09-17,2016,1,False,5000,1042.5,335.548224,"Langley, WA",16.0,overcast,,,XC,South Whidbey Invitational,,rule,"10j, 4rec/t, 5000r@17:22.5, 4j [South Whidbey Invitational]",Running_Log_2016.xlsx
+2016-09-21,2016,1,False,5000,1048.0,337.3185024,"Redmond, WA",19.0,clear,,,XC,Interlake @ Redmond,,rule,"11j, 5rec/t, 5000r@17:28, 9j [Interlake @ Redmond]",Running_Log_2016.xlsx
+2016-10-01,2016,1,False,5000,1033.8,332.74796544,"Marysville, WA",12.0,showers,,,XC,Twilight XC Invitational,,rule,"10j, 4rec/t, 5000r@17:13.8, 8j [Twilight XC Invitational]",Running_Log_2016.xlsx
+2016-10-05,2016,1,False,5000,1051.0,338.2841088,"Bellevue, WA",18.0,clouds,,,XC,Redmond & Lake Washington @ Bellevue,,rule,"11j, 5rec/t, 5000r@17:31, 10j [Redmond & Lake Washington @ Bellevue]",Running_Log_2016.xlsx
+2016-10-08,2016,1,False,5000,1014.4,326.50371072,"Arlington, WA",11.0,drizzle,,,XC,Hole in the Wall Invitational,,rule,"8j, 4rec/t, 5000r@16:54.4, 2j [Hole in the Wall Invitational]",Running_Log_2016.xlsx
+2016-10-12,2016,1,False,5000,1040.0,334.743552,"Redmond, WA",17.0,clouds,,,XC,Sammamish & Juanita @ Redmond,,rule,"12j, 5rec/t, 5000r@17:20, 9j [Sammamish & Juanita @ Redmond]",Running_Log_2016.xlsx
+2016-10-20,2016,1,False,5000,1012.29,325.824567552,"Sammamish, WA",15.0,overcast,,,XC,KingCo 3A Championship,,rule,"9j, 4rec/t, 5000r@16:52.29, 8j [KingCo 3A Championship]",Running_Log_2016.xlsx
+2016-10-27,2016,1,False,5000,1045.2,336.41726976,"Seattle, WA",14.0,clouds,,,XC,SeaKing District Championships,,rule,"9j, 3rec/t, 5000r@17:25.2, 11j [SeaKing District Championships]",Running_Log_2016.xlsx
+2016-11-05,2016,1,False,5000,1018.0,327.6624384,"Pasco, WA",15.0,clear,,,XC,Washington State XC Championship,,rule,"20j; 9j, 3rec/t, 5000r@16:58.0, 6j [Washington State XC Championship]",Running_Log_2016.xlsx
+2016-11-24,2016,1,False,5000,1076.0,346.3308288,"Redmond, WA",6.0,drizzle,,,XC,Hartman Thanksgiving 5K,,rule,"17j, 4rec/t, 5000r@17:56, 5j [Hartman Thanksgiving 5K]",Running_Log_2016.xlsx
+2016-12-17,2016,1,False,3000,637.0,341.717376,"Seattle, WA",-3.0,overcast,,,XC,New Balance Winter Grand Prix,,adjustment,"9j, 5rec/t, 3000r@10:37, 9j [New Balance Winter Grand Prix]",Running_Log_2016.xlsx
+2017-01-07,2017,1,False,3218,609.0,304.5651013051585,"Seattle, WA",0.0,cloudy,,,Road,New Balance Winter Grand Prix,,adjustment,"14j, 5rec/t, 3218 race@10:09, 9j [New Balance Winter Grand Prix]",Running_Log_2017.xlsx
+2017-01-21,2017,1,False,21098,4646.0,354.3943607924922,"Redmond, WA",3.0,cloudy,,,Road,Rain Run Half Marathon,,rule,21098 race@77:26 [Rain Run Half Marathon],Running_Log_2017.xlsx
+2017-02-04,2017,1,False,3218,592.0,296.0632840273462,"Seattle, WA",5.0,light rain,,,Track,New Balance Winter Grand Prix,,adjustment,"11j, 5rec/t, 3218 race@9:52, 10j [New Balance Winter Grand Prix]",Running_Log_2017.xlsx
+2017-02-11,2017,1,False,5000,989.0,318.32824320000003,"Redmond, WA",4.0,cloudy,,,Road,Time trial,,adjustment,"14j, 5000 race@16:29, 14j [Time trial]",Running_Log_2017.xlsx
+2017-02-18,2017,1,False,3218,615.0,307.56574269732755,"Seattle, WA",4.0,light rain,,,Road,New Balance Winter Grand Prix,,adjustment,"11j, 5rec/t, 3218 race@10:15, 8j [New Balance Winter Grand Prix]",Running_Log_2017.xlsx
+2017-02-28,2017,1,False,1600,284.0,285.65856,"Redmond, WA",6.0,cloudy,,,Track,Redmond time trial,,rule,"20j, 1600 race@4:44, 15j [Redmond time trial]",Running_Log_2017.xlsx
+2017-03-09,2017,1,False,800,129.2,259.90905599999996,"Redmond, WA",7.0,heavy rain,,,Track,Redmond time trial,,rule,"9j, 5t, 800 race@2:09.2, 7j [Redmond time trial]",Running_Log_2017.xlsx
+2017-03-15,2017,1,False,1600,277.72,279.3418848,"Redmond, WA",9.0,light rain,,,Track,Bellevue @ Redmond,,rule,"13j, 5rec/t, 1600 race@4:37.72, 10j, 400 race@57.6 [Bellevue @ Redmond]",Running_Log_2017.xlsx
+2017-03-15,2017,2,True,400,57.6,231.74553600000002,"Redmond, WA",9.0,light rain,,,Track,Bellevue @ Redmond,,rule,"13j, 5rec/t, 1600 race@4:37.72, 10j, 400 race@57.6 [Bellevue @ Redmond]",Running_Log_2017.xlsx
+2017-03-23,2017,1,False,1600,278.35,279.975564,"Redmond, WA",15.0,cloudy,,,Track,Interlake @ Redmond,,rule,"11j, 5rec/t, 1600 race@4:38.35, 10j, 400 race@57.4 [Interlake @ Redmond]",Running_Log_2017.xlsx
+2017-03-23,2017,2,True,400,57.4,230.940864,"Redmond, WA",15.0,cloudy,,,Track,Interlake @ Redmond,,rule,"11j, 5rec/t, 1600 race@4:38.35, 10j, 400 race@57.4 [Interlake @ Redmond]",Running_Log_2017.xlsx
+2017-03-25,2017,1,False,3200,582.64,293.0213088,"Kent, WA",9.0,cloudy,,,Track,Kent-Meridian Invitational,,rule,"11j, 5rec/t, 3200 race@9:42.64, 10j [Kent-Meridian Invitational]",Running_Log_2017.xlsx
+2017-03-30,2017,1,False,800,126.95,255.382776,"Kirkland, WA",10.0,cloudy,,,Track,Redmond @ Juanita,,rule,"9j, 4rec/t, 800 race@2:06.95, 3j, 3200 race@10:39.13, 8j [Redmond @ Juanita]",Running_Log_2017.xlsx
+2017-03-30,2017,2,True,3200,639.13,321.4312596,"Kirkland, WA",10.0,cloudy,,,Track,Redmond @ Juanita,,rule,"9j, 4rec/t, 800 race@2:06.95, 3j, 3200 race@10:39.13, 8j [Redmond @ Juanita]",Running_Log_2017.xlsx
+2017-04-13,2017,1,False,1600,280.40999999999997,282.0475944,"Kirkland, WA",10.0,cloudy,,,Track,Lake Washington & Redmond @ Juanita,,rule,"11j, 5rec/t, 1600 race@4:40.41, 14j [Lake Washington & Redmond @ Juanita]",Running_Log_2017.xlsx
+2017-04-15,2017,1,False,3200,578.77,291.0750084,"Pasco, WA",17.0,clear,,,Track,Pasco Invitational,,rule,"10j, 3200 race@9:38.77 [Pasco Invitational]",Running_Log_2017.xlsx
+2017-04-20,2017,1,False,1600,278.3,279.925272,"Redmond, WA",13.0,cloudy,,,Track,Sammamish @ Redmond,,rule,"11j, 4rec/t, 1600 race@4:38.30, 11j [Sammamish @ Redmond]",Running_Log_2017.xlsx
+2017-04-22,2017,1,False,1600,274.49,276.0930216,"Arlington, WA",12.0,light rain,,,Track,Viking Classic,,rule,"10j, 3rec/t, 1600 race@4:34.49, 7j [Viking Classic]",Running_Log_2017.xlsx
+2017-04-28,2017,1,False,3200,588.24,295.8376608,"Renton, WA",12.0,cloudy,,,Track,Brooks/Liberty Distance Twilight,,rule,"10j, 5rec/t, 3200 race@9:48.24, 5j [Brooks/Liberty Distance Twilight]",Running_Log_2017.xlsx
+2017-05-05,2017,1,False,1600,274.62,276.2237808,"Redmond, WA",14.0,cloudy,,,Track,quad meet @ Redmond,,rule,"11j, 5rec/t, 1600 race@4:34.62, 15j, 3200 race@10:12.1, 8j [quad meet @ Redmond]",Running_Log_2017.xlsx
+2017-05-05,2017,2,True,3200,612.1,307.837332,"Redmond, WA",14.0,cloudy,,,Track,quad meet @ Redmond,,rule,"11j, 5rec/t, 1600 race@4:34.62, 15j, 3200 race@10:12.1, 8j [quad meet @ Redmond]",Running_Log_2017.xlsx
+2017-05-10,2017,1,False,1600,271.12,272.7033408,"Sammamish, WA",22.0,cloudy,,,Track,Kingco 3A Championships,,rule,"10j, 5rec/t, 1600 race@4:31.12, 9j [Kingco 3A Championships]",Running_Log_2017.xlsx
+2017-05-12,2017,1,False,3200,578.02,290.69781839999996,"Sammamish, WA",8.0,overcast,,,Track,KingCo 3A Championships,,rule,"11j, 5rec/t, 3200 race@9:38.02, 6j [KingCo 3A Championships]",Running_Log_2017.xlsx
+2017-05-20,2017,1,False,3200,589.77,296.60712839999997,"Seattle, WA",24.0,clear,,,Track,3A District II,,rule,"10j, 4rec/t, 3200 race@9:49.77 [3A District II]",Running_Log_2017.xlsx
+2017-06-24,2017,1,False,5000,973.2,313.24271616000004,"Mill Creek, WA",19.0,clear,,,Road,Run of the Mill 5K,,rule,"15j, 5rec/t, 5000 race@16:13.2, 10j [Run of the Mill 5K]",Running_Log_2017.xlsx
+2017-07-04,2017,1,False,5000,976.3,314.24050944,"Carnation, WA",15.0,cloudy,,,Road,Run for the Pies,,rule,"15j, 5rec/t, 5000 race@16:16.3, 10j [Run for the Pies]",Running_Log_2017.xlsx
+2017-07-07,2017,1,False,5000,974.0,313.5002112,"Redmond, WA",23.0,clear,,,Road,Redmond Derby Days Dash,,rule,"10j, 5rec/t, 5000 race@16:14, 10j [Redmond Derby Days Dash]",Running_Log_2017.xlsx
+2017-07-12,2017,1,False,5000,949.69,305.675580672,"Shoreline, WA",20.0,clear,,,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 5000 race@15:49.69, 12j [Club Northwest All Comers]",Running_Log_2017.xlsx
+2017-08-02,2017,1,False,1500,257.59,276.36728064,"Shoreline, WA",26.0,foggy,,,Track,Club Northwest All Comers,,rule,"13j, 5rec/t, 1500 race@4:17.59, 14j [Club Northwest All Comers]",Running_Log_2017.xlsx
+2017-08-09,2017,1,False,3218,595.9,298.0137009322561,"Shoreline, WA",23.0,foggy,,,Track,Club Northwest All Comers,,adjustment,"15j, 5rec/t, 3218 race@9:55.9, 14j [Club Northwest All Comers]",Running_Log_2017.xlsx
+2017-11-11,2017,1,False,21098,4559.0,347.7580479666319,"Nashville, TN",2.0,clear,,,Road,Nashville Half Marathon,,rule,21098 race@75:59 [Nashville Half Marathon],Running_Log_2017.xlsx
+2017-11-23,2017,1,False,5000,1035.0,333.134208,"Redmond, WA",13.0,light rain,,,Road,English Hill Turkey Trot,,rule,"15j, 5000 race@17:15, 10j [English Hill Turkey Trot]",Running_Log_2017.xlsx
+2018-01-06,2018,1,False,3218,637.0,318.56809446861405,"Seattle, WA",7.0,light rain,muddy,,Road,New Balance Winter Grand Prix,,adjustment,"11j, 5rec/t, 3218 race@10:37, 12j [New Balance Winter Grand Prix]",Running_Log_2018.xlsx
+2018-03-10,2018,1,False,21098,4552.0,347.2240917622523,"Redmond, WA",1.0,clear,dry,,Road,Lake Sammamish Half Marathon,,rule,21098 race@75:52 [Lake Sammamish Half Marathon],Running_Log_2018.xlsx
+2018-05-30,2018,1,False,5000,986.08,317.38838630400005,"Shoreline, WA",12.0,clear,dry,,Track,Club Northwest All Comers,,location,"10j, 5rec/t, 5000 race@16:26.08, 14j",Running_Log_2018.xlsx
+2018-06-06,2018,1,False,3000,571.06,306.34399487999997,"Shoreline, WA",15.0,clear,dry,,Track,Club Northwest All Comers,,location,"14j, 5rec/t, 3000 race@9:31.06, 14j",Running_Log_2018.xlsx
+2018-06-13,2018,1,False,5000,1005.2,323.54251776,"Shoreline, WA",12.0,light rain,wet,,Track,Club Northwest All Comers,,location,"14j, 5rec/t, 5000 race@16:45.2, 14j",Running_Log_2018.xlsx
+2018-07-04,2018,1,False,5000,1048.0,337.3185024,"Carnation, WA",13.0,clear,dry,,Road,Run for the Pies,,rule,"14j, 5rec/t, 5000 race@17:28, 14j",Running_Log_2018.xlsx
+2018-07-11,2018,1,False,5000,1014.5,326.5358976,"Shoreline, WA",20.0,clear,dry,,Track,Club Northwest All Comers,,location,"14j, 5rec/t, 5000 race@16:54.5, 15j",Running_Log_2018.xlsx
+2018-07-13,2018,1,False,5000,1070.0,344.39961600000004,"Redmond, WA",30.0,clear,dry,,Road,Redmond Derby Days Dash,,rule,"15j, 5rec/t, 5000 race@17:50, 14j [Redmond Derby Days Dash]",Running_Log_2018.xlsx
+2018-07-18,2018,1,False,3000,577.6,309.85236480000003,"Shoreline, WA",20.0,clear,dry,,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 3000 race@9:37.6, 14j",Running_Log_2018.xlsx
+2018-07-25,2018,1,False,5000,1007.5,324.282816,"Shoreline, WA",22.0,clear,dry,,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 5000 race@16:47.5, 14j",Running_Log_2018.xlsx
+2018-08-01,2018,1,False,3000,571.5,306.580032,"Shoreline, WA",18.0,clear,dry,,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 3000 race@9:31.5, 15j",Running_Log_2018.xlsx
+2018-08-08,2018,1,False,3218,627.8,313.9671110006215,"Shoreline, WA",27.0,clear,dry,,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 3218 race@10:27.8, 15j",Running_Log_2018.xlsx
+2018-08-15,2018,1,False,3000,579.3,310.76432639999996,"Shoreline, WA",22.0,smoky,dry,,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 3000 race@9:39.3, 15j",Running_Log_2018.xlsx
+2018-11-10,2018,1,False,42195,9778.0,372.93910728759334,"Nashville, TN",0.0,clear,dry,,Road,Nashville Marathon,,rule,42195 race@2:42:58 [Nashville Marathon],Running_Log_2018.xlsx
+2018-11-22,2018,1,False,5000,1073.0,345.3652224,"Redmond, WA",9.0,cloudy,wet,,Road,English Hill Turkey Trot,,rule,"17j, 5rec/t, 5000 race@17:53, 17j [English Hill Turkey Trot]",Running_Log_2018.xlsx
+2019-01-05,2019,1,False,3218,644.0,322.06884275947795,"Seattle, WA",7.0,overcast,wet,,Road,New Balance Winter Grand Prix,,adjustment,"14j, 5rec/t, 3218 race@10:44, 13j [New Balance Winter Grand Prix]",Running_Log_2019.xlsx
+2019-05-29,2019,1,False,5000,963.0,309.95965440000003,"Shoreline, WA",17.0,cloudy,dry,,Track,Club Northwest All Comers,,location,"20j; 13j, 5rec/t, 5000 race@16:03.0, 14j",Running_Log_2019.xlsx
+2019-06-05,2019,1,False,3000,557.14,298.87663872,"Shoreline, WA",13.0,clear,dry,,Track,Club Northwest All Comers,,location,"21j; 13j, 5rec/t, 3000 race@9:17.14, 14j",Running_Log_2019.xlsx
+2019-06-12,2019,1,False,5000,978.83,315.05483750400003,"Shoreline, WA",28.0,clear,dry,,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 5000 race@16:18.83, 14j",Running_Log_2019.xlsx
+2019-06-19,2019,1,False,3000,561.21,301.05998208000005,"Shoreline, WA",14.0,overcast,wet,,Track,Club Northwest All Comers,,location,"21j; 13j, 5rec/t, 3000 race@9:21.21, 14j",Running_Log_2019.xlsx
+2019-06-26,2019,1,False,5000,958.24,308.427558912,"Shoreline, WA",17.0,overcast,dry,,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 5000 race@15:58.24, 14j",Running_Log_2019.xlsx
+2019-07-04,2019,1,False,5000,998.0,321.2250624,"Carnation, WA",15.0,cloudy,dry,,Road,Run for the Pies,,rule,"13j, 5000 race@16:38.0, 14j",Running_Log_2019.xlsx
+2019-07-10,2019,1,False,5000,972.1,312.88866048,"Shoreline, WA",18.0,cloudy,dry,,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 5000 race@16:12.1, 14j",Running_Log_2019.xlsx
+2019-07-12,2019,1,False,5000,1002.0,322.51253760000003,"Redmond, WA",24.0,cloudy,dry,,Road,Redmond Derby Days Dash,,rule,"15j, 5rec/t, 5000 race@16:42, 14j [Redmond Derby Days Dash]",Running_Log_2019.xlsx
+2019-07-31,2019,1,False,3000,568.27,304.84730496,"Shoreline, WA",23.0,clear,dry,,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 3000 race@9:28.27, 14j",Running_Log_2019.xlsx
+2019-08-07,2019,1,False,3218,618.2,309.16608477315106,"Shoreline, WA",22.0,clear,dry,,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 3218 race@10:18.2, 14j",Running_Log_2019.xlsx
+2019-08-14,2019,1,False,1500,271.42,291.20543232,"Shoreline, WA",22.0,cloudy,dry,,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 1500 race@4:31.42, 10j, 2x400 race@61/67, 14j",Running_Log_2019.xlsx
+2019-08-14,2019,2,True,400,61.0,245.42496,"Shoreline, WA",22.0,cloudy,dry,,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 1500 race@4:31.42, 10j, 2x400 race@61/67, 14j",Running_Log_2019.xlsx
+2019-08-14,2019,3,True,400,67.0,269.56512,"Shoreline, WA",22.0,cloudy,dry,,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 1500 race@4:31.42, 10j, 2x400 race@61/67, 14j",Running_Log_2019.xlsx
+2019-11-09,2019,1,False,42195,10128.0,386.2883287593317,"Nashville, TN",1.0,clear,dry,,Road,Nashville Marathon,,rule,42195 race@2:48:48 [Nashville Marathon],Running_Log_2019.xlsx
+2019-11-28,2019,1,False,5000,997.0,320.9031936,"Redmond, WA",0.0,clear,dry,,Road,English Hill Turkey Trot,,rule,"17j, 5rec/t, 5000 race@16:37, 17j [English Hill Turkey Trot]",Running_Log_2019.xlsx
+2019-12-21,2019,1,False,3100,664.0,344.7111019354839,"Seattle, WA",7.0,heavy rain,muddy,,XC,New Balance Winter Grand Prix,,adjustment,"15j, 3100 race@11:04?, 18j [New Balance Winter Grand Prix]",Running_Log_2019.xlsx
+2019-12-26,2019,1,False,42195,9203.0,351.00824344116603,"Redmond, WA",1.0,cloudy,dry,,Road,Time trial,,rule,42195 race@2:33:23 [Time trial],Running_Log_2019.xlsx
+2020-01-04,2020,1,False,3218,612.0,306.065422001243,"Seattle, WA",6.0,clear,wet,Nike Vaporfly Next%,Road,New Balance Winter Grand Prix,,adjustment,"15j, 5rec/t, 3218 race@10:12, 20j [New Balance Winter Grand Prix]",Running_Log_2020.xlsx
+2020-02-03,2020,1,False,5000,944.0,303.8441472,"Nashville, TN",21.0,cloudy,dry,Nike Vaporfly Next%,Track,Time trial,,location,"14j, 5000 race@15:44, 3200f, 14j [Time trial]",Running_Log_2020.xlsx
+2020-07-03,2020,1,False,5000,926.0,298.0505088,"Redmond, WA",15.0,overcast,dry,Nike Vaporfly Next%,Road,Time trial,,rule,"13j, 5000 race@15:26, 20j [Time trial]",Running_Log_2020.xlsx
+2020-08-12,2020,1,False,1609,259.89,259.9455638036047,"Redmond, WA",21.0,clear,dry,Nike Vaporfly Next%,Downhill,Downhill time trial,,adjustment,"19j, 1609 race@4:19.89, 23j [Downhill time trial]",Running_Log_2020.xlsx
+2020-11-21,2020,1,False,42195,9057.0,345.4397110558123,"Nashville, TN",16.0,clear,dry,Nike Vaporfly Next%,Road,Time trial,,rule,42195 race@2:30:57 [Time trial],Running_Log_2020.xlsx
+2021-05-10,2021,1,False,5000,1001.0,322.1906688,"Nashville, TN",12.0,cloudy,dry,Saucony Endorphin 2,Track,Time trial,,location,"13j, 5000 race@16:41, 13j [Time trial]",Running_Log_2021.xlsx
+2021-06-22,2021,1,False,5000,1005.0,323.478144,"Nashville, TN",22.0,clear,dry,Saucony Endorphin 2,Track,Time trial,,location,"13j, 5000 race@16:45, 14j [Time trial]",Running_Log_2021.xlsx
+2021-06-30,2021,1,False,5000,999.0,321.5469312,"Shoreline, WA",21.0,cloudy,dry,New Balance spikes,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 5000 race@16:39, 14j",Running_Log_2021.xlsx
+2021-07-04,2021,1,False,5000,1017.0,327.34056960000004,"Carnation, WA",19.0,clear,dry,Nike Vaporfly Next%,Road,Run for the Pies,,rule,"14j, 5rec/t, 5000 race@16:57, 14j",Running_Log_2021.xlsx
+2021-07-07,2021,1,False,3000,561.94,301.45158912000005,"Shoreline, WA",18.0,cloudy,dry,Nike Vaporfly Next%,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 3000 race@9:21.94, 15j",Running_Log_2021.xlsx
+2021-07-14,2021,1,False,10000,1990.0,320.259456,"Shoreline, WA",19.0,clear,dry,Nike Vaporfly Next%,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 10000 race@33:10, 15j",Running_Log_2021.xlsx
+2021-07-21,2021,1,False,1500,260.0,278.95296,"Shoreline, WA",16.0,cloudy,dry,New Balance spikes,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 1500 race@4:20, 3j, 2x400@60/66, 3000 race@9:48, 15j",Running_Log_2021.xlsx
+2021-07-21,2021,4,True,3000,588.0,315.431424,"Shoreline, WA",16.0,cloudy,dry,New Balance spikes,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 1500 race@4:20, 3j, 2x400@60/66, 3000 race@9:48, 15j",Running_Log_2021.xlsx
+2021-07-21,2021,2,True,400,60.0,241.4016,"Shoreline, WA",16.0,cloudy,dry,New Balance spikes,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 1500 race@4:20, 3j, 2x400@60/66, 3000 race@9:48, 15j",Running_Log_2021.xlsx
+2021-07-21,2021,3,True,400,66.0,265.54176,"Shoreline, WA",16.0,cloudy,dry,New Balance spikes,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 1500 race@4:20, 3j, 2x400@60/66, 3000 race@9:48, 15j",Running_Log_2021.xlsx
+2021-10-11,2021,1,False,42195,11387.0,434.3073854248134,"Boston, MA",19.0,overcast,dry,Nike Alphafly Next%,Road,Boston Marathon,,rule,42195 race@3:09:47,Running_Log_2021.xlsx
+2021-11-20,2021,1,False,42195,10128.0,386.2883287593317,"Nashville, TN",6.0,clear,dry,Nike Alphafly Next%,Road,Nashville Rock 'n' Roll Marathon,,rule,42195 race@2:48:48 [Nashville Rock 'n' Roll Marathon],Running_Log_2021.xlsx
+2022-01-11,2022,1,False,5000,937.2,301.65543936,"Nashville, TN",7.0,clear,dry,Nike Alphafly Next%,Track,Time trial,,location,"11j, 5000 race@15:37.2, 12j [Time trial]",Running_Log_2022.xlsx
+2022-04-18,2022,1,False,42195,9383.0,357.8735573409172,"Boston, MA",9.0,clear,dry,Nike Alphafly Next%,Road,Boston Marathon,,rule,42195 race@2:36:23,Running_Log_2022.xlsx
+2022-06-08,2022,1,False,5000,913.6,294.05933568,"Shoreline, WA",15.0,cloudy,dry,Nike Alphafly Next%,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 5000 race@15:13.6, 15j",Running_Log_2022.xlsx
+2022-06-15,2022,1,False,1500,253.68,272.17225728,"Shoreline, WA",14.0,overcast,dry,Nike Vaporfly Next%,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 1500 race@4:13.68, 5j, 3000 race@9:05.37, 15j",Running_Log_2022.xlsx
+2022-06-15,2022,2,True,3000,545.37,292.56264576,"Shoreline, WA",14.0,overcast,dry,Nike Vaporfly Next%,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 1500 race@4:13.68, 5j, 3000 race@9:05.37, 15j",Running_Log_2022.xlsx
+2022-06-26,2022,1,False,21098,4247.67,324.00996437956206,"Redmond, WA",18.0,clear,dry,Nike Alphafly Next%,Road,Craft Classic,,rule,21098 race@1:10:47.67 [Craft Classic],Running_Log_2022.xlsx
+2022-06-29,2022,1,False,1609,279.26,279.3197050590429,"Shoreline, WA",18.0,cloudy,dry,New Balance spikes,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 1609 race@4:39.26, 5j, 800 race@2:07.12, 15j",Running_Log_2022.xlsx
+2022-06-29,2022,2,True,800,127.12,255.7247616,"Shoreline, WA",18.0,cloudy,dry,New Balance spikes,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 1609 race@4:39.26, 5j, 800 race@2:07.12, 15j",Running_Log_2022.xlsx
+2022-07-04,2022,1,False,5000,947.0,304.8097536,"Carnation, WA",15.0,cloudy,dry,Nike Alphafly Next%,Road,Run for the Pies,,rule,"14j, 5000 race@15:47, 13j",Running_Log_2022.xlsx
+2022-07-13,2022,1,False,5000,923.57,297.26836761600003,"Shoreline, WA",17.0,clear,dry,Nike Vaporfly Next%,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 5000 race@15:23.57, 15j",Running_Log_2022.xlsx
+2022-07-20,2022,1,False,800,126.12,253.7130816,"Shoreline, WA",22.0,clear,dry,Nike Vaporfly Next%,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 800 race@2:06.12, 5j, 3000 race@9:16.07, 15j",Running_Log_2022.xlsx
+2022-07-20,2022,2,True,3000,556.07,298.30263936000006,"Shoreline, WA",22.0,clear,dry,Nike Vaporfly Next%,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 800 race@2:06.12, 5j, 3000 race@9:16.07, 15j",Running_Log_2022.xlsx
+2022-07-27,2022,3,True,400,64.0,257.49504,"Shoreline, WA",27.0,clear,dry,New Balance spikes,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 1609 race@4:37.18, 2x400@59/64, 14j",Running_Log_2022.xlsx
+2022-07-27,2022,1,False,1609,277.18,277.2392603604724,"Shoreline, WA",27.0,clear,dry,New Balance spikes,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 1609 race@4:37.18, 2x400@59/64, 14j",Running_Log_2022.xlsx
+2022-07-27,2022,2,True,400,59.0,237.37824,"Shoreline, WA",27.0,clear,dry,New Balance spikes,Track,Club Northwest All Comers,,location,"13j, 5rec/t, 1609 race@4:37.18, 2x400@59/64, 14j",Running_Log_2022.xlsx
+2022-08-03,2022,1,False,10000,1907.66,307.00811750400004,"Shoreline, WA",18.0,clear,dry,Nike Alphafly Next%,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 10000 race@31:47.66, 15j",Running_Log_2022.xlsx
+2022-08-06,2022,1,False,5000,932.2,300.04609536000004,"Everett, WA",16.0,clear,dry,Nike Alphafly Next%,Road,The Enforcer 5K,,rule,"14j, 5000 race@15:32.2, 11j [The Enforcer 5K]",Running_Log_2022.xlsx
+2022-10-08,2022,1,False,21098,4102.0,312.8983357664234,"Murfreesboro, TN",7.0,clear,dry,Nike Alphafly Next%,Road,The Middle Half,,rule,21098 race@1:08:22 [The Middle Half],Running_Log_2022.xlsx
+2022-11-12,2022,1,False,42195,8931.0,340.6339913259865,"Nashville, TN",1.0,overcast,wet,Nike Alphafly Next%,Road,Nashville Marathon,,rule,42195 race@2:28:51 [Nashville Marathon],Running_Log_2022.xlsx
+2022-12-20,2022,1,False,3200,572.5,287.9217,"Nashville, TN",4.0,cloudy,dry,Nike ZoomX Dragonfly,Track,Time trial,,location,"12j, 3200 race@9:32.5, 13j [Time trial]",Running_Log_2022.xlsx
+2023-01-01,2023,1,False,5000,950.0,305.77536000000003,"Seattle, WA",7.0,cloudy,wet,Nike Alphafly Next%,Road,Club Northwest Resolution Run,,rule,"14j, 5000 race@15:50, 11j [Club Northwest Resolution Run]",Running_Log_2023.xlsx
+2023-03-04,2023,1,False,21098,4171.0,318.1616183524505,"Nashville, TN",8.0,cloudy,dry,Hoka Clifton 8,Road,Tom King Classic,,rule,"8j, 21098 race@1:09:31, 8j [Tom King Classic]",Running_Log_2023.xlsx
+2023-04-17,2023,1,False,42195,8805.0,335.8282715961607,"Boston, MA",10.0,light rain,wet,Saucony Endorphin Pro 3,Road,Boston Marathon,,rule,42195 race@2:26:45,Running_Log_2023.xlsx
+2023-06-07,2023,1,False,1500,248.09,266.17476864,"Shoreline, WA",22.0,clear,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 1500 race@4:08.09, 10j, 3000 race@8:47.58, 15j",Running_Log_2023.xlsx
+2023-06-07,2023,2,True,3000,527.58,283.01923584,"Shoreline, WA",22.0,clear,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"12j, 5rec/t, 1500 race@4:08.09, 10j, 3000 race@8:47.58, 15j",Running_Log_2023.xlsx
+2023-06-14,2023,1,False,1609,270.88,270.93791343691737,"Shoreline, WA",15.0,cloudy,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"12j, 1609 race@4:30.88, 15j, 5000 race@15:04.32, 15j",Running_Log_2023.xlsx
+2023-06-14,2023,2,True,5000,904.32,291.072393216,"Shoreline, WA",15.0,cloudy,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"12j, 1609 race@4:30.88, 15j, 5000 race@15:04.32, 15j",Running_Log_2023.xlsx
+2023-06-21,2023,1,False,3000,521.28,279.63961344,"Shoreline, WA",15.0,cloudy,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"25j, 5rec/t, 3000 race@8:41.28, 15j",Running_Log_2023.xlsx
+2023-07-04,2023,1,False,5000,931.0,299.6598528,"Carnation, WA",18.0,clear,dry,Saucony Endorphin Pro 3,Road,Run for the Pies,,rule,"18j, 5rec/t, 5000 race@15:31, 22j",Running_Log_2023.xlsx
+2023-07-05,2023,2,True,3000,566.68,303.99435264,"Shoreline, WA",25.0,clear,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"29j, 5rec/t, 800 race@2:04.06, 3000 race@9:26.68, 15j",Running_Log_2023.xlsx
+2023-07-05,2023,1,False,800,124.06,249.5690208,"Shoreline, WA",25.0,clear,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"29j, 5rec/t, 800 race@2:04.06, 3000 race@9:26.68, 15j",Running_Log_2023.xlsx
+2023-07-12,2023,1,False,5000,893.85,287.70242688,"Shoreline, WA",20.0,cloudy,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"28j, 5rec/t, 5000 race@14:53.85, 15j",Running_Log_2023.xlsx
+2023-07-19,2023,1,False,10000,1921.3,309.20326272,"Shoreline, WA",24.0,clear,dry,Saucony Endorphin Pro 3,Track,Club Northwest All Comers,,location,"25j, 5rec/t, 10000 race@32:01.3, 15j",Running_Log_2023.xlsx
+2023-07-26,2023,1,False,1609,270.0,270.0577252952144,"Shoreline, WA",19.0,cloudy,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"25j, 5rec/t, 1609 race@4:30, 27j",Running_Log_2023.xlsx
+2023-07-30,2023,1,False,21098,4331.65,330.4159132429614,"Redmond, WA",16.0,overcast,dry,Saucony Endorphin Pro 3,Road,Craft Classic,,rule,"17j, 21098 race@1:12:11.65, 23j [Craft Classic]",Running_Log_2023.xlsx
+2023-08-02,2023,1,False,400,57.0,229.33152,"Shoreline, WA",20.0,clear,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"26j, 5rec/t, 2x400 race@57/60, 3000 race@9:26.55, 17j",Running_Log_2023.xlsx
+2023-08-02,2023,2,True,400,60.0,241.4016,"Shoreline, WA",20.0,clear,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"26j, 5rec/t, 2x400 race@57/60, 3000 race@9:26.55, 17j",Running_Log_2023.xlsx
+2023-08-02,2023,3,True,3000,566.55,303.9246144,"Shoreline, WA",20.0,clear,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"26j, 5rec/t, 2x400 race@57/60, 3000 race@9:26.55, 17j",Running_Log_2023.xlsx
+2023-09-24,2023,1,False,42195,9435.0,359.85687024528977,"Berlin, DE",15.0,cloudy,dry,Adidas Adios Pro 3,Road,Berlin Marathon,,rule,42195 race@2:37:15 [Berlin Marathon],Running_Log_2023.xlsx
+2023-10-08,2023,1,False,21098,4191.0,319.68720750782063,"Boulder, CO",13.0,clear,dry,Adidas Adios Pro 3,Road,Boulderthon,,rule,"12j, 21098 race@1:09:51, 14j [Boulderthon]",Running_Log_2023.xlsx
+2023-11-02,2023,1,False,42195,9251.0,352.838993814433,"Boulder, CO",6.0,clear,dry,Nike Alphafly Next%,Road,Time trial,,rule,42195 race@2:34:11 [Time trial],Running_Log_2023.xlsx
+2023-11-23,2023,1,False,5000,906.0,291.6131328,"Woodinville, WA",5.0,cloudy,dry,Adidas Adios Pro 3,Road,Woodinville Turkey Trot,,rule,"12j, 5000 race@15:06, 12j [Woodinville Turkey Trot]",Running_Log_2023.xlsx
+2023-11-26,2023,1,False,42195,8823.0,336.5148029861358,"Seattle, WA",1.0,foggy,icy,Adidas Adios Pro 3,Road,Seattle Marathon,,rule,42195 race@2:27:03 [Seattle Marathon],Running_Log_2023.xlsx
+2024-03-23,2024,1,False,21098,4060.0,309.694598540146,"Everson, WA",8.0,light rain,wet,Adidas Adios Pro 3*,Road,Honeywagon Runs,,rule,"15j, 21098 race@1:07:40, 13j [Honeywagon Runs]",Running_Log_2024.xlsx
+2024-03-30,2024,1,False,42195,8756.0,333.95938059011735,"Redmond, WA",10.0,clear,dry,Adidas Adios Pro 3*,Road,Time trial,,rule,42195 race@2:25:56 [Time trial],Running_Log_2024.xlsx
+2024-04-15,2024,1,False,42195,9994.0,381.17748396729473,"Boston, MA",17.0,clear,dry,Adidas Adios Pro 3*,Road,Boston Marathon,,rule,42195 race@2:46:34,Running_Log_2024.xlsx
+2024-05-12,2024,1,False,1609,270.32,270.37779371037914,"Niwot, CO",17.0,cloudy,dry,Nike ZoomX Dragonfly,Track,Frank Shorter Classic,,location,"13j, 5rec/t, 1609 race@4:30.32, 3218 race@9:52.64, 13j [Frank Shorter Classic]",Running_Log_2024.xlsx
+2024-05-12,2024,2,True,3218,592.64,296.3833524425109,"Niwot, CO",17.0,cloudy,dry,Nike ZoomX Dragonfly,Track,Frank Shorter Classic,,location,"13j, 5rec/t, 1609 race@4:30.32, 3218 race@9:52.64, 13j [Frank Shorter Classic]",Running_Log_2024.xlsx
+2024-05-27,2024,1,False,10000,1920.0,308.994048,"Boulder, CO",13.0,clear,dry,Adidas Adios Pro 3*,Road,Bolder Boulder,,rule,"12j, 10000 race@32:00, 4j [Bolder Boulder]",Running_Log_2024.xlsx
+2024-07-04,2024,1,False,5000,958.0,308.3503104,"Carnation, WA",18.0,clear,dry,Adidas Adios Pro 3,Road,Run for the Pies,,rule,"19j, 5rec/t, 5000 race@15:58, 20j",Running_Log_2024.xlsx
+2024-07-10,2024,1,False,10000,1892.45,304.56030528,"Shoreline, WA",20.0,clear,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"25j, 5rec/t, 10000 race@31:32.45, 15j",Running_Log_2024.xlsx
+2024-07-17,2024,1,False,1609,269.47,269.52761198259793,"Shoreline, WA",24.0,clear,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"25j, 5rec/t, 1609 race@4:29.47, 26j",Running_Log_2024.xlsx
+2024-07-28,2024,1,False,21098,4347.51,331.62570544317,"Redmond, WA",15.0,overcast,dry,Adidas Adios Pro 3,Road,Craft Classic,,rule,"15j, 21098 race@1:12:27.51, 27j [Craft Classic]",Running_Log_2024.xlsx
+2024-08-07,2024,1,False,3000,543.95,291.80088960000006,"Shoreline, WA",20.0,clear,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"11j; 25j, 5rec/t, 3000 race@9:03.95, 14j",Running_Log_2024.xlsx
+2024-09-29,2024,1,False,42195,10155.0,387.31812584429434,"Boulder, CO",19.0,clear,dry,Adidas Adios Pro 3*,Road,Boulderthon,,rule,42195 race@2:49:15 [Boulderthon],Running_Log_2024.xlsx
+2024-12-01,2024,1,False,42195,9029.0,344.37177333807324,"Seattle, WA",4.0,clear,dry,Adidas Adios Pro 3*,Road,Seattle Marathon,,rule,42195 race@2:30:29 [Seattle Marathon],Running_Log_2024.xlsx
+2025-01-01,2025,1,False,5000,954.0,307.0628352,"Seattle, WA",4.0,cloudy,muddy,Adidas Adios Pro 3,Road,Club Northwest Resolution Run,,rule,"19j, 5rec/t, 5000 race@15:54, 10j [Club Northwest Resolution Run]",Running_Log_2025.xlsx
+2025-03-16,2025,1,False,5000,934.2,300.68983296000005,"Boulder, CO",6.0,clear,dry,Adidas Adios Pro 3*,Road,Lucky Leprechaun 5K,,rule,"14j, 5000 race@15:34.2, 15j [Lucky Leprechaun 5K]",Running_Log_2025.xlsx
+2025-04-21,2025,1,False,42195,9468.0,361.1155111269108,"Boston, MA",11.0,clear,dry,Adidas Adios Pro 4,Road,Boston Marathon,,rule,42195 race@2:37:48,Running_Log_2025.xlsx
+2025-05-11,2025,1,False,3218,589.57,294.84802426351774,"Niwot, CO",28.0,clear,dry,Nike ZoomX Dragonfly,Track,Frank Shorter Classic,,location,"15j, 3218 race@9:49.57, 8j [Frank Shorter Classic]",Running_Log_2025.xlsx
+2025-05-26,2025,1,False,10000,1946.0,313.1783424,"Boulder, CO",9.0,light rain,wet,Adidas Adios Pro 4,Road,Bolder Boulder,,rule,"12j, 10000 race@32:26, 3j [Bolder Boulder]",Running_Log_2025.xlsx
+2025-06-18,2025,1,False,3000,528.89,283.72198272,"Shoreline, WA",15.0,cloudy,dry,Nike ZoomX Dragonfly,Track,Club Northwest All Comers,,location,"25j, 5rec/t, 3000 race@8:48.89, 15j",Running_Log_2025.xlsx
+2025-09-06,2025,1,False,10000,1917.0,308.5112448,"Chicago, IL",12.0,clear,dry,Adidas Adios Pro 4,Road,Run Mag Mile,,rule,"27j, 10000 race@31:57, 26j [Run Mag Mile]",Running_Log_2025.xlsx
+2025-10-12,2025,1,False,42195,9181.0,350.16914952008534,"Chicago, IL",14.0,clear,dry,Adidas Adios Pro 4,Road,Chicago Marathon,,rule,42195 race@2:33:01 [Chicago Marathon],Running_Log_2025.xlsx
+2025-10-25,2025,1,False,5000,948.0,305.1316224,"Chicago, IL",12.0,cloudy,dry,Adidas Adios Pro 4,Road,Will Run For Beer,,rule,"22j, 5000 race@15:48, 11j [Will Run For Beer]",Running_Log_2025.xlsx
+2025-11-30,2025,1,False,42195,9358.0,356.9200415215073,"Seattle, WA",3.0,clear,dry,Adidas Adios Pro 4,Road,Seattle Marathon,,rule,42195 race@2:35:58 [Seattle Marathon],Running_Log_2025.xlsx
+2026-04-20,2026,1,False,42195,9062.0,345.6304142196943,"Boston, MA",8.0,cloudy,dry,Adidas Adios Pro 4,Road,Boston Marathon,,rule,42195 race@2:31:02,snapshot:current_log:2026

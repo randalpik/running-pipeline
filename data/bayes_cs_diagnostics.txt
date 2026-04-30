@@ -1,0 +1,61 @@
+=== Run config ===
+tag: (none)
+sigma_base prior: HalfNormal(σ=0.02)
+ell_cs_dev prior: LogNormal(μ=log(0.25), σ=0.4)
+chains: 4, draws: 1000, tune: 1000
+target_accept: 0.95
+xc_correction: 0.0600 (6.0% terrain penalty)
+
+=== Hyperparameter posterior summary ===
+              mean     sd  hdi_3%  hdi_97%  mcse_mean  mcse_sd  ess_bulk  ess_tail  r_hat
+mu_cs        1.386  0.174   1.041    1.703      0.004    0.003    1686.0    1729.0   1.00
+mu_dp        5.119  0.059   5.007    5.230      0.001    0.001    2990.0    1961.0   1.00
+sf_cs_long   0.297  0.104   0.131    0.485      0.002    0.002    1846.0    2399.0   1.00
+ell_cs_long  6.692  2.297   2.648   11.155      0.072    0.050     837.0     637.0   1.01
+sf_cs_dev    0.044  0.011   0.026    0.067      0.000    0.000    1060.0    1435.0   1.00
+ell_cs_dev   0.310  0.124   0.122    0.551      0.003    0.003    2380.0    2496.0   1.00
+sf_dp        0.072  0.065   0.000    0.186      0.001    0.002    1760.0    1400.0   1.00
+ell_dp       0.560  0.310   0.131    1.103      0.005    0.009    5008.0    2939.0   1.00
+sigma_base   0.032  0.002   0.028    0.035      0.000    0.000    2742.0    2644.0   1.00
+alpha_sig    0.064  0.051   0.000    0.156      0.001    0.001    2546.0    1449.0   1.00
+beta_long    0.077  0.009   0.060    0.094      0.000    0.000    4232.0    2999.0   1.00
+
+Divergences: 6 / 4000
+Sampling time: 6.1 min
+Grid points: 941
+HSGP basis size m: 100
+
+=== Residuals by distance band ===
+band                      n   mean_pct    std_pct
+< 1500m                   7     +2.55%      0.56%
+1500-3500m               76     -0.94%      2.56%
+5K (3500-5500)           89     +0.61%      3.33%
+10K (8K-12K)              7     +1.22%      1.21%
+HM (15K-25K)             10     +0.21%      2.62%
+Marathon (>25K)          11     -0.04%      1.64%
+
+=== Marathon residuals (each) ===
+  2018-11-10  actual=9778s  pred=9799s  resid=-0.2%  CS@=5.63 min/mi  D'@=168m  Nashville Marathon
+  2019-12-26  actual=9203s  pred=9350s  resid=-1.6%  CS@=5.37 min/mi  D'@=167m  Time trial
+  2020-11-21  actual=9057s  pred=9155s  resid=-1.1%  CS@=5.26 min/mi  D'@=167m  Time trial
+  2022-11-12  actual=8931s  pred=8903s  resid=+0.3%  CS@=5.12 min/mi  D'@=164m  Nashville Marathon
+  2023-04-17  actual=8805s  pred=8838s  resid=-0.4%  CS@=5.08 min/mi  D'@=165m  Boston Marathon
+  2023-11-02  actual=9251s  pred=8859s  resid=+4.4%  CS@=5.09 min/mi  D'@=167m  Time trial
+  2023-11-26  actual=8823s  pred=8850s  resid=-0.3%  CS@=5.09 min/mi  D'@=167m  Seattle Marathon
+  2024-03-30  actual=8756s  pred=8847s  resid=-1.0%  CS@=5.08 min/mi  D'@=169m  Time trial
+  2024-12-01  actual=9029s  pred=9101s  resid=-0.8%  CS@=5.23 min/mi  D'@=169m  Seattle Marathon
+  2025-10-12  actual=9181s  pred=9095s  resid=+0.9%  CS@=5.23 min/mi  D'@=168m  Chicago Marathon
+  2026-04-20  actual=9062s  pred=9131s  resid=-0.8%  CS@=5.25 min/mi  D'@=167m  Boston Marathon
+
+=== Posterior predictive coverage ===
+Well-calibrated target: 50%-coverage ≈ 50%, 95%-coverage ≈ 95%
+Overall (n=200): 50%-coverage = 57.0%  95%-coverage = 97.0%
+
+By distance band:
+band                      n    cov_50    cov_95
+< 1500m                   7     28.6%    100.0%
+1500-3500m               76     63.2%     97.4%
+5K (3500-5500)           89     49.4%     95.5%
+10K (8K-12K)              7     57.1%    100.0%
+HM (15K-25K)             10     60.0%    100.0%
+Marathon (>25K)          11     90.9%    100.0%
