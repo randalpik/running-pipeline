@@ -304,10 +304,10 @@ date,year,month,day_of_year,dow,miles,minutes,pace_sec_per_mi,temp_c,sleep_cycle
 2016-12-17,2016,12,352,6,5.1,34.0,400.0,-3.0,4.666666666666667,overcast,,,,,,,Unknown,varsity,"9j, 5rec/t, 3000r@10:37, 9j [New Balance Winter Grand Prix]",race,,,,,1,2016,Running_Log_2016.xlsx
 2016-12-18,2016,12,353,7,10.0,67.0,402.0,-2.0,6.0,clouds,,,,,education hill,,Unknown,solo,rec@6:44 long,long,404.0,,,,0,2016,Running_Log_2016.xlsx
 2016-12-19,2016,12,354,1,5.3,38.0,430.188679245283,3.0,5.333333333333333,overcast,,,,,education hill,,Unknown,solo,rec@7:10,recovery,430.0,,,,0,2016,Running_Log_2016.xlsx
-2016-12-21,2016,12,356,3,6.1,35.0,344.26229508196724,-1.0,5.333333333333333,clear,,,,,education hill,,Unknown,solo,"11j, 5000i@5:26/200sp, 7j",interval,,5000.0,326.0,interval,0,2016,Running_Log_2016.xlsx
-2016-12-22,2016,12,357,4,5.7,39.0,410.5263157894737,4.0,4.666666666666667,clear,,,,,education hill,,Unknown,solo,rec@6:51,recovery,411.0,,,,0,2016,Running_Log_2016.xlsx
-2016-12-23,2016,12,358,5,6.0,39.0,390.0,2.0,3.3333333333333335,clear,,,,,education hill,,Unknown,solo,rec@6:30,recovery,390.0,,,,0,2016,Running_Log_2016.xlsx
-2016-12-24,2016,12,359,6,10.0,68.0,408.0,-1.0,4.666666666666667,clear,,,,,education hill,,Unknown,solo,rec@6:48 long,long,408.0,,,,0,2016,Running_Log_2016.xlsx
+2016-12-21,2016,12,356,3,6.1,35.0,344.26229508196724,-1.0,5.333333333333333,clear,,,,,nashville,,Unknown,solo,"11j, 5000i@5:26/200sp, 7j",interval,,5000.0,326.0,interval,0,2016,Running_Log_2016.xlsx
+2016-12-22,2016,12,357,4,5.7,39.0,410.5263157894737,4.0,4.666666666666667,clear,,,,,nashville,,Unknown,solo,rec@6:51,recovery,411.0,,,,0,2016,Running_Log_2016.xlsx
+2016-12-23,2016,12,358,5,6.0,39.0,390.0,2.0,3.3333333333333335,clear,,,,,nashville,,Unknown,solo,rec@6:30,recovery,390.0,,,,0,2016,Running_Log_2016.xlsx
+2016-12-24,2016,12,359,6,10.0,68.0,408.0,-1.0,4.666666666666667,clear,,,,,nashville,,Unknown,solo,rec@6:48 long,long,408.0,,,,0,2016,Running_Log_2016.xlsx
 2016-12-26,2016,12,361,1,6.3,42.0,400.0,3.0,5.333333333333333,clouds,,,,,education hill,,Unknown,Alex,"12j, 5000i@5:25/200sp, 13j",interval,,5000.0,325.0,interval,0,2016,Running_Log_2016.xlsx
 2016-12-27,2016,12,362,2,6.2,42.0,406.4516129032258,4.0,5.333333333333333,clouds,,,,,education hill,,Unknown,solo,rec@6:46,recovery,406.0,,,,0,2016,Running_Log_2016.xlsx
 2016-12-28,2016,12,363,3,4.9,39.0,477.55102040816325,5.0,6.666666666666667,clouds,,,,,education hill,,Unknown,Alex,rec@7:38,recovery,458.0,,,,0,2016,Running_Log_2016.xlsx
@@ -484,14 +484,14 @@ date,year,month,day_of_year,dow,miles,minutes,pace_sec_per_mi,temp_c,sleep_cycle
 2017-07-15,2017,7,196,6,5.8,38.0,393.1034482758621,17.0,5.333333333333333,clear,,,,,education hill,,Unknown,solo,rec@6:33,recovery,393.0,,,,0,2017,Running_Log_2017.xlsx
 2017-07-17,2017,7,198,1,11.8,77.0,391.52542372881356,18.0,5.333333333333333,clear,,,,,education hill,,Unknown,varsity,"21j; 18j, 6597t@6:20 (0:00 rest/mi), 12j",tempo,,6597.0,380.0,tempo,0,2017,Running_Log_2017.xlsx
 2017-07-18,2017,7,199,2,5.7,38.0,400.0,12.0,4.0,clear,,,,,education hill,,Unknown,solo,rec@6:40,recovery,400.0,,,,0,2017,Running_Log_2017.xlsx
-2017-07-19,2017,7,200,3,6.3,40.0,380.95238095238096,24.0,0.0,indoors,,,,,education hill,,Unknown,solo,rec@6:24,recovery,384.0,,,,0,2017,Running_Log_2017.xlsx
-2017-07-20,2017,7,201,4,7.3,44.0,361.64383561643837,24.0,6.666666666666667,indoors,,,,,education hill,,Unknown,solo,"10j, 7000t@5:29 (0:00 rest/mi), 10j",tempo,,7000.0,329.0,tempo,0,2017,Running_Log_2017.xlsx
-2017-07-21,2017,7,202,5,5.2,37.0,426.9230769230769,18.0,4.666666666666667,clear,,,,,education hill,,Unknown,solo,rec@7:11,recovery,431.0,,,,0,2017,Running_Log_2017.xlsx
-2017-07-22,2017,7,203,6,6.3,40.0,380.95238095238096,16.0,4.666666666666667,cloudy,,,,,education hill,,Unknown,solo,rec@6:21,recovery,381.0,,,,0,2017,Running_Log_2017.xlsx
-2017-07-24,2017,7,205,1,5.3,37.0,418.8679245283019,13.0,4.666666666666667,cloudy,,,,,geneva,,Unknown,solo,rec@7:00,recovery,420.0,,,,0,2017,Running_Log_2017.xlsx
-2017-07-25,2017,7,206,2,5.8,38.0,393.1034482758621,14.0,4.666666666666667,cloudy,,,,,geneva,,Unknown,solo,rec@6:33,recovery,393.0,,,,0,2017,Running_Log_2017.xlsx
-2017-07-26,2017,7,207,3,8.7,57.0,393.1034482758621,11.0,4.666666666666667,cloudy,,,,,geneva,,Unknown,solo,rec@6:33,recovery,393.0,,,,0,2017,Running_Log_2017.xlsx
-2017-07-27,2017,7,208,4,5.5,38.0,414.54545454545456,12.0,4.0,cloudy,,,,,geneva,,Unknown,solo,rec@6:55,recovery,415.0,,,,0,2017,Running_Log_2017.xlsx
+2017-07-19,2017,7,200,3,6.3,40.0,380.95238095238096,24.0,0.0,indoors,,,,,geneva,,Unknown,solo,rec@6:24,recovery,384.0,,,,0,2017,Running_Log_2017.xlsx
+2017-07-20,2017,7,201,4,7.3,44.0,361.64383561643837,24.0,6.666666666666667,indoors,,,,,geneva,,Unknown,solo,"10j, 7000t@5:29 (0:00 rest/mi), 10j",tempo,,7000.0,329.0,tempo,0,2017,Running_Log_2017.xlsx
+2017-07-21,2017,7,202,5,5.2,37.0,426.9230769230769,18.0,4.666666666666667,clear,,,,,geneva,,Unknown,solo,rec@7:11,recovery,431.0,,,,0,2017,Running_Log_2017.xlsx
+2017-07-22,2017,7,203,6,6.3,40.0,380.95238095238096,16.0,4.666666666666667,cloudy,,,,,geneva,,Unknown,solo,rec@6:21,recovery,381.0,,,,0,2017,Running_Log_2017.xlsx
+2017-07-24,2017,7,205,1,5.3,37.0,418.8679245283019,13.0,4.666666666666667,cloudy,,,,,sonchamp,,Unknown,solo,rec@7:00,recovery,420.0,,,,0,2017,Running_Log_2017.xlsx
+2017-07-25,2017,7,206,2,5.8,38.0,393.1034482758621,14.0,4.666666666666667,cloudy,,,,,sonchamp,,Unknown,solo,rec@6:33,recovery,393.0,,,,0,2017,Running_Log_2017.xlsx
+2017-07-26,2017,7,207,3,8.7,57.0,393.1034482758621,11.0,4.666666666666667,cloudy,,,,,sonchamp,,Unknown,solo,rec@6:33,recovery,393.0,,,,0,2017,Running_Log_2017.xlsx
+2017-07-27,2017,7,208,4,5.5,38.0,414.54545454545456,12.0,4.0,cloudy,,,,,verbier,,Unknown,solo,rec@6:55,recovery,415.0,,,,0,2017,Running_Log_2017.xlsx
 2017-07-28,2017,7,209,5,7.2,42.0,350.0,21.0,4.0,clear,,,,,geneva,,Unknown,solo,"10j, 7080t@5:27 (0:00 rest/mi), 8j",tempo,,7080.0,327.0,tempo,0,2017,Running_Log_2017.xlsx
 2017-07-29,2017,7,210,6,6.0,39.0,390.0,16.0,4.666666666666667,clear,,,,,geneva,,Unknown,solo,rec@6:30,recovery,390.0,,,,0,2017,Running_Log_2017.xlsx
 2017-07-31,2017,7,212,1,8.7,58.0,400.00000000000006,26.0,4.666666666666667,clear,,,,,education hill,,Unknown,varsity,"15j, 7562t@5:57 (0:00 rest/mi), 15j",tempo,,7562.0,357.0,tempo,0,2017,Running_Log_2017.xlsx

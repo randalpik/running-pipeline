@@ -118,6 +118,7 @@ date,sleep_cycles,miles,minutes,temp_c,weather,workout_raw,partners,conditions,w
 2026-04-26,4.0,7.6,47.0,12.0,cloudy,rec@6:11,solo,dry,low,afternoon,Saucony Endorphin Speed 5,lakefront,149.7
 2026-04-27,4.0,6.4,41.0,13.0,overcast,rec@6:24,solo,wet,low,morning,Saucony Endorphin Speed 5,lakefront,150.2
 2026-04-28,4.0,8.0,49.0,16.0,cloudy,rec@6:07,solo,dry,low,afternoon,Saucony Endorphin Speed 5,lakefront,148.2
+2026-04-29,4.0,7.0,42.0,7.0,overcast,rec@6:00,solo,dry,moderate,late,Saucony Endorphin Speed 5,lakefront,150.2
 
 # section: changes
 date,race_seq,field,value,note
@@ -292,7 +293,7 @@ hudson waterfront,"New York, NY",Hudson Waterfront,,,
 indoor rec,"Nashville, TN",Vanderbilt Rec Center (indoors),,,
 ithaca,"Ithaca, NY",,,,
 kadoka,"Kadoka, SD",,,,
-kansas city,"Kansas City, MO",,,,
+kansas city,"Kansas City, KS",,,,
 kilauea,"Kilauea, HI",,,,
 kona,"Kailua-Kona, HI",,,,
 lake samm,"Redmond, WA",Lake Sammamish,,30.0,paved
@@ -342,6 +343,7 @@ round rundle,"Banff, AB",Round Rundle,,,
 seattle,"Seattle, WA",,,,
 seoul,"Seoul, KR",,,150.0,mixed
 shoreline,"Shoreline, WA",Shoreline Stadium,,,
+sonchamp,"Sonchamp, FR",,,,
 south boulder peak,"Boulder, CO",South Boulder Peak,,,
 south lakefront,"Chicago, IL",South Lakefront Trail,,30.0,paved
 stornoway,"Stornoway, UK",,,,
@@ -353,6 +355,7 @@ toronto,"Toronto, ON",,,,
 tunnel mountain,"Banff, AB",Tunnel Mountain,,,
 unity village,"Unity Village, MO",,,,
 vancouver,"Vancouver, BC",,,,
+verbier,"Verbier, CH",,,,
 watershed,"Redmond, WA",Watershed Preserve,,100.0,trail
 wedgewood,"Nashville, TN",Wedgewood Ave,,,
 westfield,"Westfield, NY",,,,
