@@ -2,7 +2,7 @@
 plot_training_quality.py — Interactive Plotly version of the training-quality
 visualization.
 
-Shows every workout (from workout_decomposed_v7.csv) and qualifying long run
+Shows every workout (from workout_decomposed.csv) and qualifying long run
 plotted at CS_implied + corrected residual, with the adaptive-Gaussian smoother
 track laid on top of the CS-implied 5K curve.
 
@@ -11,43 +11,27 @@ intended for pruning / outlier evaluation.
 """
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.shared.paths import DATA_DIR, OUTPUT_DIR
+
 
 # ---------- paths ----------
-def _resolve(name, candidates):
-    for c in candidates:
-        if Path(c).exists():
-            return c
-    raise SystemExit(f'Could not find {name}. Tried: {candidates}')
+WORKOUTS_PATH = DATA_DIR / 'workout_decomposed.csv'
+DAILY_PATH    = DATA_DIR / 'daily.csv'
+CS_PATH       = DATA_DIR / 'bayes_cs_summary.csv'
+OUTPUT_DIR.mkdir(exist_ok=True)
+OUT_HTML = str(OUTPUT_DIR / 'training_quality.html')
 
-
-def _resolve_out_dir():
-    for d in ['./output', '/mnt/user-data/outputs']:
-        p = Path(d)
-        if p.exists() and p.is_dir():
-            return p
-    p = Path('./output'); p.mkdir(exist_ok=True); return p
-
-
-WORKOUTS_PATH = _resolve('workout_decomposed_v7.csv', [
-    './output/workout_decomposed_v7.csv',
-    './workout_decomposed_v7.csv',
-    '/mnt/user-data/outputs/workout_decomposed_v7.csv',
-])
-DAILY_PATH = _resolve('daily.csv', [
-    './output/daily.csv', './daily.csv', '/mnt/project/daily.csv',
-])
-CS_PATH = _resolve('bayes_cs_summary_v11.csv', [
-    './output/bayes_cs_summary_v11.csv',
-    './bayes_cs_summary_v11.csv',
-    '/mnt/project/bayes_cs_summary_v11.csv',
-])
-OUT_HTML = str(_resolve_out_dir() / 'training_quality.html')
+for _required in (WORKOUTS_PATH, DAILY_PATH, CS_PATH):
+    if not _required.exists():
+        raise SystemExit(f'Could not find {_required}')
 
 # ---------- pipeline parameters (match training_unified_pipeline.py) ----------
 TAU = 210.0

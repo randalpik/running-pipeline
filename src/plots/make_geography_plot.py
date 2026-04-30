@@ -34,14 +34,18 @@ import colorsys
 import json
 import os
 import re
+import sys
+from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.shared.paths import DATA_DIR, OUTPUT_DIR
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_DAILY = '/mnt/project/daily.csv'
-DEFAULT_OUT   = './output'
+
+DEFAULT_DAILY = str(DATA_DIR / 'daily.csv')
+DEFAULT_OUT   = str(OUTPUT_DIR)
 
 PEAK_YEAR_THRESHOLD = 26.2
 

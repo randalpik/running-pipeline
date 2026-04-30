@@ -19,10 +19,10 @@ Surface controls color (Track/Road/XC/Downhill/Unknown).
 
 Workflow
 --------
-  python make_race_plots.py --tag v11
+  python src/plots/make_race_plots.py
 
-Default paths assume the script lives next to bayes_cs_summary_{tag}.csv,
-bayes_cs_params_{tag}.csv, races.csv. Override with --in-dir, --races, --out-dir.
+Defaults read CS fit outputs and races.csv from data/ and write the HTML
+into output/. Override with --in-dir, --races, --out-dir.
 
 Dependencies: pandas, numpy, scipy, plotly.
 """
@@ -30,22 +30,22 @@ import argparse
 import datetime as dt
 import os
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# Allow running from any directory while still importing the sibling module
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cs_projection import (load_cs_outputs, project_races_to_5k_pace,
-                            cs_line_at_anchor, cubic_at_anchor)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.shared.cs_projection import (load_cs_outputs, project_races_to_5k_pace,
+                                       cs_line_at_anchor, cubic_at_anchor)
 
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_IN_DIR = SCRIPT_DIR
-DEFAULT_RACES  = os.path.join(SCRIPT_DIR, 'races.csv')
-DEFAULT_OUT    = SCRIPT_DIR
+DEFAULT_IN_DIR = str(DATA_DIR)
+DEFAULT_RACES  = str(DATA_DIR / 'races.csv')
+DEFAULT_OUT    = str(OUTPUT_DIR)
 
 # Plot-specific short-distance calibration. The CS+D' projection
 # severely underestimates fitness from sub-mile races (peak-speed and
@@ -842,14 +842,14 @@ def reversed_pace_y_axis(**kwargs):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--in-dir', default=DEFAULT_IN_DIR,
-                   help='Directory containing bayes_cs_summary_{tag}.csv and '
-                        'bayes_cs_params_{tag}.csv (default: script dir).')
-    p.add_argument('--tag', default='v11',
-                   help='Fit tag suffix (default: v11).')
+                   help=f'Directory containing bayes_cs_summary{{tag}}.csv and '
+                        f'bayes_cs_params{{tag}}.csv (default: {DEFAULT_IN_DIR}).')
+    p.add_argument('--tag', default='',
+                   help='Fit tag suffix (default: empty / unversioned).')
     p.add_argument('--races', default=DEFAULT_RACES,
-                   help='Path to races.csv (default: script-dir/races.csv).')
+                   help=f'Path to races.csv (default: {DEFAULT_RACES}).')
     p.add_argument('--out-dir', default=DEFAULT_OUT,
-                   help='Output directory (default: script dir).')
+                   help=f'Output directory (default: {DEFAULT_OUT}).')
     return p.parse_args()
 
 

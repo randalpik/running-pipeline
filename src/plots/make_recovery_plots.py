@@ -73,11 +73,10 @@ feed the model. Daily rows whose location isn't in the locations sheet
 fall back to the raw log_location string.
 
 Workflow:
-  python make_recovery_plots.py --tag v11
+  python src/plots/make_recovery_plots.py
 
-Default paths assume the script lives next to bayes_cs_summary_{tag}.csv,
-bayes_cs_params_{tag}.csv, daily.csv, races.csv. Override with --in-dir,
---daily, --races, --out-dir.
+Defaults read CS fit outputs, daily.csv, and races.csv from data/ and write
+the HTML into output/. Override with --in-dir, --daily, --races, --out-dir.
 
 Dependencies: pandas, numpy, plotly.
 """
@@ -87,21 +86,22 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cs_projection import load_cs_outputs
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.shared.cs_projection import load_cs_outputs
 
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_IN_DIR = SCRIPT_DIR
-DEFAULT_DAILY  = os.path.join(SCRIPT_DIR, 'daily.csv')
-DEFAULT_RACES  = os.path.join(SCRIPT_DIR, 'races.csv')
-DEFAULT_OUT    = SCRIPT_DIR
+DEFAULT_IN_DIR = str(DATA_DIR)
+DEFAULT_DAILY  = str(DATA_DIR / 'daily.csv')
+DEFAULT_RACES  = str(DATA_DIR / 'races.csv')
+DEFAULT_OUT    = str(OUTPUT_DIR)
 
 
 # ---------- conditions / pruning excluded from fit ----------
@@ -234,7 +234,7 @@ def thin_yearly_ticks(x_lo, x_hi, max_labels=11):
 # ---------- main ----------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--tag', default='v11')
+    ap.add_argument('--tag', default='')
     ap.add_argument('--in-dir', default=DEFAULT_IN_DIR)
     ap.add_argument('--daily', default=DEFAULT_DAILY)
     ap.add_argument('--races', default=DEFAULT_RACES)
@@ -692,7 +692,8 @@ def main():
     # uncontaminated and represent the pace cost of each route at easy
     # effort. The elev/terrain model parameters from the cross-route
     # exploration are NOT exported here since they're a separate analysis.
-    betas_csv = os.path.join(args.out_dir, f'route_betas_{args.tag}.csv')
+    suffix = f'_{args.tag}' if args.tag else ''
+    betas_csv = os.path.join(args.out_dir, f'route_betas{suffix}.csv')
     betas_df = pd.DataFrame([
         {'route': r, 'n': int(route_counts[r]), 'beta_sec_per_mi': betas[route_col_map[r]]}
         for r in qualifying_routes

@@ -27,15 +27,20 @@ Weight MA visibility:
 import argparse
 import json
 import os
+import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.shared.paths import DATA_DIR, OUTPUT_DIR
 
-DEFAULT_DAILY = '/mnt/project/daily.csv'
-DEFAULT_OUT = './output'
+
+DEFAULT_DAILY = str(DATA_DIR / 'daily.csv')
+DEFAULT_OUT = str(OUTPUT_DIR)
 START_DATE = '2016-01-01'
 
 MA_WINDOW = {'volume': 56, 'temp': 28, 'weight': 56}

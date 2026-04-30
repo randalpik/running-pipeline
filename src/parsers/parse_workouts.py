@@ -2,16 +2,19 @@
 parse_workouts.py — Decompose quality workouts from daily.csv into
                     (date, type, rep_dist, rep_count, pace_per_mile, rest_per_mile).
 
-Output: workout_decomposed_v7.csv  (replaces workout_vdot_v6.csv, no VDOT column)
-        workout_pruned_v7.csv      (rows that didn't make it, with reasons)
+Output: workout_decomposed.csv  (one row per resolved quality workout)
+        workout_pruned.csv      (rows that didn't make it, with reasons)
 
-Source resolution: prefers /mnt/project/daily.csv (build_dataset.py output);
-falls back to ./daily.csv if the project copy is missing.
+Reads daily.csv from data/ and writes both outputs alongside it.
 """
+import sys
 import pandas as pd
 import re
 from pathlib import Path
 from datetime import date
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.shared.paths import DATA_DIR
 
 MILE_M = 1609.344
 
@@ -253,49 +256,26 @@ def decompose(daily_df):
     return pd.DataFrame(results), pd.DataFrame(pruned)
 
 
-def resolve_daily_path():
-    candidates = ['./output/daily.csv', './daily.csv',
-                  '/mnt/project/daily.csv', '/home/claude/daily.csv']
-    for p in candidates:
-        if Path(p).exists():
-            return p
-    raise SystemExit(
-        'Could not find daily.csv. Tried: ' + ', '.join(candidates) + '. '
-        'Run build_dataset.py first to produce daily.csv.'
-    )
-
-
-def resolve_out_dir():
-    """Prefer ./output/ if it exists (project convention), else /mnt/user-data/outputs
-    if writable, else current directory."""
-    for d in ['./output', '/mnt/user-data/outputs']:
-        try:
-            p = Path(d)
-            if p.exists() and p.is_dir():
-                return p
-        except Exception:
-            pass
-    p = Path('./output')
-    p.mkdir(exist_ok=True)
-    return p
-
-
 def main():
-    src = resolve_daily_path()
+    src = DATA_DIR / 'daily.csv'
+    if not src.exists():
+        raise SystemExit(
+            f'Could not find {src}. Run build_dataset.py first to produce daily.csv.'
+        )
     print(f'Source: {src}')
     daily = pd.read_csv(src)
     decomposed, pruned = decompose(daily)
 
-    out_dir = resolve_out_dir()
-
     decomposed = decomposed.sort_values('date').reset_index(drop=True)
     pruned = pruned.sort_values('date').reset_index(drop=True) if len(pruned) else pruned
 
-    decomposed.to_csv(out_dir / 'workout_decomposed_v7.csv', index=False)
-    pruned.to_csv(out_dir / 'workout_pruned_v7.csv', index=False)
+    decomposed_path = DATA_DIR / 'workout_decomposed.csv'
+    pruned_path = DATA_DIR / 'workout_pruned.csv'
+    decomposed.to_csv(decomposed_path, index=False)
+    pruned.to_csv(pruned_path, index=False)
 
-    print(f'Wrote {out_dir}/workout_decomposed_v7.csv  ({len(decomposed)} rows)')
-    print(f'Wrote {out_dir}/workout_pruned_v7.csv      ({len(pruned)} rows)')
+    print(f'Wrote {decomposed_path}  ({len(decomposed)} rows)')
+    print(f'Wrote {pruned_path}      ({len(pruned)} rows)')
     print()
     print('Type counts:')
     print(decomposed['type'].value_counts().to_string())

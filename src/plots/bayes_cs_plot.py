@@ -16,12 +16,13 @@ XC race times are pre-corrected by dividing by (1 + xc_correction) before
 projection — same correction the fit script applies before fitting — so XC
 diamonds visually align with the CS line.
 
-Default behavior: looks in ./bayes_out/ for sibling files matching the --tag.
+Default behavior: reads CS fit outputs from data/ (the bayes fit's default
+output directory) and writes the HTML to output/.
 
 Usage:
-  python bayes_cs_plot.py --tag v9
-  python bayes_cs_plot.py --in-dir /path/to/outputs --tag v9
-  python bayes_cs_plot.py --in-dir bayes_out --races my_races.csv --exclusions my_excl.csv
+  python src/plots/bayes_cs_plot.py
+  python src/plots/bayes_cs_plot.py --tag v9
+  python src/plots/bayes_cs_plot.py --in-dir /path/to/outputs --tag v9
 
 Required dependencies:
   pip install pandas numpy scipy plotly
@@ -31,20 +32,18 @@ import json
 import os
 import sys
 import datetime as dt
+from pathlib import Path
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-# Allow running this script from any directory while still importing the
-# sibling cs_projection module.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cs_projection import load_cs_outputs, project_races_to_5k_pace
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.shared.cs_projection import load_cs_outputs, project_races_to_5k_pace
 
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_IN_DIR     = os.path.join(SCRIPT_DIR, 'bayes_out')
-DEFAULT_RACES      = os.path.join(SCRIPT_DIR, 'races.csv')
-DEFAULT_EXCLUSIONS = os.path.join(SCRIPT_DIR, 'cs_exclusions_v7.csv')
+DEFAULT_IN_DIR = str(DATA_DIR)
+DEFAULT_RACES  = str(DATA_DIR / 'races.csv')
 
 
 def sec_to_mss(s):
@@ -91,15 +90,13 @@ def sec_to_mss_full(s):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--in-dir', default=DEFAULT_IN_DIR,
-                   help='Directory containing fit outputs (default ./bayes_out)')
+                   help=f'Directory containing fit outputs (default {DEFAULT_IN_DIR})')
     p.add_argument('--tag', default='',
                    help='Tag suffix matching the fit run (e.g. "v9")')
     p.add_argument('--races', default=DEFAULT_RACES,
                    help='Path to races.csv used by the fit')
-    p.add_argument('--exclusions', default=DEFAULT_EXCLUSIONS,
-                   help='Path to exclusions CSV used by the fit')
     p.add_argument('--out', default=None,
-                   help='Output HTML path (default: cs_timeline{tag}.html in --in-dir)')
+                   help=f'Output HTML path (default: cs_timeline{{tag}}.html in {OUTPUT_DIR})')
     return p.parse_args()
 
 
@@ -118,11 +115,7 @@ def main():
     # ---------- load and filter races ----------
     if not os.path.exists(args.races):
         sys.exit(f"ERROR: races file not found: {args.races}")
-    if not os.path.exists(args.exclusions):
-        sys.exit(f"ERROR: exclusions file not found: {args.exclusions}")
     races = pd.read_csv(args.races, parse_dates=['date'])
-    excl = pd.read_csv(args.exclusions, parse_dates=['date'])
-    excl_dates = set(excl['date'].dt.date)
     races['date_d'] = races['date'].dt.date
 
     if 'fatigued' not in races.columns:
@@ -133,7 +126,6 @@ def main():
     elig = races[
         (~races['fatigued'].astype(bool)) &
         (races['surface'] != 'Downhill') &
-        (~races['date_d'].isin(excl_dates)) &
         (races['time_sec'] >= 120)
     ].copy().sort_values('date')
     print(f"Eligible races: {len(elig)}")
@@ -284,7 +276,7 @@ def main():
                    tickmode='array', tickvals=ytick_vals, ticktext=ytick_txt,
                    showgrid=True, gridcolor='#333'))
 
-    out_html = args.out or os.path.join(args.in_dir, f'cs_timeline{suffix}.html')
+    out_html = args.out or str(OUTPUT_DIR / f'cs_timeline{suffix}.html')
     os.makedirs(os.path.dirname(out_html) or '.', exist_ok=True)
     fig.write_html(out_html, include_plotlyjs=True, full_html=True,
                    config={'responsive': True})

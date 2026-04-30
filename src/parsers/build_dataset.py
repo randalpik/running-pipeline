@@ -22,7 +22,7 @@ USAGE:
   # Override current year (auto-detected from snapshot header by default):
   python build_dataset.py --current-year 2026
 
-Snapshot auto-fetch writes to ./output/drive_snapshot.csv by default.
+Snapshot auto-fetch writes to data/drive_snapshot.csv by default.
 
 Validation: after the build, any race missing a city-state location or an
 event name is reported. The goal is every race having both.
@@ -31,8 +31,12 @@ import argparse
 import os
 import sys
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.shared.paths import DATA_DIR
 
 from running_log_parser import (
     DAILY_COLUMNS,
@@ -50,20 +54,9 @@ from running_log_parser import (
 from snapshot import read_snapshot, find_snapshot
 
 
-DEFAULT_OUT_DIR = "./output"
-
-HISTORICAL_CANDIDATES = [
-    "/mnt/project/historical_daily.csv",
-    "/mnt/user-data/uploads/historical_daily.csv",
-    "./output/historical_daily.csv",
-    "./historical_daily.csv",
-]
-SNAPSHOT_CANDIDATES = [
-    "/mnt/project/drive_snapshot.csv",
-    "/mnt/user-data/uploads/drive_snapshot.csv",
-    "./output/drive_snapshot.csv",
-    "./drive_snapshot.csv",
-]
+DEFAULT_OUT_DIR = str(DATA_DIR)
+DEFAULT_HISTORICAL = str(DATA_DIR / "historical_daily.csv")
+DEFAULT_SNAPSHOT   = str(DATA_DIR / "drive_snapshot.csv")
 
 
 def _validate_races(races):
@@ -192,25 +185,23 @@ def main():
     args = p.parse_args()
 
     # ---------- resolve inputs ----------
-    historical = args.historical or find_snapshot(HISTORICAL_CANDIDATES)
+    historical = args.historical or find_snapshot([DEFAULT_HISTORICAL])
     if not historical:
-        print("ERROR: historical_daily.csv not found. Pass --historical PATH or "
-              "place at one of:", file=sys.stderr)
-        for c in HISTORICAL_CANDIDATES:
-            print(f"  {c}", file=sys.stderr)
+        print(f"ERROR: historical_daily.csv not found. Pass --historical PATH or "
+              f"place at {DEFAULT_HISTORICAL}", file=sys.stderr)
         sys.exit(1)
 
     # Snapshot resolution:
     #   1. --snapshot PATH (explicit, always wins)
-    #   2. find_snapshot(CANDIDATES), unless --refresh-snapshot
+    #   2. find_snapshot at DEFAULT_SNAPSHOT, unless --refresh-snapshot
     #   3. auto-fetch from Drive, unless --no-fetch
     snapshot_path = args.snapshot
     if not snapshot_path and not args.refresh_snapshot:
-        snapshot_path = find_snapshot(SNAPSHOT_CANDIDATES)
+        snapshot_path = find_snapshot([DEFAULT_SNAPSHOT])
 
     if not snapshot_path and not args.no_fetch:
         year_for_fetch = args.current_year or date.today().year
-        out_path = os.path.abspath("./output/drive_snapshot.csv")
+        out_path = DEFAULT_SNAPSHOT
         print(f"[build] no local snapshot found — fetching year {year_for_fetch} "
               f"from Drive...")
         try:
@@ -229,10 +220,9 @@ def main():
             sys.exit(1)
 
     if not snapshot_path:
-        print("ERROR: drive_snapshot.csv not found and --no-fetch was set. "
-              "Pass --snapshot PATH or place at one of:", file=sys.stderr)
-        for c in SNAPSHOT_CANDIDATES:
-            print(f"  {c}", file=sys.stderr)
+        print(f"ERROR: drive_snapshot.csv not found and --no-fetch was set. "
+              f"Pass --snapshot PATH or place at {DEFAULT_SNAPSHOT}",
+              file=sys.stderr)
         sys.exit(1)
 
     print(f"[build] historical  = {historical}")

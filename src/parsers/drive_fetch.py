@@ -35,6 +35,11 @@ ALTERNATIVE — rclone:
 """
 import os
 import io
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.shared.paths import DATA_DIR, OUTPUT_DIR
 
 
 # Known Drive IDs for Max's running log data
@@ -195,8 +200,8 @@ def main():
                        help="Fetch current-year log + adjustments, emit snapshot CSV")
     s.add_argument("--year", type=int, required=True,
                    help="Current year to fetch (e.g. 2026)")
-    s.add_argument("--out", default="./output/drive_snapshot.csv",
-                   help="Output snapshot CSV path (default: ./output/drive_snapshot.csv)")
+    s.add_argument("--out", default=str(DATA_DIR / "drive_snapshot.csv"),
+                   help=f"Output snapshot CSV path (default: {DATA_DIR / 'drive_snapshot.csv'})")
     s.add_argument("--keep-xlsx", action="store_true",
                    help="Keep the downloaded xlsx files for inspection")
     s.add_argument("--work-dir",
@@ -208,8 +213,8 @@ def main():
     h.add_argument("--start-year", type=int, default=2016)
     h.add_argument("--end-year", type=int, required=True,
                    help="Last year to fetch (inclusive)")
-    h.add_argument("--out-dir", default="./output/logs",
-                   help="Directory to download xlsx into (default: ./output/logs)")
+    h.add_argument("--out-dir", default=str(OUTPUT_DIR / "logs"),
+                   help=f"Directory to download xlsx into (default: {OUTPUT_DIR / 'logs'})")
     h.set_defaults(func=_cmd_fetch_historical)
 
     args = p.parse_args()

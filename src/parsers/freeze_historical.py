@@ -34,8 +34,12 @@ import os
 import sys
 import tempfile
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.shared.paths import DATA_DIR
 
 from running_log_parser import (
     AUTHORITATIVE_TOTALS,
@@ -46,7 +50,7 @@ from running_log_parser import (
 )
 
 
-DEFAULT_OUT = "./output/historical_daily.csv"
+DEFAULT_OUT = str(DATA_DIR / "historical_daily.csv")
 # range is exclusive on the upper bound, so this covers 2016 through last
 # completed year. At refreeze time (typically early in a new year), the prior
 # year has just finalized and will be included; the current in-progress year

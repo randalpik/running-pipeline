@@ -11,21 +11,20 @@ time series — full-rank Latent GP is O(N³) per leapfrog and infeasible at
 
 USAGE (local run):
     pip install pymc==5.* arviz pandas numpy scipy plotly
-    cd <dir containing races.csv>
-    python bayes_cs_fit.py
+    python src/models/bayes_cs_fit.py
 
-By default, looks for `races.csv` in the same directory as the script.
-Override with --races if needed. Exclusions are derived automatically
-from the eligible race set (see derive_exclusions below) — no manual
-exclusion file is consumed.
+By default, reads `races.csv` from `data/` and writes outputs there too.
+Override with --races / --out-dir if needed. Exclusions are derived
+automatically from the eligible race set (see derive_exclusions below) —
+no manual exclusion file is consumed.
 
 Inputs:
     races.csv (or --races PATH)
         Required columns: date, distance_m, time_sec
         Optional columns: fatigued, surface, event
-        This is the same file produced by build_dataset.py (output/races.csv).
+        This is the same file produced by build_dataset.py (data/races.csv).
 
-Outputs (in --out-dir, default ./bayes_out):
+Outputs (in --out-dir, default data/):
     bayes_cs_summary.csv          One row per grid point with median + 50/95% intervals
     bayes_cs_residuals.csv        One row per race: predicted vs actual time, residual
     bayes_cs_posterior.nc         Full InferenceData for any deeper analysis
@@ -40,14 +39,18 @@ import os
 import sys
 import time as tclock
 import datetime as dt
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import pymc as pm
 import arviz as az
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.shared.paths import DATA_DIR
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_RACES = os.path.join(SCRIPT_DIR, 'races.csv')
+
+DEFAULT_RACES   = str(DATA_DIR / 'races.csv')
+DEFAULT_OUT_DIR = str(DATA_DIR)
 
 
 def build_eligible(races_path):
@@ -257,7 +260,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     p.add_argument('--races', default=DEFAULT_RACES,
                    help=f'Path to races.csv (default: {DEFAULT_RACES})')
-    p.add_argument('--out-dir', default=os.path.join(SCRIPT_DIR, 'bayes_out'))
+    p.add_argument('--out-dir', default=DEFAULT_OUT_DIR,
+                   help=f'Output directory (default: {DEFAULT_OUT_DIR})')
     p.add_argument('--grid-step', type=int, default=7,
                    help='Days between inference grid points (default 7)')
     p.add_argument('--m-basis', type=int, default=100,
