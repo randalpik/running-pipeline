@@ -864,6 +864,7 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
       var ttW = tt.offsetWidth, ttH = tt.offsetHeight;
       var x = e.clientX + 14, y = e.clientY + 12;
       if (x + ttW > window.innerWidth)  x = e.clientX - ttW - 14;
+      if (y + ttH > window.innerHeight) y = window.innerHeight - ttH - 10;
       tt.style.transform = 'translate(' + x + 'px,' + y + 'px)';
 
       var pitch = bg.w / GEO[mode].bins.length;

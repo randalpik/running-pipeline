@@ -55,21 +55,49 @@ XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 NATIVE_SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
 
 
+def _abort_with_reauth_instructions(reason: str) -> 'None':
+    """Print a clean message + exit non-zero. Used when the cached token is
+    unrecoverable (expired refresh-token, revoked grant, corrupted file).
+    The message tells the user exactly how to recover; no stack trace."""
+    sys.stderr.write(
+        f"\nERROR: Drive auth failed — {reason}\n\n"
+        f"Refresh the token by deleting the cache and re-running:\n"
+        f"    rm {TOKEN_PATH}\n"
+        f"    ./scripts/run_pipeline.sh\n\n"
+        f"The first re-run will open a browser for Google OAuth consent\n"
+        f"and write a fresh ~/.config/running-log/token.json.\n"
+    )
+    sys.exit(1)
+
+
 def get_drive_service():
-    """Authenticate and return a Drive API service object. Caches token between runs."""
+    """Authenticate and return a Drive API service object. Caches token between runs.
+
+    Aborts cleanly (no traceback) on token failures: expired refresh-token,
+    revoked grant, or unreadable cache file. The error message tells the
+    user how to re-authenticate.
+    """
     # Imports deferred so the rest of the pipeline doesn't require google-auth when unused
     from googleapiclient.discovery import build
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
+    from google.auth.exceptions import RefreshError
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     os.makedirs(CONFIG_DIR, exist_ok=True)
     creds = None
     if os.path.exists(TOKEN_PATH):
-        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+        try:
+            creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+        except (ValueError, KeyError) as e:
+            _abort_with_reauth_instructions(f"cached token unreadable ({e})")
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except RefreshError as e:
+                _abort_with_reauth_instructions(
+                    f"refresh token expired or revoked ({e})")
         else:
             if not os.path.exists(CREDENTIALS_PATH):
                 raise FileNotFoundError(
