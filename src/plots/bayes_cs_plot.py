@@ -128,7 +128,25 @@ def main():
         (races['surface'] != 'Downhill') &
         (races['time_sec'] >= 120)
     ].copy().sort_values('date')
-    print(f"Eligible races: {len(elig)}")
+    print(f"Hard-eligible races: {len(elig)}")
+
+    # Apply the same auto-exclusions the fit applied. Match the fit's composite
+    # key (date, distance_m) — see bayes_cs_fit.py.
+    excl_path = os.path.join(args.in_dir, f'bayes_cs_auto_exclusions{suffix}.csv')
+    if os.path.exists(excl_path):
+        excl_df = pd.read_csv(excl_path, parse_dates=['date'])
+        if len(excl_df):
+            excl_keys = set(zip(excl_df['date'].dt.date,
+                                excl_df['distance_m'].astype(int)))
+            elig['_key'] = list(zip(elig['date'].dt.date,
+                                    elig['distance_m'].astype(int)))
+            n_before = len(elig)
+            elig = elig[~elig['_key'].isin(excl_keys)].drop(columns=['_key'])
+            print(f"Applied {len(excl_df)} auto-exclusions: "
+                  f"{n_before} -> {len(elig)} races")
+    else:
+        print(f"WARNING: no auto-exclusions file at {excl_path} — "
+              f"plot will show all hard-eligible races")
 
     # ---------- truncate to plotting window + project races to 5K-equivalent ----------
     # The CS plot truncates to >= 2013-06-01; pre-2013 has very few datapoints
