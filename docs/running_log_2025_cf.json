@@ -1,0 +1,107 @@
+{
+  "source_file": "Running_Log_2025.xlsx",
+  "rules": {
+    "weather": {
+      "clear": "#CFE2F3",
+      "cloudy": "#CCCCCC",
+      "overcast": "#999999",
+      "foggy": "#EFEFEF",
+      "light rain": "#6D9EEB",
+      "heavy rain": "#1155CC",
+      "flurries": "#B4A7D6",
+      "inside": "#B6D7A8",
+      "smoky": "#E1D7C5"
+    },
+    "workout": {
+      "rec": "#D9EAD3",
+      "long": "#D9D2E9",
+      "t@": "#FFF2CC",
+      "i@": "#FFE599",
+      "r@": "#F9CB9C",
+      "hc-": "#CFE2F3",
+      "hr-": "#A2C4C9",
+      "race@": "#EA9999",
+      "f@": "#FCE5CD"
+    },
+    "partners": {
+      "solo": "#D9D9D9",
+      "friends": "#B4A7D6",
+      "team": "#EA9999"
+    },
+    "time_of_day": {
+      "early": "#073763",
+      "morning": "#EAD1DC",
+      "afternoon": "#FFF2CC",
+      "late": "#20124D"
+    },
+    "conditions": {
+      "wet": "#6D9EEB",
+      "muddy": "#A36F06",
+      "snow": "#D9D2E9",
+      "icy": "#CFE2F3",
+      "inside": "#B6D7A8"
+    },
+    "wind": {
+      "low": "#D9EAD3",
+      "moderate": "#FCE5CD",
+      "high": "#F4CCCC",
+      "extreme": "#000000"
+    }
+  },
+  "gradients": {
+    "sleep_cycles": [
+      {
+        "at": 0,
+        "color": "#C00000"
+      },
+      {
+        "at": 8,
+        "color": "#00B050"
+      }
+    ],
+    "miles": [
+      {
+        "at": 0,
+        "color": "#FFF2CC"
+      },
+      {
+        "at": "max",
+        "color": "#F1C232"
+      }
+    ],
+    "minutes": [
+      {
+        "at": 0,
+        "color": "#E6B8AF"
+      },
+      {
+        "at": "max",
+        "color": "#CC4125"
+      }
+    ],
+    "temp": [
+      {
+        "at": -10,
+        "color": "#00B0F0"
+      },
+      {
+        "at": 22,
+        "color": "#92D050"
+      },
+      {
+        "at": 40,
+        "color": "#FF0000"
+      }
+    ],
+    "weight_lbs": [
+      {
+        "at": 150,
+        "color": "#FFFFFF"
+      },
+      {
+        "at": 180,
+        "color": "#E69138"
+      }
+    ]
+  }
+}

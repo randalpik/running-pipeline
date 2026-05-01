@@ -298,7 +298,7 @@ def main():
     print(f"Watching {len(plot_scripts)} plot scripts + src/shared/*.py "
           "+ src/plotting/**/* + data/*.csv")
     print("Ctrl-C to stop.")
-    server.serve(root=str(OUTPUT_DIR), port=PORT, open_url_delay=1)
+    server.serve(root=str(OUTPUT_DIR), port=PORT)
 
 
 if __name__ == "__main__":
