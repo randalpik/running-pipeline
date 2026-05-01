@@ -95,6 +95,11 @@ from plotly.subplots import make_subplots
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
+                            title_block, TITLE_MARGIN_TOP,
+                            sec_to_mss, FG,
+                            CS_LINE, CS_LINE_WIDTH, TREND_LINE, TREND_WIDTH,
+                            GRID, gaussian_rolling_trend)
 from src.shared.cs_projection import load_cs_outputs
 
 
@@ -153,10 +158,6 @@ MIN_ROUTE_N            = 13
 MARATHON_DISTANCE_M    = 42000
 
 
-CS_LINE_COLOR = 'rgb(255,180,80)'
-CS_LINE_WIDTH = 2.5
-TREND_COLOR   = 'rgb(220,220,220)'
-TREND_WIDTH   = 2.0
 TREND_SMOOTH_SIGMA_DAYS = 28  # Gaussian σ; FWHM ≈ 66d, ~95% mass within ±56d
 
 
@@ -201,15 +202,11 @@ def sanitize_route(name):
     s = re.sub(r'[^a-z0-9]+', '_', str(name).lower()).strip('_')
     return f'rt_{s}'
 
-def sec_to_mss(s):
-    if s is None or pd.isna(s):
-        return ''
-    sign = '-' if s < 0 else ''
-    s = abs(int(round(float(s))))
-    return f'{sign}{s // 60}:{s % 60:02d}'
-
-
 def signed_sec(s):
+    """Plot-local signed-seconds formatter — emits ``+30`` / ``-30`` (no
+    M:SS conversion). Differs from formatters.signed_sec, which emits
+    ``+0:30`` / ``-0:30``. Recovery's residual ticks and hover already
+    carry the ``sec/mi`` label so a count is clearer than a duration."""
     if s is None or pd.isna(s):
         return ''
     s = int(round(float(s)))
@@ -451,12 +448,12 @@ def main():
                               (cs_summary['date'] <= rec['date'].max())].copy()
 
     def build_hover(row):
-        date_label = f"{row['date'].date()} ({row['date'].strftime('%a')})"
-        parts = [f"<b>{date_label}</b>",
-                 f"Pace: {sec_to_mss(row['recovery_pace_sec_per_mi'])}/mi  "
-                 f"({row['miles']:.1f} mi)",
-                 f"CS pace: {sec_to_mss(row['cs_pace_sec'])}/mi",
-                 f"Residual: {signed_sec(row['residual_raw'])} sec/mi"]
+        # Per-run HTML for the smart-spikeline scaffold's snap mode and the
+        # smooth-mode "Nearest run" section. The cursor scaffold renders the
+        # date and the CS-pace/Trend-pace/CS-residual/Trend-residual rows
+        # itself, so this content focuses on what's run-specific.
+        parts = [f"Pace: {sec_to_mss(row['recovery_pace_sec_per_mi'])}/mi  "
+                 f"({row['miles']:.1f} mi)"]
         if pd.notna(row.get('temp_c')):
             parts.append(f"Temp: {row['temp_c']:.0f}°C")
         loc = row.get('location')
@@ -514,26 +511,40 @@ def main():
 
     fig.add_trace(go.Scatter(
         x=cs_for_plot['date'], y=cs_for_plot['cs_pace_sec'],
-        mode='lines', line=dict(color=CS_LINE_COLOR, width=CS_LINE_WIDTH),
+        mode='lines', line=dict(color=CS_LINE, width=CS_LINE_WIDTH),
         name='CS pace', hoverinfo='skip', showlegend=True,
         meta={'role': 'reference'},
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=[rec['date'].min(), rec['date'].max()], y=[0, 0],
-        mode='lines', line=dict(color=CS_LINE_COLOR, width=CS_LINE_WIDTH),
+        mode='lines', line=dict(color=CS_LINE, width=CS_LINE_WIDTH),
         name='Zero', hoverinfo='skip', showlegend=False,
         meta={'role': 'reference'},
     ), row=1, col=2)
 
+    # Pre-compute the initial (no-normalization-applied, no-hides-applied)
+    # trend so the line renders on first paint. The JS rollingTrend reruns
+    # with the same algorithm whenever the user toggles a factor or filter.
+    rec_dates_ms = np.array([d.value // 10**6 for d in rec['date']],
+                            dtype=np.int64)
+    init_pace_x, init_pace_y = gaussian_rolling_trend(
+        rec_dates_ms, rec['recovery_pace_sec_per_mi'].values,
+        sigma_days=TREND_SMOOTH_SIGMA_DAYS)
+    init_resid_x, init_resid_y = gaussian_rolling_trend(
+        rec_dates_ms, rec['residual_raw'].values,
+        sigma_days=TREND_SMOOTH_SIGMA_DAYS)
+    init_pace_dates  = pd.to_datetime(init_pace_x,  unit='ms')
+    init_resid_dates = pd.to_datetime(init_resid_x, unit='ms')
+
     fig.add_trace(go.Scatter(
-        x=[], y=[], mode='lines',
-        line=dict(color=TREND_COLOR, width=TREND_WIDTH),
+        x=init_pace_dates, y=init_pace_y, mode='lines',
+        line=dict(color=TREND_LINE, width=TREND_WIDTH),
         name='Trend', hoverinfo='skip', showlegend=True,
         meta={'role': 'trend_pace'},
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
-        x=[], y=[], mode='lines',
-        line=dict(color=TREND_COLOR, width=TREND_WIDTH),
+        x=init_resid_dates, y=init_resid_y, mode='lines',
+        line=dict(color=TREND_LINE, width=TREND_WIDTH),
         name='Trend', hoverinfo='skip', showlegend=False,
         meta={'role': 'trend_resid'},
     ), row=1, col=2)
@@ -548,6 +559,12 @@ def main():
         rec['contrib_era'].values,
     ], axis=1).tolist()
 
+    # Snap HTML lives on the residual trace's text field — same content as
+    # the pace trace's, since both panels represent the same run. (The
+    # per-trace hover html lookup falls back to text when customdata is a
+    # structured array, which is the case here — customdata holds the
+    # factor-contribution vector used by update().)
+    hover_html = rec['_hover'].tolist()
     fig.add_trace(go.Scatter(
         x=rec['date'],
         y=rec['recovery_pace_sec_per_mi'],
@@ -560,11 +577,12 @@ def main():
             line=dict(width=0),
         ),
         customdata=contrib_arr,
-        text=rec['_hover'].tolist(),
-        hovertemplate='%{text}<extra></extra>',
+        text=hover_html,
+        hoverinfo='skip',
         name='Recovery (pace)',
         showlegend=False,
         meta={'role': 'pace',
+              'snap_eligible': True,
               'raw_y': rec['recovery_pace_sec_per_mi'].tolist()},
     ), row=1, col=1)
 
@@ -580,11 +598,12 @@ def main():
             line=dict(width=0),
         ),
         customdata=contrib_arr,
-        text=rec['_hover'].tolist(),
-        hovertemplate='%{text}<extra></extra>',
+        text=hover_html,
+        hoverinfo='skip',
         name='Recovery (residual)',
         showlegend=False,
         meta={'role': 'residual',
+              'snap_eligible': True,
               'raw_y': rec['residual_raw'].tolist(),
               'date_ms': [int(d.value // 10**6) for d in rec['date']],
               'is_bad_cond': rec['is_bad_cond'].astype(bool).tolist(),
@@ -610,37 +629,34 @@ def main():
     for col in (1, 2):
         fig.update_xaxes(tickvals=tickvals_x, ticktext=ticktext_x,
                           range=[x_lo, x_hi],
-                          gridcolor='rgba(255,255,255,0.08)',
+                          gridcolor=GRID,
                           row=1, col=col)
 
     fig.update_yaxes(tickvals=left_ticks,
                       ticktext=[sec_to_mss(t) for t in left_ticks],
                       range=[left_y_hi, left_y_lo],
                       title_text='Recovery pace (per mile)',
-                      gridcolor='rgba(255,255,255,0.08)',
+                      gridcolor=GRID,
                       row=1, col=1)
     fig.update_yaxes(tickvals=right_ticks,
                       ticktext=[signed_sec(t) if t != 0 else '0' for t in right_ticks],
                       range=[right_y_hi, right_y_lo],
                       title_text='Residual (sec/mi above CS)',
-                      gridcolor='rgba(255,255,255,0.08)',
+                      gridcolor=GRID,
                       zeroline=False,
                       row=1, col=2)
 
-    title_text = ('Recovery runs vs. race fitness'
-                  '<br><sub style="font-size:13px;color:#bbb">'
-                  'Absolute pace and relative fitness signal, '
-                  'controlling for combinations of factors'
-                  '</sub>')
-    fig.update_layout(
-        title=dict(text=title_text, x=0.5, xanchor='center', y=0.965,
-                    yanchor='top'),
-        plot_bgcolor='#1a1a1a',
-        paper_bgcolor='#1a1a1a',
-        font=dict(color='#eee', size=12),
-        margin=dict(l=70, r=300, t=110, b=70),
+    apply_default_layout(
+        fig,
+        title=title_block(
+            'Recovery runs vs. race fitness',
+            'Absolute pace and relative fitness signal, '
+            'controlling for combinations of factors',
+        ),
+        font=dict(color=FG, size=12),
+        margin=dict(l=70, r=300, t=TITLE_MARGIN_TOP, b=70),
         hoverlabel=dict(bgcolor='#222', bordercolor='#555',
-                        font=dict(color='#eee', size=12)),
+                        font=dict(color=FG, size=12)),
         hovermode='closest',
         showlegend=True,
         legend=dict(
@@ -648,7 +664,7 @@ def main():
             y=0.10, yanchor='top',  # just below the colorbar (which ends at y≈0.15)
             bgcolor='rgba(26,26,26,0)',
             bordercolor='rgba(0,0,0,0)',
-            font=dict(color='#eee', size=11),
+            font=dict(color=FG, size=11),
             itemsizing='constant',
         ),
         coloraxis=dict(
@@ -662,29 +678,177 @@ def main():
             cmin=-10, cmax=40,
             colorbar=dict(
                 title=dict(text='°C', side='right',
-                            font=dict(color='#eee', size=11)),
+                            font=dict(color=FG, size=11)),
                 orientation='v', x=1.005, xanchor='left',
                 y=0.45, yanchor='top',  # below the toolbar's typical footprint
                 len=0.30, thickness=10,
                 tickvals=[-10, 0, 10, 22, 30, 40],
-                tickfont=dict(color='#eee', size=10),
+                tickfont=dict(color=FG, size=10),
                 outlinewidth=0,
             ),
         ),
     )
     for ann in fig['layout']['annotations']:
-        ann['font'] = dict(color='#eee', size=14)
+        ann['font'] = dict(color=FG, size=14)
+
+    # ---------- spikeline tooltip payload ----------
+    # Per-day arrays the JS uses for the trend section, plus a sorted list
+    # of sessions for nearest-run lookup. Both smooth and snap modes read
+    # from the same payload — the only difference is the snap path uses
+    # the snapped point's day directly (so trend rows reflect that exact
+    # day) and skips the date header + "Nearest run" caption.
+    js_epoch = pd.Timestamp('1970-01-01')
+    plot_start = pd.Timestamp(rec['date'].min().normalize() - pd.Timedelta(days=30))
+    plot_end   = pd.Timestamp(rec['date'].max().normalize() + pd.Timedelta(days=30))
+    grid_dates = pd.date_range(plot_start, plot_end, freq='D')
+    grid_day_idx = ((grid_dates - js_epoch).days).astype(int)
+
+    def _interp_to_grid(xs_ms, ys):
+        if len(xs_ms) == 0:
+            return [None] * len(grid_day_idx)
+        xs_day = xs_ms.astype(np.float64) / 86_400_000.0
+        out = np.interp(grid_day_idx.astype(float), xs_day, ys,
+                        left=np.nan, right=np.nan)
+        return [None if np.isnan(v) else round(float(v), 2) for v in out]
+
+    cs_pace_per_day    = _interp_to_grid(
+        np.array([d.value // 10**6 for d in cs_for_plot['date']], dtype=np.int64),
+        cs_for_plot['cs_pace_sec'].values)
+    trend_pace_per_day = _interp_to_grid(init_pace_x,  init_pace_y)
+    trend_resid_per_day = _interp_to_grid(init_resid_x, init_resid_y)
+
+    sessions = []
+    for _, r in rec.iterrows():
+        sessions.append({
+            'day':   int((r['date'] - js_epoch).days),
+            'resid': float(r['residual_raw']) if pd.notna(r['residual_raw']) else None,
+            'html':  r['_hover'],
+        })
+    sessions.sort(key=lambda s: s['day'])
+
+    payload = {
+        'first_day':   int(grid_day_idx[0]),
+        'cs_pace':     cs_pace_per_day,
+        'trend_pace':  trend_pace_per_day,
+        'trend_resid': trend_resid_per_day,
+        'sessions':    sessions,
+        'nearest_window_days': 60,
+    }
+    smooth_build_js = r"""
+function buildTooltip(day, isSnap, pointHtml) {
+  var P = window.__TT_DATA;
+  var idx = day - P.first_day;
+  if (idx < 0 || idx >= P.cs_pace.length) return '';
+
+  var DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  function paceMSS(s) {
+    if (s == null) return '—';
+    var x = Math.round(s);
+    var mn = Math.floor(x / 60), sc = x % 60;
+    return mn + ':' + (sc < 10 ? '0' : '') + sc;
+  }
+  function signedSec(s) {
+    if (s == null) return '—';
+    var x = Math.round(s);
+    if (x === 0) return '0';
+    return (x > 0 ? '+' : '−') + Math.abs(x);
+  }
+  function dateLabel(d) {
+    var dt = new Date(d * 86400000);
+    var y = dt.getUTCFullYear();
+    var m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    var dd = String(dt.getUTCDate()).padStart(2, '0');
+    return y + '-' + m + '-' + dd + ' (' + DOW[dt.getUTCDay()] + ')';
+  }
+
+  var html = '';
+  // Date header in both modes — in snap mode it identifies the snapped
+  // point's day, in smooth mode it identifies the cursor's date.
+  html += '<div class="tt-date">' + dateLabel(day) + '</div>';
+
+  // Section 1: trend info for the absolute-pace panel.
+  html += '<div class="tt-section">';
+  html += '<div class="tt-row"><span>CS pace</span><b>' + paceMSS(P.cs_pace[idx]) + '/mi</b></div>';
+  html += '<div class="tt-row"><span>Trend pace</span><b>' + paceMSS(P.trend_pace[idx]) + '/mi</b></div>';
+  html += '</div>';
+
+  // Section 2: residual + run details. In smooth mode, "Nearest run [+/-d]"
+  // header points at a run within ±nearest_window_days; in snap mode the
+  // section is unlabeled and references the snapped point directly.
+  var run = null;
+  var s = P.sessions;
+  if (isSnap) {
+    // Find session at the snapped day (recovery has at most one per day).
+    var lo = 0, hi = s.length - 1;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (s[mid].day < day) lo = mid + 1; else hi = mid;
+    }
+    if (s[lo] && s[lo].day === day) run = s[lo];
+  } else if (s.length) {
+    var lo = 0, hi = s.length - 1;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (s[mid].day < day) lo = mid + 1; else hi = mid;
+    }
+    var cands = [s[lo]];
+    if (lo > 0) cands.push(s[lo - 1]);
+    var best = null, bestAbs = 9999;
+    for (var k = 0; k < cands.length; k++) {
+      var ad = Math.abs(cands[k].day - day);
+      if (ad < bestAbs) { bestAbs = ad; best = cands[k]; }
+    }
+    if (best && bestAbs <= P.nearest_window_days) run = best;
+  }
+  if (run) {
+    var residIdx = run.day - P.first_day;
+    var trResid = (residIdx >= 0 && residIdx < P.trend_resid.length)
+                  ? P.trend_resid[residIdx] : null;
+    html += '<div class="tt-section">';
+    if (!isSnap) {
+      var dd2 = run.day - day;
+      var lbl = dd2 === 0 ? 'same day'
+              : (dd2 > 0 ? '+' + dd2 + ' day' + (dd2 === 1 ? '' : 's')
+                         :  dd2 + ' day' + (dd2 === -1 ? '' : 's'));
+      html += '<div class="tt-section-title">Nearest run [' + lbl + ']</div>';
+    }
+    html += '<div class="tt-row"><span>CS residual</span><b>' + signedSec(run.resid) + ' sec/mi</b></div>';
+    html += '<div class="tt-row"><span>Trend residual</span><b>' + signedSec(trResid) + ' sec/mi</b></div>';
+    html += (isSnap && pointHtml ? pointHtml : run.html);
+    html += '</div>';
+  }
+  return html;
+}
+"""
+
+    first_day = int(grid_day_idx[0])
+    last_day  = int(grid_day_idx[-1])
 
     out_path = os.path.join(args.out_dir, 'recovery_pace.html')
-    write_dark_html(fig, out_path,
-                     extra_html=build_normalization_ui(
-                         betas, intercept, r2_detrended, r2_raw, len(rec_fit),
-                         int(rec['is_bad_cond'].sum()),
-                         int(rec['is_partner_run'].sum()),
-                         int(rec['is_outlier_loo'].sum()),
-                         int(rec['is_pruned'].sum()),
-                         qualifying_routes, route_col_map, route_counts,
-                         global_mean_residual))
+    render_plot(
+        fig, out_path,
+        title_slug='recovery_pace',
+        page_title='Recovery',
+        cursor_tooltip=CursorTooltip(
+            payload=payload,
+            build_js=smooth_build_js,
+            first_day=first_day,
+            last_day=last_day,
+        ),
+        overlay_html=build_normalization_ui(
+            betas, intercept, r2_detrended, r2_raw, len(rec_fit),
+            int(rec['is_bad_cond'].sum()),
+            int(rec['is_partner_run'].sum()),
+            int(rec['is_outlier_loo'].sum()),
+            int(rec['is_pruned'].sum()),
+            qualifying_routes, route_col_map, route_counts,
+            global_mean_residual),
+        extra_head_css=(
+            '@media (max-width:760px){'
+            '#norm-filter{position:static!important;'
+            'margin:8px;width:auto!important;}}'
+        ),
+    )
     print(f'\nWrote {out_path}')
 
     # Export route betas for downstream consumption (e.g. long-run TQ
@@ -700,29 +864,6 @@ def main():
     ]).sort_values('beta_sec_per_mi')
     betas_df.to_csv(betas_csv, index=False)
     print(f'Wrote {betas_csv} ({len(betas_df)} routes)')
-
-
-# ---------- HTML output ----------
-def write_dark_html(fig, path, extra_html=''):
-    fig.write_html(path, include_plotlyjs=True, full_html=True,
-                    config={'responsive': True})
-    css = (
-        '<style>'
-        'html,body{margin:0;padding:0;width:100%;height:100%;'
-        'background:#1a1a1a;color:#eee;'
-        'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;}'
-        '.plotly-graph-div,.js-plotly-plot{width:100%!important;height:100vh!important;}'
-        '@media (max-width:760px){'
-        '#norm-filter{position:static!important;margin:8px;width:auto!important;}'
-        '}'
-        '</style>')
-    with open(path, 'r') as f:
-        html = f.read()
-    html = html.replace('<head>', '<head>' + css, 1)
-    if extra_html:
-        html = html.replace('</body>', extra_html + '</body>')
-    with open(path, 'w') as f:
-        f.write(html)
 
 
 def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
@@ -809,53 +950,10 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
 #norm-filter .nf-detail-row {{ font-size: 11px; color: #bbb; margin-top: 6px; line-height: 1.4; }}
 #norm-filter .nf-detail-row b {{ color: #ddd; }}
 #norm-filter .nf-divider {{ border-top: 1px solid #333; margin: 8px 0 4px; }}
-/* Suppress Plotly's built-in hover label — we render our own */
+/* Suppress Plotly's built-in hover label — the smart spikeline scaffold
+   renders the tooltip via .rp-tooltip / .rp-spike. */
 .hovertext {{ display: none !important; }}
-#rec-tooltip {{
-  position: fixed; top: 0; left: 0;
-  background: rgba(26,26,26,0.96);
-  color: #eee;
-  border: 1px solid #555;
-  padding: 8px 12px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  font-size: 12px;
-  line-height: 1.45;
-  border-radius: 4px;
-  pointer-events: none;
-  z-index: 9999;
-  max-width: 360px;
-  display: none;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-}}
-/* Arrow pointing to the data point. Tooltip carries data-side="right"
-   when it's drawn to the right of the point (arrow on its left edge),
-   or "left" when drawn to the left (arrow on its right edge). */
-#rec-tooltip::before, #rec-tooltip::after {{
-  content: '';
-  position: absolute;
-  width: 0; height: 0;
-  top: 50%;
-  border-top: 8px solid transparent;
-  border-bottom: 8px solid transparent;
-}}
-#rec-tooltip[data-side='right']::before {{
-  left: -9px; margin-top: -8px;
-  border-right: 9px solid #555;
-}}
-#rec-tooltip[data-side='right']::after {{
-  left: -8px; margin-top: -8px;
-  border-right: 9px solid rgba(26,26,26,0.96);
-}}
-#rec-tooltip[data-side='left']::before {{
-  right: -9px; margin-top: -8px;
-  border-left: 9px solid #555;
-}}
-#rec-tooltip[data-side='left']::after {{
-  right: -8px; margin-top: -8px;
-  border-left: 9px solid rgba(26,26,26,0.96);
-}}
 </style>
-<div id="rec-tooltip"></div>
 <div id="norm-filter">
   <div class="nf-title">Normalize</div>
   <div class="nf-sub">Subtract each factor's modeled contribution.</div>
@@ -1030,11 +1128,9 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
     update();
   }}
 
-  function initialRender() {{
-    var plot = getPlot();
-    if (!plot || !plot.data || !window.Plotly) {{ setTimeout(initialRender, 100); return; }}
-    update();
-  }}
+  // Initial paint shows the no-normalization-applied scatter and trend
+  // exactly as Python wrote them — no JS recompute needed. update() only
+  // fires from now on when the user toggles a checkbox or button.
 
   document.querySelectorAll('#norm-filter input[type=checkbox]').forEach(function(cb) {{
     cb.addEventListener('change', update);
@@ -1044,79 +1140,9 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
   document.getElementById('nf-hide-all').addEventListener('click', function() {{ setGroup('filter', true); }});
   document.getElementById('nf-hide-none').addEventListener('click', function() {{ setGroup('filter', false); }});
 
-  // Custom tooltip — snaps to the actual data point with an arrow,
-  // flips to the left side of the point when the point is in the
-  // rightmost FLIP_LEFT_PX of the viewport (a fixed threshold so the
-  // tooltip doesn't toggle back and forth as the cursor moves).
-  function setupCustomTooltip() {{
-    var plot = getPlot();
-    if (!plot || !plot.on) {{ setTimeout(setupCustomTooltip, 100); return; }}
-    var tt = document.getElementById('rec-tooltip');
-    if (!tt) return;
-
-    var FLIP_LEFT_PX = 360;  // flip when point is within this many px of right edge
-    var POINT_GAP = 9;       // gap between point and tooltip edge (matches arrow)
-
-    function pointPixelPos(p) {{
-      var pdiv = getPlot();
-      if (!pdiv || !pdiv._fullLayout) return null;
-      var rect = pdiv.getBoundingClientRect();
-      var xa = p.xaxis, ya = p.yaxis;
-      if (!xa || !ya || !xa.c2p) return null;
-      try {{
-        var xVal = p.x;
-        if (xVal instanceof Date) xVal = xVal.getTime();
-        else if (typeof xVal === 'string') xVal = new Date(xVal).getTime();
-        var pxX = xa.c2p(xVal);
-        var pxY = ya.c2p(p.y);
-        if (pxX == null || pxY == null) return null;
-        return {{
-          x: rect.left + xa._offset + pxX,
-          y: rect.top + ya._offset + pxY
-        }};
-      }} catch (e) {{ return null; }}
-    }}
-
-    function position(pointScreenX, pointScreenY) {{
-      var ttW = tt.offsetWidth, ttH = tt.offsetHeight;
-      var flipLeft = pointScreenX > window.innerWidth - FLIP_LEFT_PX;
-      var x, side;
-      if (flipLeft) {{
-        x = pointScreenX - POINT_GAP - ttW;
-        side = 'left';
-      }} else {{
-        x = pointScreenX + POINT_GAP;
-        side = 'right';
-      }}
-      var y = pointScreenY - ttH / 2;
-      if (y < 4) y = 4;
-      if (y + ttH > window.innerHeight - 4) y = window.innerHeight - ttH - 4;
-      tt.setAttribute('data-side', side);
-      tt.style.transform = 'translate(' + x + 'px,' + y + 'px)';
-    }}
-
-    plot.on('plotly_hover', function(ev) {{
-      if (!ev || !ev.points || !ev.points.length) return;
-      var p = ev.points[0];
-      var html = (p.text != null) ? p.text : '';
-      if (!html) return;
-      tt.innerHTML = html;
-      tt.style.display = 'block';
-      var pos = pointPixelPos(p);
-      if (pos) position(pos.x, pos.y);
-    }});
-
-    plot.on('plotly_unhover', function() {{
-      tt.style.display = 'none';
-    }});
-
-    plot.addEventListener('mouseleave', function() {{
-      tt.style.display = 'none';
-    }});
-  }}
-  setupCustomTooltip();
-
-  initialRender();
+  // Tooltip rendering is handled by the smart spikeline scaffold (see
+  // src/plotting/_scaffold/cursor_tooltip.js); this overlay only owns the
+  // normalization sidebar and the plotly_restyle recompute loop.
 }})();
 </script>
 """

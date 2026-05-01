@@ -25,7 +25,6 @@ Weight MA visibility:
   MA line is hidden on days where weight_interp is null (>7d gaps).
 """
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -37,6 +36,9 @@ from plotly.subplots import make_subplots
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
+                            title_block, TITLE_MARGIN_TOP,
+                            FG, FG_DIM, GRID)
 
 
 DEFAULT_DAILY = str(DATA_DIR / 'daily.csv')
@@ -329,8 +331,8 @@ def main():
             range=[y_min_env - pad, y_max_env + pad],
             row=row_i, col=1,
             title=dict(text=m['unit'],
-                       font=dict(color='#aaa', size=11)),
-            gridcolor='#2a2a2a', zerolinecolor='#2a2a2a',
+                       font=dict(color=FG_DIM, size=11)),
+            gridcolor=GRID, zerolinecolor=GRID,
         )
 
         def _round_arr(s, n=2):
@@ -346,38 +348,35 @@ def main():
     year_ticks = pd.date_range(args.start, dates.max(), freq='YS')
     fig.update_xaxes(
         range=[args.start, str(dates.max().date())],
-        gridcolor='#2a2a2a', zerolinecolor='#2a2a2a',
+        gridcolor=GRID, zerolinecolor=GRID,
         tickmode='array',
         tickvals=[d.strftime('%Y-%m-%d') for d in year_ticks],
         ticktext=[d.strftime('%Y') for d in year_ticks],
-        tickfont=dict(color='#aaa', size=11),
+        tickfont=dict(color=FG_DIM, size=11),
         showgrid=True,
     )
 
-    fig.update_layout(
-        title=dict(
-            text=('<b>Miscellaneous Trends</b>'
-                  '<br><sub style="font-size:13px;color:#bbb">'
-                  'Mileage, temperature, and weight: moving average '
-                  'trendlines with 14-day rolling min-max envelopes</sub>'),
-            x=0.01, xanchor='left',
-            y=0.985, yanchor='top',
-            font=dict(color='#eee'),
+    apply_default_layout(
+        fig,
+        title=title_block(
+            'Miscellaneous Trends',
+            'Mileage, temperature, and weight: moving average trendlines '
+            'with 14-day rolling min-max envelopes',
         ),
-        template='plotly_dark',
-        paper_bgcolor='#1a1a1a',
-        plot_bgcolor='#1a1a1a',
-        font=dict(color='#eee', size=12),
-        margin=dict(t=80, l=70, r=40, b=70),
-        autosize=True,
+        font=dict(color=FG, size=12),
+        margin=dict(t=TITLE_MARGIN_TOP, l=70, r=40, b=70),
         showlegend=False,
         hovermode=False,
     )
     for ann in fig['layout']['annotations']:
-        ann['font'] = dict(color='#eee', size=13)
+        ann['font'] = dict(color=FG, size=13)
+
+    epoch = pd.Timestamp('1970-01-01')
+    first_day = int((pd.Timestamp(args.start) - epoch).days)
+    last_day = first_day + len(dates) - 1
 
     payload = {
-        'start_date': args.start,
+        'first_day': first_day,
         'n_days': len(dates),
         'lo': payload_lo,
         'hi': payload_hi,
@@ -387,7 +386,17 @@ def main():
     }
 
     out_path = os.path.join(args.out_dir, 'qualitative_trends.html')
-    write_dark_html(fig, out_path, payload)
+    render_plot(
+        fig, out_path,
+        title_slug='qualitative_trends',
+        page_title='Volume / temp / weight',
+        cursor_tooltip=CursorTooltip(
+            payload=payload,
+            build_js=_BUILD_JS,
+            first_day=first_day,
+            last_day=last_day,
+        ),
+    )
     print(f'wrote {out_path}')
 
     print('\nseries summaries (post-shaping):')
@@ -405,195 +414,53 @@ def main():
     print(f"\ntotal traces: {len(fig.data)}")
 
 
-def write_dark_html(fig, path, payload):
-    fig.write_html(path, include_plotlyjs=True, full_html=True,
-                   config={'responsive': True})
-    css = (
-        '<style>'
-        'html,body{margin:0;padding:0;width:100%;height:100%;'
-        'background:#1a1a1a;color:#eee;'
-        'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;}'
-        '.plotly-graph-div,.js-plotly-plot{width:100%!important;height:100vh!important;}'
-        '</style>'
-    )
-    overlay = build_hover_overlay(payload)
-    with open(path, 'r') as f:
-        html = f.read()
-    html = html.replace('<head>', '<head>' + css, 1)
-    html = html.replace('</body>', overlay + '</body>')
-    with open(path, 'w') as f:
-        f.write(html)
+_BUILD_JS = r"""
+function buildTooltip(day) {
+  var P = window.__TT_DATA;
+  var idx = day - P.first_day;
+  if (idx < 0 || idx >= P.n_days) return '';
 
-
-def build_hover_overlay(payload):
-    payload_json = json.dumps(payload)
-    js = r"""
-<style>
-#qt-tooltip {
-  position: fixed; top: 0; left: 0;
-  background: rgba(26,26,26,0.96);
-  color: #eee;
-  border: 1px solid #555;
-  padding: 10px 13px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  font-size: 12px; line-height: 1.5;
-  border-radius: 4px;
-  pointer-events: none;
-  z-index: 9999;
-  min-width: 240px;
-  display: none;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-}
-#qt-tooltip .qt-day {
-  font-weight: 600; font-size: 13px; color: #fff;
-  margin-bottom: 5px;
-  border-bottom: 1px solid #333; padding-bottom: 3px;
-}
-#qt-tooltip .qt-row {
-  display: flex; justify-content: space-between;
-  gap: 14px; align-items: baseline;
-}
-#qt-tooltip .qt-label { color: #aaa; }
-#qt-tooltip .qt-window { color: #666; font-size: 11px; }
-#qt-tooltip .qt-val { color: #eee; font-variant-numeric: tabular-nums; }
-#qt-tooltip .qt-unit { color: #888; }
-#qt-tooltip .qt-range { color: #888; font-size: 11px;
-                        font-variant-numeric: tabular-nums; }
-#qt-spike {
-  position: fixed; top: 0; left: 0;
-  width: 1px; height: 100vh;
-  background: rgba(255,255,255,0.3);
-  pointer-events: none;
-  z-index: 9998;
-  display: none;
-}
-</style>
-<div id="qt-tooltip"></div>
-<div id="qt-spike"></div>
-<script>
-(function() {
-  var P = __PAYLOAD__;
+  var DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   var metricKeys   = ['volume', 'temp', 'weight'];
   var metricLabels = {volume: 'Avg. volume', temp: 'Avg. temp',
-                       weight: 'Avg. weight'};
-  var metricUnits  = {volume: 'mi',     temp: '°C',   weight: 'lbs'};
-  var DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+                      weight: 'Avg. weight'};
+  var metricUnits  = {volume: 'mi', temp: '°C', weight: 'lbs'};
 
-  var startMs = Date.parse(P.start_date + 'T00:00:00Z');
-
-  function fmt(v, decimals) {
+  function fmt(v, n) {
     if (v === null || v === undefined || isNaN(v)) return null;
-    return Number(v).toFixed(decimals);
+    return Number(v).toFixed(n);
   }
 
-  function dayLabel(idx) {
-    var d = new Date(startMs + idx * 86400000);
-    var y = d.getUTCFullYear();
-    var m = String(d.getUTCMonth() + 1).padStart(2, '0');
-    var dd = String(d.getUTCDate()).padStart(2, '0');
-    return y + '-' + m + '-' + dd + ' (' + DOW[d.getUTCDay()] + ')';
+  var dt = new Date(day * 86400000);
+  var y = dt.getUTCFullYear();
+  var mo = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  var dd = String(dt.getUTCDate()).padStart(2, '0');
+  var dateStr = y + '-' + mo + '-' + dd + ' (' + DOW[dt.getUTCDay()] + ')';
+
+  var html = '<div class="tt-date">' + dateStr + '</div>';
+  var anyShown = false;
+  for (var i = 0; i < metricKeys.length; i++) {
+    var m = metricKeys[i];
+    var maStr = fmt(P.ma[m][idx], 1);
+    var loStr = fmt(P.lo[m][idx], 1);
+    var hiStr = fmt(P.hi[m][idx], 1);
+    if (maStr === null && loStr === null && hiStr === null) continue;
+    anyShown = true;
+    var maOut = (maStr === null) ? '—' : maStr;
+    var rangeOut = (loStr === null || hiStr === null)
+                    ? '—' : ('(' + loStr + ' to ' + hiStr + ')');
+    html += '<div class="tt-row">'
+          +   '<span>' + metricLabels[m] + '</span>'
+          +   '<span>'
+          +     '<b>' + maOut + '</b> '
+          +     '<span class="tt-mute">' + metricUnits[m]
+          +     ' ' + rangeOut + '</span>'
+          +   '</span>'
+          + '</div>';
   }
-
-  function buildHtml(idx) {
-    var html = '<div class="qt-day">' + dayLabel(idx) + '</div>';
-    var anyShown = false;
-    for (var i = 0; i < metricKeys.length; i++) {
-      var m = metricKeys[i];
-      var w = P.ma_window[m];
-      var maStr = fmt(P.ma[m][idx], 1);
-      var loStr = fmt(P.lo[m][idx], 1);
-      var hiStr = fmt(P.hi[m][idx], 1);
-      if (maStr === null && loStr === null && hiStr === null) continue;
-      anyShown = true;
-      var maOut = (maStr === null) ? '—' : maStr;
-      var rangeOut = (loStr === null || hiStr === null)
-                     ? '—' : ('(' + loStr + ' to ' + hiStr + ')');
-      html += '<div class="qt-row">'
-            + '<span class="qt-label">' + metricLabels[m] + '</span>'
-            + '<span>'
-            +   '<span class="qt-val">' + maOut + '</span> '
-            +   '<span class="qt-unit">' + metricUnits[m] + '</span> '
-            +   '<span class="qt-range">' + rangeOut + '</span>'
-            + '</span>'
-            + '</div>';
-    }
-    return anyShown ? html : '';
-  }
-
-  var tt = document.getElementById('qt-tooltip');
-  var spike = document.getElementById('qt-spike');
-  var lastContent = '', ttW = 0, ttH = 0;
-  var rafScheduled = false;
-  var pendingX = 0, pendingY = 0, pendingContent = '', pendingSpikeX = 0, pendingShow = false;
-
-  function update() {
-    rafScheduled = false;
-    if (!pendingShow) {
-      tt.style.display = 'none';
-      spike.style.display = 'none';
-      return;
-    }
-    if (pendingContent !== lastContent) {
-      tt.innerHTML = pendingContent;
-      lastContent = pendingContent;
-      ttW = tt.offsetWidth;
-      ttH = tt.offsetHeight;
-    }
-    var x = pendingX + 15, y = pendingY + 10;
-    if (x + ttW > window.innerWidth)  x = pendingX - ttW - 15;
-    if (y + ttH > window.innerHeight) y = pendingY - ttH - 10;
-    tt.style.transform = 'translate(' + Math.max(0, x) + 'px,' + Math.max(0, y) + 'px)';
-    tt.style.display = 'block';
-    spike.style.transform = 'translateX(' + pendingSpikeX + 'px)';
-    spike.style.display = 'block';
-  }
-
-  function bind() {
-    var pdiv = document.querySelector('.plotly-graph-div');
-    if (!pdiv || !pdiv._fullLayout) { setTimeout(bind, 100); return; }
-
-    pdiv.addEventListener('mousemove', function(e) {
-      var fl = pdiv._fullLayout;
-      if (!fl) return;
-      var xa = fl.xaxis;
-      var rect = pdiv.getBoundingClientRect();
-      var bg = fl._size;
-      var pl = rect.left + bg.l;
-      var pr = rect.left + bg.l + bg.w;
-      var pt = rect.top + bg.t;
-      var pb = rect.top + bg.t + bg.h;
-      if (e.clientX < pl || e.clientX > pr || e.clientY < pt || e.clientY > pb) {
-        pendingShow = false;
-        if (!rafScheduled) { rafScheduled = true; requestAnimationFrame(update); }
-        return;
-      }
-      var dataMs = xa.p2c(e.clientX - rect.left - bg.l);
-      var idx = Math.round((dataMs - startMs) / 86400000);
-      if (idx < 0) idx = 0;
-      if (idx >= P.n_days) idx = P.n_days - 1;
-      var html = buildHtml(idx);
-      if (!html) {
-        pendingShow = false;
-        if (!rafScheduled) { rafScheduled = true; requestAnimationFrame(update); }
-        return;
-      }
-      pendingContent = html;
-      pendingX = e.clientX;
-      pendingY = e.clientY;
-      pendingSpikeX = e.clientX;
-      pendingShow = true;
-      if (!rafScheduled) { rafScheduled = true; requestAnimationFrame(update); }
-    });
-    pdiv.addEventListener('mouseleave', function() {
-      pendingShow = false;
-      if (!rafScheduled) { rafScheduled = true; requestAnimationFrame(update); }
-    });
-  }
-  bind();
-})();
-</script>
-""".replace('__PAYLOAD__', payload_json)
-    return js
+  return anyShown ? html : '';
+}
+"""
 
 
 if __name__ == '__main__':

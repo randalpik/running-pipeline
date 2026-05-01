@@ -28,7 +28,6 @@ Required dependencies:
   pip install pandas numpy scipy plotly
 """
 import argparse
-import json
 import os
 import sys
 import datetime as dt
@@ -40,51 +39,13 @@ import plotly.graph_objects as go
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.cs_projection import load_cs_outputs, project_races_to_5k_pace
+from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
+                            title_block, TITLE_MARGIN_TOP,
+                            sec_to_mss, sec_to_mss_full, SURFACES, rgba, GRID)
 
 
 DEFAULT_IN_DIR = str(DATA_DIR)
 DEFAULT_RACES  = str(DATA_DIR / 'races.csv')
-
-
-def sec_to_mss(s):
-    if s is None or pd.isna(s): return ''
-    # Round to integer seconds first, then format. Avoids the "4:60" bug
-    # where s=299.6 → m=4, round(s%60)=60.
-    total = int(round(s))
-    if total >= 3600:
-        h = total // 3600
-        m = (total % 3600) // 60
-        ss = total % 60
-        return f'{h}:{m:02d}:{ss:02d}'
-    m = total // 60
-    ss = total % 60
-    return f'{m}:{ss:02d}'
-
-
-def sec_to_mss_full(s):
-    """Format seconds preserving subsecond precision for race times.
-    Examples: 143.2 → '2:23.2', 18*60+38.5 → '18:38.5', 8756.4 → '2:25:56.4'.
-    Trailing .0 is hidden when the value is an integer second.
-    """
-    if s is None or pd.isna(s): return ''
-    s = float(s)
-    # Round to tenths first to avoid float-representation issues
-    # (e.g. 3599.95 - 3599 = 0.94999... in float).
-    tenths_total = int(round(s * 10))
-    whole = tenths_total // 10
-    frac_tenths = tenths_total % 10  # 0-9
-    if whole >= 3600:
-        h = whole // 3600
-        m = (whole % 3600) // 60
-        ss = whole % 60
-        body = f'{h}:{m:02d}:{ss:02d}'
-    else:
-        m = whole // 60
-        ss = whole % 60
-        body = f'{m}:{ss:02d}'
-    if frac_tenths > 0:
-        return f'{body}.{frac_tenths}'
-    return body
 
 
 def parse_args():
@@ -186,84 +147,58 @@ def main():
         x=summary_plot['date'], y=summary_plot['cs_pace_med'],
         mode='lines', line=dict(color='rgb(255,180,80)', width=2.5),
         name='Posterior median CS', hoverinfo='skip', showlegend=True))
-    # Race diamonds (bias-corrected)
-    surf_colors = {'Track': 'rgba(255,91,77,0.7)',
-                   'Road':  'rgba(74,163,255,0.7)',
-                   'XC':    'rgba(74,222,128,0.7)'}
+    # Race diamonds (bias-corrected). Colors derived from canonical SURFACES
+    # hex tokens with 0.7 alpha so a re-skin only edits one place. Each
+    # diamond carries a per-race snap-mode tooltip via customdata, and the
+    # trace is tagged snap_eligible so the smart-spikeline scaffold treats
+    # it as a snap target.
+    surf_colors = {k: rgba(SURFACES[k], 0.7) for k in ('Track', 'Road', 'XC')}
+
+    def _race_inner(row):
+        ev = row.get('event') or '(no event)'
+        if pd.isna(ev): ev = '(no event)'
+        t_orig = row.get('time_sec_original', row['time_sec'])
+        p_orig = row.get('pace_sec_per_mi_original',
+                         row.get('pace_sec_per_mi'))
+        pace_raw = (sec_to_mss(p_orig)
+                    if p_orig is not None and not pd.isna(p_orig) else '')
+        is_xc = str(row.get('surface', '')).upper() == 'XC'
+        is_5k = abs(float(row['distance_m']) - 5000.0) < 1.0
+
+        equiv_pace_sec = float(row['pace_norm_min']) * 60
+        equiv_time_sec = equiv_pace_sec * 5000.0 / 1609.344
+        if is_5k and not is_xc:
+            equiv_line = ''
+        else:
+            label = ('XC-corrected' if is_xc and is_5k
+                     else '5K-equiv (XC-corrected)' if is_xc
+                     else '5K-equiv')
+            equiv_line = (f"<div>{label}: <b>{sec_to_mss(equiv_time_sec)}</b> "
+                          f"<span class='tt-mute'>"
+                          f"({sec_to_mss(equiv_pace_sec)}/mi)</span></div>")
+        return (f"<div>{ev} <span class='tt-mute'>({row['surface']})</span></div>"
+                f"<div>{int(row['distance_m'])}m in "
+                f"<b>{sec_to_mss_full(t_orig)}</b> "
+                f"<span class='tt-mute'>({pace_raw}/mi)</span></div>"
+                f"{equiv_line}")
+
     for surf, col in surf_colors.items():
         sub = elig_plot[elig_plot['surface'] == surf]
         if len(sub) == 0: continue
+        # Per-race inner HTML for snap mode. The scaffold prepends the
+        # trend section (CS median + 50/95% intervals) and the date
+        # header itself, so this is just the race-specific content.
+        inner_html = sub.apply(_race_inner, axis=1).tolist()
         fig.add_trace(go.Scatter(
             x=sub['date'], y=sub['pace_norm_min'],
             mode='markers', name=surf,
             marker=dict(color=col, size=8, symbol='diamond',
                         line=dict(width=0.3, color='white')),
+            customdata=inner_html,
             hoverinfo='skip',
             legendgroup='races',
-            legendgrouptitle_text='Race pace (5K-equiv)'))
-
-    # ---------- per-day hover content ----------
-    hover_text = []
-    for _, r in summary_plot.iterrows():
-        d = r['date'].date()
-        ep = elig_plot.copy()
-        ep['days_off'] = (ep['date'].dt.date - d).apply(lambda x: x.days)
-        ep['abs_off'] = ep['days_off'].abs()
-        if len(ep):
-            nearest = ep.loc[ep['abs_off'].idxmin()]
-            delta = int(nearest['days_off'])
-            ev = nearest.get('event') or '(no event)'
-            if pd.isna(ev): ev = '(no event)'
-            # Show original (uncorrected) race time/pace — that's the truthful
-            # race result. The XC correction is only for fitting/plotting the
-            # 5K-equivalent pace; the actual race happened in the original time.
-            t_orig = nearest.get('time_sec_original', nearest['time_sec'])
-            p_orig = nearest.get('pace_sec_per_mi_original',
-                                 nearest.get('pace_sec_per_mi'))
-            pace_raw_str = (sec_to_mss(p_orig)
-                            if p_orig is not None and not pd.isna(p_orig) else '')
-            is_xc_nearest = str(nearest.get('surface', '')).upper() == 'XC'
-            is_5k = abs(float(nearest['distance_m']) - 5000.0) < 1.0
-
-            # 5K-equivalent: time + pace pair (matches actual race time format)
-            equiv_pace_sec = float(nearest['pace_norm_min']) * 60
-            equiv_time_sec = equiv_pace_sec * 5000.0 / 1609.344
-
-            # Four cases — see comments
-            #   non-XC 5K:    drop the line entirely (just duplicates race time)
-            #   XC 5K:        say "XC-corrected" (XC adjustment is the only difference)
-            #   XC non-5K:    say "5K-equiv (XC-corrected)"
-            #   non-XC non-5K: say "5K-equiv"
-            if is_5k and not is_xc_nearest:
-                equiv_line = ''
-            else:
-                if is_xc_nearest and is_5k:
-                    label = 'XC-corrected'
-                elif is_xc_nearest:
-                    label = '5K-equiv (XC-corrected)'
-                else:
-                    label = '5K-equiv'
-                equiv_line = (f"<div>{label}: <b>{sec_to_mss(equiv_time_sec)}</b> "
-                              f"<span class='cs-tt-mute'>({sec_to_mss(equiv_pace_sec)}/mi)</span></div>")
-
-            nr = (f"<div class='cs-tt-section'>"
-                  f"<div class='cs-tt-section-title'>Nearest race ({nearest['date'].date()}, {delta:+d}d)</div>"
-                  f"<div>{ev} <span class='cs-tt-mute'>({nearest['surface']})</span></div>"
-                  f"<div>{int(nearest['distance_m'])}m in <b>{sec_to_mss_full(t_orig)}</b> "
-                  f"<span class='cs-tt-mute'>({pace_raw_str}/mi)</span></div>"
-                  f"{equiv_line}"
-                  f"</div>")
-        else:
-            nr = ''
-        hover_text.append(
-            f"<div class='cs-tt-date'>{d}</div>"
-            f"<div class='cs-tt-section'>"
-            f"<div class='cs-tt-row'><span>CS median</span><b>{sec_to_mss(r['cs_pace_med']*60)}/mi</b></div>"
-            f"<div class='cs-tt-row'><span>50% interval</span>{sec_to_mss(r['cs_pace_lo50']*60)}–{sec_to_mss(r['cs_pace_hi50']*60)}/mi</div>"
-            f"<div class='cs-tt-row'><span>95% interval</span>{sec_to_mss(r['cs_pace_lo95']*60)}–{sec_to_mss(r['cs_pace_hi95']*60)}/mi</div>"
-            f"</div>"
-            f"{nr}"
-        )
+            legendgrouptitle_text='Race pace (5K-equiv)',
+            meta={'snap_eligible': True}))
 
     # ---------- layout ----------
     y_min, y_max = 4.50, 8.00
@@ -271,184 +206,146 @@ def main():
     ytick_txt = [sec_to_mss(v * 60) for v in ytick_vals]
 
     bias_str = f"β_long={beta_long_med:.3f}, xc_correction={xc_correction:.3f}"
-    fig.update_layout(
-        title=dict(
-            text=f'Critical Speed fitness trend — Bayesian latent-process model'
-                 f'<br><sub style="font-size:13px;color:#bbb">'
-                 f'Posterior median (line) with 50% and 95% credible-interval ribbons · '
-                 f'Diamonds show race performance projected to 5K-equivalent via hyperbolic CS model · '
-                 f'<i>{bias_str}</i>'
-                 f'</sub>',
-            y=0.965),
-        template='plotly_dark',
-        paper_bgcolor='#1a1a1a', plot_bgcolor='#1a1a1a',
-        font=dict(color='#eee'),
-        autosize=True,
-        margin=dict(t=110, l=70, r=200, b=60),
+    apply_default_layout(
+        fig,
+        title=title_block(
+            'Critical Speed fitness trend — Bayesian latent-process model',
+            'Posterior median (line) with 50% and 95% credible-interval ribbons · '
+            'Diamonds show race performance projected to 5K-equivalent via hyperbolic CS model · '
+            f'<i>{bias_str}</i>',
+        ),
+        margin=dict(t=TITLE_MARGIN_TOP, l=70, r=200, b=60),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02, groupclick='toggleitem'),
-        xaxis=dict(title='Date', showgrid=True, gridcolor='#333',
+        xaxis=dict(title='Date', showgrid=True, gridcolor=GRID,
                    dtick='M12', tickformat='%Y',
                    range=[pd.Timestamp('2013-06-01'),
                           summary_plot['date'].iloc[-1]]),
         yaxis=dict(title='Pace (min/mi)', range=[y_max, y_min],
                    tickmode='array', tickvals=ytick_vals, ticktext=ytick_txt,
-                   showgrid=True, gridcolor='#333'))
+                   showgrid=True, gridcolor=GRID))
+
+    # ---------- spikeline tooltip payload ----------
+    # Per-day arrays for the trend section (CS median + 50/95% intervals)
+    # plus a sorted race-session list. Smooth mode shows the trend section
+    # + nearest race within ±60d; snap mode shows the trend section + the
+    # snapped race's details (no date, no "Nearest race" header).
+    epoch = pd.Timestamp('1970-01-01')
+
+    def _round_pace(v):
+        return round(float(v) * 60) if pd.notna(v) else None
+
+    cs_pace_med  = [_round_pace(v) for v in summary_plot['cs_pace_med']]
+    cs_pace_lo50 = [_round_pace(v) for v in summary_plot['cs_pace_lo50']]
+    cs_pace_hi50 = [_round_pace(v) for v in summary_plot['cs_pace_hi50']]
+    cs_pace_lo95 = [_round_pace(v) for v in summary_plot['cs_pace_lo95']]
+    cs_pace_hi95 = [_round_pace(v) for v in summary_plot['cs_pace_hi95']]
+
+    sessions = []
+    for _, r in elig_plot.iterrows():
+        sessions.append({'day':  int((r['date'] - epoch).days),
+                         'html': _race_inner(r)})
+    sessions.sort(key=lambda s: s['day'])
+
+    first_day = int((summary_plot['date'].iloc[0]  - epoch).days)
+    last_day  = int((summary_plot['date'].iloc[-1] - epoch).days)
+
+    payload = {
+        'first_day': first_day,
+        'cs_med':    cs_pace_med,
+        'cs_lo50':   cs_pace_lo50,
+        'cs_hi50':   cs_pace_hi50,
+        'cs_lo95':   cs_pace_lo95,
+        'cs_hi95':   cs_pace_hi95,
+        'sessions':  sessions,
+        'nearest_window_days': 60,
+    }
+
+    build_js = r"""
+function buildTooltip(day, isSnap, pointHtml) {
+  var P = window.__TT_DATA;
+  var idx = day - P.first_day;
+  if (idx < 0 || idx >= P.cs_med.length) return '';
+
+  var DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  function paceMSS(s) {
+    if (s == null) return '—';
+    var x = Math.round(s);
+    var mn = Math.floor(x / 60), sc = x % 60;
+    return mn + ':' + (sc < 10 ? '0' : '') + sc;
+  }
+  function dateLabel(d) {
+    var dt = new Date(d * 86400000);
+    var y = dt.getUTCFullYear();
+    var m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    var dd = String(dt.getUTCDate()).padStart(2, '0');
+    return y + '-' + m + '-' + dd + ' (' + DOW[dt.getUTCDay()] + ')';
+  }
+
+  var html = '';
+  // Date header in both modes — see scaffold note in cursor_tooltip.js.
+  html += '<div class="tt-date">' + dateLabel(day) + '</div>';
+
+  // Section 1: per-day CS posterior summary.
+  html += '<div class="tt-section">';
+  html += '<div class="tt-row"><span>CS median</span><b>' + paceMSS(P.cs_med[idx]) + '/mi</b></div>';
+  html += '<div class="tt-row"><span>50% interval</span>' + paceMSS(P.cs_lo50[idx]) + '–' + paceMSS(P.cs_hi50[idx]) + '/mi</div>';
+  html += '<div class="tt-row"><span>95% interval</span>' + paceMSS(P.cs_lo95[idx]) + '–' + paceMSS(P.cs_hi95[idx]) + '/mi</div>';
+  html += '</div>';
+
+  // Section 2: race details. Smooth = nearest within window.
+  var run = null;
+  var s = P.sessions;
+  if (isSnap) {
+    var lo = 0, hi = s.length - 1;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (s[mid].day < day) lo = mid + 1; else hi = mid;
+    }
+    if (s[lo] && s[lo].day === day) run = s[lo];
+  } else if (s.length) {
+    var lo = 0, hi = s.length - 1;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (s[mid].day < day) lo = mid + 1; else hi = mid;
+    }
+    var cands = [s[lo]];
+    if (lo > 0) cands.push(s[lo - 1]);
+    var best = null, bestAbs = 9999;
+    for (var k = 0; k < cands.length; k++) {
+      var ad = Math.abs(cands[k].day - day);
+      if (ad < bestAbs) { bestAbs = ad; best = cands[k]; }
+    }
+    if (best && bestAbs <= P.nearest_window_days) run = best;
+  }
+
+  if (run || (isSnap && pointHtml)) {
+    html += '<div class="tt-section">';
+    if (!isSnap && run) {
+      var dd2 = run.day - day;
+      var lbl = dd2 === 0 ? 'same day'
+              : (dd2 > 0 ? '+' + dd2 + ' day' + (dd2 === 1 ? '' : 's')
+                         :  dd2 + ' day' + (dd2 === -1 ? '' : 's'));
+      html += '<div class="tt-section-title">Nearest race [' + lbl + ']</div>';
+    }
+    html += (isSnap && pointHtml ? pointHtml : run.html);
+    html += '</div>';
+  }
+  return html;
+}
+"""
 
     out_html = args.out or str(OUTPUT_DIR / f'cs_timeline{suffix}.html')
-    os.makedirs(os.path.dirname(out_html) or '.', exist_ok=True)
-    fig.write_html(out_html, include_plotlyjs=True, full_html=True,
-                   config={'responsive': True})
-
-    # ---------- inject custom CSS + cursor-following tooltip ----------
-    epoch = pd.Timestamp('1970-01-01')
-    hover_payload = [
-        [(d - epoch).days, h] for d, h in zip(summary_plot['date'], hover_text)
-    ]
-    hover_payload_json = json.dumps(hover_payload)
-    first_day = (summary_plot['date'].iloc[0] - epoch).days
-    last_day  = (summary_plot['date'].iloc[-1] - epoch).days
-
-    custom = """
-<style>
-html, body {
-  margin: 0; padding: 0;
-  width: 100%; height: 100%;
-  background: #1a1a1a;
-  color: #eee;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-}
-.plotly-graph-div, #plot-container, .js-plotly-plot {
-  width: 100% !important;
-  height: 100vh !important;
-}
-
-#cs-custom-tooltip {
-  position: fixed; top: 0; left: 0;
-  background: rgba(26,26,26,0.96);
-  color: #eee;
-  border: 1px solid #555;
-  padding: 10px 14px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  font-size: 13px;
-  line-height: 1.5;
-  border-radius: 4px;
-  pointer-events: none;
-  z-index: 9999;
-  max-width: 380px;
-  display: none;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-}
-#cs-custom-tooltip .cs-tt-date { font-weight: 600; font-size: 14px; margin-bottom: 6px; color: #fff; }
-#cs-custom-tooltip .cs-tt-section { margin-top: 6px; padding-top: 6px; border-top: 1px solid #444; }
-#cs-custom-tooltip .cs-tt-section:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
-#cs-custom-tooltip .cs-tt-section-title { font-weight: 600; margin-bottom: 4px; color: #ddd; }
-#cs-custom-tooltip .cs-tt-row { display: flex; justify-content: space-between; gap: 16px; white-space: nowrap; }
-#cs-custom-tooltip .cs-tt-row > span:first-child { color: #aaa; }
-#cs-custom-tooltip .cs-tt-mute { color: #999; }
-#cs-custom-tooltip b { color: #fff; font-weight: 600; }
-
-#cs-spike-line {
-  position: fixed; top: 0; left: 0;
-  width: 1px; height: 100vh;
-  background: rgba(255,255,255,0.3);
-  pointer-events: none;
-  z-index: 9998;
-  display: none;
-}
-</style>
-<div id="cs-custom-tooltip"></div>
-<div id="cs-spike-line"></div>
-<script>
-(function() {
-  var hoverData = __HOVER_PAYLOAD__;
-  var firstDay = __FIRST_DAY__;
-  var lastDay  = __LAST_DAY__;
-  var hoverByDay = {};
-  for (var i = 0; i < hoverData.length; i++) {
-    hoverByDay[hoverData[i][0]] = hoverData[i][1];
-  }
-
-  var tt = document.getElementById('cs-custom-tooltip');
-  var spike = document.getElementById('cs-spike-line');
-  var lastContent = ''; var ttW = 0; var ttH = 0;
-  var rafScheduled = false; var pendingX = 0; var pendingY = 0; var pendingContent = '';
-  var pendingShow = false;
-
-  function update() {
-    rafScheduled = false;
-    if (!pendingShow) { tt.style.display = 'none'; spike.style.display = 'none'; return; }
-    if (pendingContent !== lastContent) {
-      tt.innerHTML = pendingContent;
-      lastContent = pendingContent;
-      ttW = tt.offsetWidth; ttH = tt.offsetHeight;
-    }
-    var x = pendingX + 15; var y = pendingY + 10;
-    if (x + ttW > window.innerWidth)  x = pendingX - ttW - 15;
-    if (y + ttH > window.innerHeight) y = pendingY - ttH - 10;
-    tt.style.transform = 'translate(' + x + 'px,' + y + 'px)';
-    tt.style.display = 'block';
-    spike.style.transform = 'translateX(' + pendingX + 'px)';
-    spike.style.display = 'block';
-  }
-
-  function bind() {
-    var pdiv = document.querySelector('.plotly-graph-div');
-    if (!pdiv || !pdiv._fullLayout) { setTimeout(bind, 100); return; }
-    pdiv.addEventListener('mousemove', function(e) {
-      var fl = pdiv._fullLayout;
-      if (!fl) return;
-      var xa = fl.xaxis;
-      var rect = pdiv.getBoundingClientRect();
-      var bgRect = fl._size;
-      var plotLeft  = rect.left + bgRect.l;
-      var plotRight = rect.left + bgRect.l + bgRect.w;
-      var plotTop   = rect.top  + bgRect.t;
-      var plotBot   = rect.top  + bgRect.t + bgRect.h;
-      if (e.clientX < plotLeft || e.clientX > plotRight ||
-          e.clientY < plotTop  || e.clientY > plotBot) {
-        pendingShow = false;
-        if (!rafScheduled) { rafScheduled = true; requestAnimationFrame(update); }
-        return;
-      }
-      var dataX = xa.p2c(e.clientX - rect.left - bgRect.l);
-      var dayIdx = Math.round(dataX / 86400000);
-      if (dayIdx < firstDay) dayIdx = firstDay;
-      if (dayIdx > lastDay)  dayIdx = lastDay;
-      var content = hoverByDay[dayIdx];
-      if (!content) { pendingShow = false; }
-      else {
-        pendingContent = content;
-        pendingX = e.clientX; pendingY = e.clientY;
-        pendingShow = true;
-      }
-      if (!rafScheduled) { rafScheduled = true; requestAnimationFrame(update); }
-    });
-    pdiv.addEventListener('mouseleave', function() {
-      pendingShow = false;
-      if (!rafScheduled) { rafScheduled = true; requestAnimationFrame(update); }
-    });
-    if (window.Plotly) window.Plotly.Plots.resize(pdiv);
-  }
-  bind();
-  window.addEventListener('resize', function() {
-    var pdiv = document.querySelector('.plotly-graph-div');
-    if (pdiv && window.Plotly) window.Plotly.Plots.resize(pdiv);
-  });
-})();
-</script>
-"""
-    custom = (custom
-              .replace('__HOVER_PAYLOAD__', hover_payload_json)
-              .replace('__FIRST_DAY__', str(first_day))
-              .replace('__LAST_DAY__', str(last_day)))
-
-    with open(out_html) as f:
-        html = f.read()
-    html = html.replace('<body>', '<body style="margin:0;padding:0;background:#1a1a1a;">')
-    html = html.replace('</body>', custom + '</body>')
-    with open(out_html, 'w') as f:
-        f.write(html)
-
+    render_plot(
+        fig, out_html,
+        title_slug=f'cs_timeline{suffix}',
+        page_title='CS fitness',
+        cursor_tooltip=CursorTooltip(
+            payload=payload,
+            build_js=build_js,
+            first_day=first_day,
+            last_day=last_day,
+        ),
+    )
     print(f"Wrote {out_html}")
 
 

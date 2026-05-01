@@ -10,7 +10,6 @@ Each point's hover shows the original log string plus all derived fields,
 intended for pruning / outlier evaluation.
 """
 
-import json
 import sys
 from pathlib import Path
 
@@ -20,6 +19,10 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
+                            title_block, TITLE_MARGIN_TOP,
+                            sec_to_mss, fmt_min, CAT_COLORS, GRID,
+                            GAP_BREAK_DAYS, adaptive_gauss_smoother)
 
 
 # ---------- paths ----------
@@ -44,50 +47,13 @@ GAUSS_TARGET_ESS   = 12
 GAUSS_MAX_BW_DAYS  = 400
 GRID_FREQ          = '7D'
 
-# If this many days pass without a training datapoint (workout, long run, or
-# hill_cont), break the smoother track. The 2020-11 -> 2021-04 labrum gap is
-# the canonical case. Set high enough that race-only periods (e.g. summer
-# 2018) don't trigger.
-GAP_BREAK_DAYS = 90
-
 # ---------- visual config ----------
-CAT_COLORS = {
-    'interval':           '#d62728',
-    'tempo':              '#2ca02c',
-    'rep':                '#9467bd',
-    'continuous_fartlek': '#ff7f0e',
-    'lr_20-22.9':         '#17becf',
-    'lr_23+':             '#1f77b4',
-    'hill_lc':            '#e377c2',
-    'hill_rc':            '#bcbd22',
-    'hill_pwr1':          '#8c564b',
-}
 CAT_LABEL = {
     'interval': 'Interval', 'tempo': 'Tempo', 'rep': 'Rep',
     'continuous_fartlek': 'Cont. fartlek',
     'lr_20-22.9': 'Long 20–22.9', 'lr_23+': 'Long 23+',
     'hill_lc': 'Hill (lc)', 'hill_rc': 'Hill (rc)', 'hill_pwr1': 'Hill (pwr1)',
 }
-
-
-# ---------- formatting helpers ----------
-def sec_to_mss(s):
-    if pd.isna(s):
-        return ''
-    s = float(s)
-    m = int(s // 60)
-    sec = int(round(s - 60 * m))
-    if sec == 60:
-        m += 1
-        sec = 0
-    return f'{m}:{sec:02d}'
-
-
-def fmt_min(m):
-    """Format minutes (float) as M:SS."""
-    if pd.isna(m):
-        return ''
-    return sec_to_mss(m * 60)
 
 
 # ---------- pipeline ----------
@@ -269,60 +235,16 @@ def apply_offsets(workouts, long_runs, hills=None):
     return workouts, long_runs, hills, offsets
 
 
-def adaptive_gauss_smoother(ds, res, grid_days,
-                             target_ess=GAUSS_TARGET_ESS,
-                             base_bw=GAUSS_BASE_BW_DAYS,
-                             max_bw=GAUSS_MAX_BW_DAYS):
-    """Adaptive Gaussian smoother. Bandwidth is the smallest value such that
-    ESS >= target_ess at this grid point, found by bisection so it varies
-    continuously across the grid (avoids visible jogs from discrete steps)."""
-    out = np.full(len(grid_days), np.nan)
-
-    def weights_and_ess(t, bw):
-        w = np.exp(-0.5 * ((ds - t) / bw) ** 2)
-        s = w.sum()
-        ss = (w * w).sum()
-        return w, (s * s / ss) if ss > 0 else 0.0
-
-    for i, t in enumerate(grid_days):
-        # If base bandwidth already satisfies ESS, use it (smoothest result).
-        w, ess = weights_and_ess(t, base_bw)
-        if ess >= target_ess:
-            out[i] = (w * res).sum() / w.sum()
-            continue
-
-        # Find an upper bracket where ESS clears the target.
-        hi = base_bw
-        while hi < max_bw:
-            hi = min(hi * 2, max_bw)
-            w, ess = weights_and_ess(t, hi)
-            if ess >= target_ess:
-                break
-        if ess < target_ess:
-            continue  # max_bw insufficient; leave NaN
-
-        # Bisect to find the smallest bw that satisfies ESS >= target.
-        lo = base_bw
-        for _ in range(40):
-            if hi - lo < 0.5:
-                break
-            mid = 0.5 * (lo + hi)
-            w, ess = weights_and_ess(t, mid)
-            if ess >= target_ess:
-                hi = mid
-            else:
-                lo = mid
-        w, _ = weights_and_ess(t, hi)
-        out[i] = (w * res).sum() / w.sum()
-    return out
-
-
 # ---------- hover string builders ----------
+# Per-session HTML for the smart-spikeline scaffold's snap mode and the
+# smooth-mode "Nearest session" caption. The scaffold prepends the trend
+# section (CS, smoother, diff) and the date itself in smooth mode, so
+# this content focuses on what's session-specific. Category label stays
+# as a small heading.
 def workout_hover(r):
     xc_note = ' <i style="color:#9cf">[XC-corrected -6%]</i>' if r.get('xc_corrected') else ''
     parts = [
-        f"<b>{CAT_LABEL.get(r['category'], r['category'])}</b>  "
-        f"{r['date'].strftime('%Y-%m-%d')}  ({r['date'].strftime('%a')}){xc_note}",
+        f"<b>{CAT_LABEL.get(r['category'], r['category'])}</b>{xc_note}",
         f"{int(r['rep_count'])} × {int(r['rep_dist'])}m @ "
         f"{sec_to_mss(r['pace_per_mile'])}/mi"
         + (f", rest {sec_to_mss(r['rest_per_mile'])}/mi"
@@ -337,8 +259,7 @@ def workout_hover(r):
 
 def long_run_hover(r):
     parts = [
-        f"<b>{CAT_LABEL.get(r['category'], r['category'])}</b>  "
-        f"{r['date'].strftime('%Y-%m-%d')}  ({r['date'].strftime('%a')})",
+        f"<b>{CAT_LABEL.get(r['category'], r['category'])}</b>",
         f"<b>Distance:</b> {r['miles']:.1f}mi   "
         f"<b>Pace:</b> {sec_to_mss(r['recovery_pace_sec_per_mi'])}/mi",
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
@@ -351,8 +272,7 @@ def long_run_hover(r):
 
 def hill_hover(r):
     parts = [
-        f"<b>{CAT_LABEL.get(r['category'], r['category'])}</b>  "
-        f"{r['date'].strftime('%Y-%m-%d')}  ({r['date'].strftime('%a')})",
+        f"<b>{CAT_LABEL.get(r['category'], r['category'])}</b>",
         f"{int(r['nreps'])} × {r['loop']} loop, {int(r['session_min'])} min total",
         f"<b>Actual pace:</b> {sec_to_mss(r['actual_pace_s'])}/mi",
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
@@ -448,7 +368,12 @@ def main():
                                combined['date'].max(),
                                freq=GRID_FREQ)
     grid_days = (grid_dates - epoch).days.astype(float).values
-    smoothed = adaptive_gauss_smoother(ds, res, grid_days)
+    smoothed = adaptive_gauss_smoother(
+        ds, res, grid_days,
+        target_ess=GAUSS_TARGET_ESS,
+        base_bw=GAUSS_BASE_BW_DAYS,
+        max_bw=GAUSS_MAX_BW_DAYS,
+    )
 
     # Break the track in any gap > GAP_BREAK_DAYS in the training data.
     # NaN values create disconnected line segments naturally in plotly.
@@ -493,11 +418,16 @@ def main():
         hoverinfo='skip',
     ))
 
-    # Workouts: one trace per category for legend filtering (reps excluded above)
+    # Workouts: one trace per category for legend filtering (reps excluded
+    # above). Per-marker customdata + meta.snap_eligible feeds the smart
+    # spikeline scaffold's snap mode — hover near a marker shows that
+    # session's details, hover anywhere else shows the per-day smooth
+    # tooltip (CS pace + smoother trend + nearest session).
     for cat in ['interval', 'tempo', 'continuous_fartlek']:
         sub = workouts[workouts['category'] == cat]
         if sub.empty:
             continue
+        cd = [workout_hover(r) for _, r in sub.iterrows()]
         fig.add_trace(go.Scatter(
             x=sub['date'], y=sub['pos_min'],
             mode='markers',
@@ -505,8 +435,10 @@ def main():
             marker=dict(color=CAT_COLORS[cat], size=7,
                         line=dict(color='rgba(255,255,255,0.4)', width=0.5),
                         opacity=0.85),
+            customdata=cd,
             hoverinfo='skip',
             legendgroup='workouts', legendgrouptitle_text='Workouts',
+            meta={'snap_eligible': True},
         ))
 
     # Long runs: one trace per bin
@@ -514,6 +446,7 @@ def main():
         sub = long_runs[long_runs['category'] == cat]
         if sub.empty:
             continue
+        cd = [long_run_hover(r) for _, r in sub.iterrows()]
         fig.add_trace(go.Scatter(
             x=sub['date'], y=sub['pos_min'],
             mode='markers',
@@ -521,12 +454,15 @@ def main():
             marker=dict(color=CAT_COLORS[cat], size=7, symbol='diamond',
                         line=dict(color='rgba(255,255,255,0.4)', width=0.5),
                         opacity=0.85),
+            customdata=cd,
             hoverinfo='skip',
             legendgroup='long_runs', legendgrouptitle_text='Long runs',
+            meta={'snap_eligible': True},
         ))
 
     # Hill continuous: single trace, all loops together
     if len(hills):
+        cd = [hill_hover(r) for _, r in hills.iterrows()]
         fig.add_trace(go.Scatter(
             x=hills['date'], y=hills['pos_min'],
             mode='markers',
@@ -534,8 +470,10 @@ def main():
             marker=dict(color='#e377c2', size=7, symbol='triangle-up',
                         line=dict(color='rgba(255,255,255,0.4)', width=0.5),
                         opacity=0.85),
+            customdata=cd,
             hoverinfo='skip',
             legendgroup='workouts', legendgrouptitle_text='Workouts',
+            meta={'snap_eligible': True},
         ))
 
     # ---------- layout ----------
@@ -544,37 +482,27 @@ def main():
     ytick_vals = [4.0 + (20 + 10 * k) / 60 for k in range(11)]
     ytick_txt  = [sec_to_mss(v * 60) for v in ytick_vals]
 
-    fig.update_layout(
-        title=dict(
-            text='Training quality vs. observed race fitness'
-                 '<br><sub style="font-size:13px;color:#bbb">'
-                 '5K fitness trend across normalized training data compared to race-derived baseline'
-                 '</sub>',
-            y=0.965),
-        template='plotly_dark',
-        paper_bgcolor='#1a1a1a', plot_bgcolor='#1a1a1a',
-        font=dict(color='#eee'),
-        autosize=True,
-        margin=dict(t=110, l=70, r=220, b=60),
+    apply_default_layout(
+        fig,
+        title=title_block(
+            'Training quality vs. observed race fitness',
+            '5K fitness trend across normalized training data compared to race-derived baseline',
+        ),
+        margin=dict(t=TITLE_MARGIN_TOP, l=70, r=220, b=60),
         hovermode=False,
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     groupclick='toggleitem', font=dict(size=11)),
-        xaxis=dict(title='Date', showgrid=True, gridcolor='#333',
+        xaxis=dict(title='Date', showgrid=True, gridcolor=GRID,
                    tick0='2016-01-01', dtick='M12',
                    range=[pd.Timestamp('2016-01-01'),
                           combined['date'].max() + pd.Timedelta(days=30)]),
         yaxis=dict(title='5K-equivalent pace (min/mi)',
                    range=[y_max, y_min],
                    tickmode='array', tickvals=ytick_vals, ticktext=ytick_txt,
-                   showgrid=True, gridcolor='#333'),
+                   showgrid=True, gridcolor=GRID),
     )
 
-    # ---------- write HTML with full-screen dark wrapper ----------
-    Path(OUT_HTML).parent.mkdir(parents=True, exist_ok=True)
-    fig.write_html(OUT_HTML, include_plotlyjs=True, full_html=True,
-                   config={'responsive': True})
-
-    # ----- Build hover payload for custom vertical-hover tooltip -----
+    # ---------- cursor-tooltip payload ----------
     # JS gets ms-since-1970 from plotly's date axis, so payload is keyed by
     # day-since-1970 (not the in-script 2016-01-01 epoch).
     js_epoch = pd.Timestamp('1970-01-01')
@@ -583,7 +511,6 @@ def main():
     plot_end   = combined['date'].max() + pd.Timedelta(days=30)
     all_days   = pd.date_range(plot_start, plot_end, freq='D')
 
-    # CS pace per day (linear interp from cs daily series)
     target_days_2016 = (all_days - epoch).days.astype(float).values
     cs_pace_per_day = np.interp(target_days_2016,
                                 cs['day'].values,
@@ -591,9 +518,8 @@ def main():
 
     # Smoother pace per day. Linear interp between 7-day grid points, but
     # if either bracketing grid point is NaN (gap), the result is NaN.
-    target_days_grid = target_days_2016
-    smoother_per_day = np.full(len(target_days_grid), np.nan)
-    for i, t in enumerate(target_days_grid):
+    smoother_per_day = np.full(len(target_days_2016), np.nan)
+    for i, t in enumerate(target_days_2016):
         j = np.searchsorted(grid_days, t)
         if j == 0 or j >= len(grid_days):
             continue
@@ -604,7 +530,6 @@ def main():
         frac = (t - lg) / (rg - lg) if rg != lg else 0.0
         smoother_per_day[i] = lv * (1 - frac) + rv * frac
 
-    # Sessions list, sorted by date, with rendered HTML
     sessions = []
     for _, r in workouts.iterrows():
         sessions.append({'day': int((r['date'] - js_epoch).days),
@@ -622,94 +547,20 @@ def main():
 
     payload = {
         'first_day': first_day,
-        'last_day':  last_day,
         'cs_pace':   [round(float(v), 4) for v in cs_pace_per_day],
         'smoother':  [None if np.isnan(v) else round(float(v), 4)
                       for v in smoother_per_day],
         'sessions':  sessions,
+        'nearest_window_days': 60,
     }
-    payload_json = json.dumps(payload, separators=(',', ':'))
 
-    # ----- CSS + custom tooltip + spike line + JS -----
-    css_and_js = r"""
-<style>
-html, body {
-  margin: 0; padding: 0;
-  width: 100%; height: 100%;
-  background: #1a1a1a; color: #eee;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-               "Helvetica Neue", Arial, sans-serif;
-}
-.plotly-graph-div, .js-plotly-plot {
-  width: 100% !important;
-  height: 100vh !important;
-}
+    build_js = r"""
+function buildTooltip(day, isSnap, pointHtml) {
+  var P = window.__TT_DATA;
+  var idx = day - P.first_day;
+  if (idx < 0 || idx >= P.cs_pace.length) return '';
 
-#tq-tooltip {
-  position: fixed; top: 0; left: 0;
-  background: rgba(26,26,26,0.96);
-  color: #eee;
-  border: 1px solid #555;
-  padding: 10px 14px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-               "Helvetica Neue", Arial, sans-serif;
-  font-size: 12px;
-  line-height: 1.5;
-  border-radius: 4px;
-  pointer-events: none;
-  z-index: 9999;
-  max-width: 420px;
-  display: none;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-}
-#tq-tooltip .tq-day {
-  font-weight: 600;
-  font-size: 13px;
-  color: #fff;
-  margin-bottom: 4px;
-}
-#tq-tooltip .tq-row {
-  display: flex; justify-content: space-between;
-  gap: 18px; white-space: nowrap;
-}
-#tq-tooltip .tq-row > span:first-child { color: #aaa; }
-#tq-tooltip .tq-section {
-  margin-top: 8px; padding-top: 8px;
-  border-top: 1px solid #444;
-}
-#tq-tooltip .tq-near-label {
-  color: #aaa; font-size: 11px; margin-bottom: 2px;
-}
-#tq-tooltip b { color: #fff; font-weight: 600; }
-#tq-tooltip i { color: #9cf; }
-#tq-tooltip code {
-  background: rgba(255,255,255,0.08);
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
-}
-#tq-spike {
-  position: fixed; top: 0; left: 0;
-  width: 1px; height: 100vh;
-  background: rgba(255,255,255,0.3);
-  pointer-events: none;
-  z-index: 9998;
-  display: none;
-}
-</style>
-<div id="tq-tooltip"></div>
-<div id="tq-spike"></div>
-<script>
-(function() {
-  var data = __TQ_PAYLOAD__;
-  var firstDay = data.first_day;
-  var lastDay  = data.last_day;
-  var csPace   = data.cs_pace;
-  var smoother = data.smoother;
-  var sessions = data.sessions;
   var DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-
   function fmtMin(v) {
     if (v === null || v === undefined || isNaN(v)) return '—';
     var s = Math.round(v * 60);
@@ -721,123 +572,84 @@ html, body {
     var sign = s > 0 ? '+' : (s < 0 ? '' : '');
     return sign + s + 's/mi';
   }
-  function dayLabel(day) {
-    var d = new Date(day * 86400000);
-    var y = d.getUTCFullYear();
-    var m = String(d.getUTCMonth() + 1).padStart(2, '0');
-    var dd = String(d.getUTCDate()).padStart(2, '0');
-    return y + '-' + m + '-' + dd + ' (' + DOW[d.getUTCDay()] + ')';
+  function dateLabel(d) {
+    var dt = new Date(d * 86400000);
+    var y = dt.getUTCFullYear();
+    var m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    var dd = String(dt.getUTCDate()).padStart(2, '0');
+    return y + '-' + m + '-' + dd + ' (' + DOW[dt.getUTCDay()] + ')';
   }
-  function nearestSession(day) {
-    if (sessions.length === 0) return null;
-    if (day <= sessions[0].day) return sessions[0];
-    if (day >= sessions[sessions.length - 1].day) return sessions[sessions.length - 1];
-    var lo = 0, hi = sessions.length - 1;
+
+  var cs   = P.cs_pace[idx];
+  var sm   = P.smoother[idx];
+  var diff = (sm !== null && sm !== undefined) ? Math.round((sm - cs) * 60) : null;
+
+  var html = '';
+  html += '<div class="tt-date">' + dateLabel(day) + '</div>';
+
+  // Section 1: trend info — race fitness from CS, training-quality
+  // smoother, and their difference at this date.
+  html += '<div class="tt-section">';
+  html += '<div class="tt-row"><span>Race fitness</span><b>' + fmtMin(cs) + '/mi</b></div>';
+  html += '<div class="tt-row"><span>Training quality</span><b>' + fmtMin(sm) + '/mi</b></div>';
+  if (diff !== null) {
+    html += '<div class="tt-row"><span>Diff</span><b>' + fmtDiff(diff) + '</b></div>';
+  }
+  html += '</div>';
+
+  // Section 2: session details. Smooth = nearest within window.
+  var run = null;
+  var s = P.sessions;
+  if (isSnap) {
+    var lo = 0, hi = s.length - 1;
     while (lo < hi) {
       var mid = (lo + hi) >> 1;
-      if (sessions[mid].day < day) lo = mid + 1;
-      else hi = mid;
+      if (s[mid].day < day) lo = mid + 1; else hi = mid;
     }
-    var a = sessions[lo - 1], b = sessions[lo];
-    return Math.abs(a.day - day) <= Math.abs(b.day - day) ? a : b;
-  }
-  function buildTooltip(day) {
-    var idx = day - firstDay;
-    if (idx < 0 || idx >= csPace.length) return '';
-    var cs = csPace[idx];
-    var sm = smoother[idx];
-    var diff = (sm !== null && sm !== undefined) ? Math.round((sm - cs) * 60) : null;
-
-    var html = '<div class="tq-day">' + dayLabel(day) + '</div>';
-    html += '<div class="tq-row"><span>Race fitness:</span><span>' + fmtMin(cs) + '/mi</span></div>';
-    html += '<div class="tq-row"><span>Training quality:</span><span>' + fmtMin(sm) + '/mi</span></div>';
-    if (diff !== null) {
-      html += '<div class="tq-row"><span>Diff:</span><span>' + fmtDiff(diff) + '</span></div>';
+    if (s[lo] && s[lo].day === day) run = s[lo];
+  } else if (s.length) {
+    var lo = 0, hi = s.length - 1;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (s[mid].day < day) lo = mid + 1; else hi = mid;
     }
-    var n = nearestSession(day);
-    if (n) {
-      var dd = n.day - day;
-      var lbl = dd === 0 ? 'same day' : (dd > 0 ? '+' + dd + ' day' + (dd === 1 ? '' : 's') : dd + ' day' + (dd === -1 ? '' : 's'));
-      html += '<div class="tq-section">';
-      html += '<div class="tq-near-label">Nearest session [' + lbl + ']</div>';
-      html += n.html;
-      html += '</div>';
+    var cands = [s[lo]];
+    if (lo > 0) cands.push(s[lo - 1]);
+    var best = null, bestAbs = 9999;
+    for (var k = 0; k < cands.length; k++) {
+      var ad = Math.abs(cands[k].day - day);
+      if (ad < bestAbs) { bestAbs = ad; best = cands[k]; }
     }
-    return html;
+    if (best && bestAbs <= P.nearest_window_days) run = best;
   }
 
-  var tt = document.getElementById('tq-tooltip');
-  var spike = document.getElementById('tq-spike');
-  var lastContent = '', ttW = 0, ttH = 0;
-  var rafScheduled = false, pendingX = 0, pendingY = 0;
-  var pendingContent = '', pendingSpikeX = 0, pendingShow = false;
-
-  function update() {
-    rafScheduled = false;
-    if (!pendingShow) {
-      tt.style.display = 'none';
-      spike.style.display = 'none';
-      return;
+  if (run || (isSnap && pointHtml)) {
+    html += '<div class="tt-section">';
+    if (!isSnap && run) {
+      var dd2 = run.day - day;
+      var lbl = dd2 === 0 ? 'same day'
+              : (dd2 > 0 ? '+' + dd2 + ' day' + (dd2 === 1 ? '' : 's')
+                         :  dd2 + ' day' + (dd2 === -1 ? '' : 's'));
+      html += '<div class="tt-section-title">Nearest session [' + lbl + ']</div>';
     }
-    if (pendingContent !== lastContent) {
-      tt.innerHTML = pendingContent;
-      lastContent = pendingContent;
-      ttW = tt.offsetWidth; ttH = tt.offsetHeight;
-    }
-    var x = pendingX + 15, y = pendingY + 10;
-    if (x + ttW > window.innerWidth)  x = pendingX - ttW - 15;
-    if (y + ttH > window.innerHeight) y = pendingY - ttH - 10;
-    tt.style.transform = 'translate(' + x + 'px,' + y + 'px)';
-    tt.style.display = 'block';
-    spike.style.transform = 'translateX(' + pendingSpikeX + 'px)';
-    spike.style.display = 'block';
+    html += (isSnap && pointHtml ? pointHtml : run.html);
+    html += '</div>';
   }
-
-  function bind() {
-    var pdiv = document.querySelector('.plotly-graph-div');
-    if (!pdiv || !pdiv._fullLayout) { setTimeout(bind, 100); return; }
-
-    pdiv.addEventListener('mousemove', function(e) {
-      var fl = pdiv._fullLayout;
-      if (!fl) return;
-      var xa = fl.xaxis;
-      var rect = pdiv.getBoundingClientRect();
-      var bg = fl._size;
-      var pl = rect.left + bg.l, pr = rect.left + bg.l + bg.w;
-      var pt = rect.top + bg.t,  pb = rect.top + bg.t + bg.h;
-      if (e.clientX < pl || e.clientX > pr || e.clientY < pt || e.clientY > pb) {
-        pendingShow = false;
-        if (!rafScheduled) { rafScheduled = true; requestAnimationFrame(update); }
-        return;
-      }
-      var dataX = xa.p2c(e.clientX - rect.left - bg.l);
-      var day = Math.round(dataX / 86400000);
-      if (day < firstDay) day = firstDay;
-      if (day > lastDay)  day = lastDay;
-      pendingContent = buildTooltip(day);
-      pendingX = e.clientX; pendingY = e.clientY;
-      pendingSpikeX = e.clientX;
-      pendingShow = true;
-      if (!rafScheduled) { rafScheduled = true; requestAnimationFrame(update); }
-    });
-    pdiv.addEventListener('mouseleave', function() {
-      pendingShow = false;
-      if (!rafScheduled) { rafScheduled = true; requestAnimationFrame(update); }
-    });
-  }
-  bind();
-})();
-</script>
+  return html;
+}
 """
-    css_and_js = css_and_js.replace('__TQ_PAYLOAD__', payload_json)
 
-    with open(OUT_HTML) as f:
-        html = f.read()
-    html = html.replace('<body>', '<body style="margin:0;padding:0;background:#1a1a1a;">')
-    html = html.replace('</body>', css_and_js + '</body>')
-    with open(OUT_HTML, 'w') as f:
-        f.write(html)
-
+    render_plot(
+        fig, OUT_HTML,
+        title_slug='training_quality',
+        page_title='Training quality',
+        cursor_tooltip=CursorTooltip(
+            payload=payload,
+            build_js=build_js,
+            first_day=first_day,
+            last_day=last_day,
+        ),
+    )
     print(f'\nWrote {OUT_HTML}')
 
 

@@ -41,6 +41,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.cs_projection import (load_cs_outputs, project_races_to_5k_pace,
                                        cs_line_at_anchor, cubic_at_anchor)
+from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
+                            title_block, TITLE_MARGIN_TOP,
+                            sec_to_mss, sec_to_mss_full,
+                            SURFACES, CS_LINE, CS_LINE_WIDTH, GRID,
+                            pr_marker, is_pr_eligible,
+                            PR_LEGEND_NAME, PR_LEGEND_RANK)
 
 
 DEFAULT_IN_DIR = str(DATA_DIR)
@@ -168,43 +174,6 @@ def friendly_distance(d):
     return f'{d:.0f} m'
 
 
-def sec_to_mss(s):
-    """Format seconds as M:SS (or H:MM:SS for >1h). Used for tick labels."""
-    if s is None or pd.isna(s):
-        return ''
-    total = int(round(float(s)))
-    if total >= 3600:
-        h = total // 3600
-        m = (total % 3600) // 60
-        ss = total % 60
-        return f'{h}:{m:02d}:{ss:02d}'
-    m = total // 60
-    ss = total % 60
-    return f'{m}:{ss:02d}'
-
-
-def sec_to_mss_full(s):
-    """Format seconds preserving sub-second precision for race times."""
-    if s is None or pd.isna(s):
-        return ''
-    s = float(s)
-    tenths_total = int(round(s * 10))
-    whole = tenths_total // 10
-    frac_tenths = tenths_total % 10
-    if whole >= 3600:
-        h = whole // 3600
-        m = (whole % 3600) // 60
-        ss = whole % 60
-        body = f'{h}:{m:02d}:{ss:02d}'
-    else:
-        m = whole // 60
-        ss = whole % 60
-        body = f'{m}:{ss:02d}'
-    if frac_tenths > 0:
-        return f'{body}.{frac_tenths}'
-    return body
-
-
 def auto_time_ticks(t_min, t_max, *, target_count=6):
     """Pick sensible tickvals/ticktext on a time axis given a range in
     seconds. Aim for ~target_count ticks; pick from a fixed interval ladder
@@ -260,56 +229,10 @@ def thin_yearly_ticks(x_lo, x_hi, *, max_labels=6):
 
 
 # ---------- visual encoding ----------
-SURFACE_COLORS = {
-    'Track':    '#ff5b4d',
-    'Road':     '#4aa3ff',
-    'XC':       '#4ade80',
-    'Downhill': '#b87de9',
-    'Unknown':  '#888888',
-}
+# Surface palette + legend order. Colors come from src.plotting.tokens.SURFACES
+# (canonical hex). pr_marker / is_pr_eligible / PR_LEGEND_* live in
+# src.plotting.markers.
 SURFACE_LEGEND_ORDER = ['Road', 'Track', 'XC', 'Downhill', 'Unknown']
-
-# CS line styling (matches plot_training_quality.py and bayes_cs_plot.py)
-CS_LINE_COLOR = 'rgb(255,180,80)'
-CS_LINE_WIDTH = 2.5
-
-# PR-overlay styling. PR points get a thin white diamond outline drawn
-# ON TOP of the colored race marker (transparent fill so the underlying
-# surface color shows through). Size is set to base_size + 1 so the ring
-# sits flush against the marker — no halo gap.
-PR_LINE_WIDTH    = 1.5      # px — thin outline, not a halo
-PR_RING_PADDING  = 1        # ring size = base_size + this
-PR_LINE_COLOR    = 'white'
-PR_LEGEND_NAME   = 'PR effort'
-PR_LEGEND_RANK   = 2100  # below CS-derived (2000) and Estimated (2001)
-
-
-def pr_marker(base_size):
-    """Plotly marker dict for the PR overlay (transparent fill, white ring).
-
-    Plotly draws marker.line centered on the size boundary, so setting
-    size = base_size + 1 with line_width=1.5 puts the ring's inner edge
-    at radius (base_size+1)/2 - 0.75, which slightly overlaps the base
-    marker's outer edge — eliminating any visible gap.
-    """
-    return dict(
-        symbol='diamond',
-        size=base_size + PR_RING_PADDING,
-        color='rgba(0,0,0,0)',
-        line=dict(width=PR_LINE_WIDTH, color=PR_LINE_COLOR),
-    )
-
-
-# Surfaces excluded from PR eligibility. Downhill races (net-downhill,
-# course-aided) project to absurdly fast 5K-equivalents that, while still
-# interesting to display, would dominate the running-min sequence and
-# invalidate every subsequent on-the-flat PR. They're plotted normally;
-# they just don't compete for the white PR ring.
-PR_EXCLUDED_SURFACES = {'Downhill'}
-
-
-def is_pr_eligible(surface):
-    return str(surface) not in PR_EXCLUDED_SURFACES
 
 
 def compute_pr_mask(df, *, value_col, date_col='date'):
@@ -346,8 +269,9 @@ def ordinal(n):
 
 
 def build_hover(row):
-    parts = [f"<b>{row['date'].date()}</b>",
-             f"Distance: {friendly_distance(row['distance_m'])}",
+    # The smart-spikeline scaffold prepends the date itself in smooth
+    # mode, so this content focuses on what's race-specific.
+    parts = [f"Distance: {friendly_distance(row['distance_m'])}",
              f"Time: {sec_to_mss_full(row['time_sec_original'])}"]
     # Show the projected 5K-equivalent unless the race already IS a 5K
     is_5k = abs(float(row['distance_m']) - 5000.0) < 1.0
@@ -372,8 +296,7 @@ def build_hover(row):
 def build_hover_anchored(row, anchor_m):
     """Hover string for the by-distance plot. Includes projection to the
     panel's anchor distance and Δ vs CS expectation on that date."""
-    parts = [f"<b>{row['date'].date()}</b>",
-             f"Distance: {friendly_distance(row['distance_m'])}",
+    parts = [f"Distance: {friendly_distance(row['distance_m'])}",
              f"Time: {sec_to_mss_full(row['time_sec_original'])}"]
     is_at_anchor = abs(float(row['distance_m']) - float(anchor_m)) < 1.0
     if not is_at_anchor:
@@ -399,26 +322,6 @@ def build_hover_anchored(row, anchor_m):
     if row.get('note') and str(row['note']) != 'nan':
         parts.append(f"Note: {row['note']}")
     return '<br>'.join(parts)
-
-
-# ---------- output (dark theme, full viewport, matching CS plot) ----------
-def write_dark_html(fig, path, *, extra_html=''):
-    fig.write_html(path, include_plotlyjs=True, full_html=True,
-                   config={'responsive': True})
-    css = (
-        '<style>'
-        'html,body{margin:0;padding:0;width:100%;height:100%;'
-        'background:#1a1a1a;color:#eee;'
-        'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;}'
-        '.plotly-graph-div,.js-plotly-plot{width:100%!important;height:100vh!important;}'
-        '</style>')
-    with open(path, 'r') as f:
-        html = f.read()
-    html = html.replace('<head>', '<head>' + css, 1)
-    if extra_html:
-        html = html.replace('</body>', extra_html + '</body>')
-    with open(path, 'w') as f:
-        f.write(html)
 
 
 def build_distance_filter_ui(bin_names):
@@ -611,7 +514,7 @@ def add_cs_line(fig, daily_summary, *, row=None, col=None, show_legend=True,
     trace = go.Scatter(
         x=daily_summary['date'], y=daily_summary['p5k_implied_min'],
         mode='lines', name=legend_name,
-        line=dict(color=CS_LINE_COLOR, width=CS_LINE_WIDTH),
+        line=dict(color=CS_LINE, width=CS_LINE_WIDTH),
         hoverinfo='skip',
         showlegend=show_legend,
         legendgroup='cs',
@@ -692,13 +595,13 @@ def add_cs_line_blended(fig, daily_summary, race_dates, *,
     fig.add_trace(go.Scatter(
         x=daily_summary['date'], y=y_solid,
         mode='lines', name='CS-derived 5K pace',
-        line=dict(color=CS_LINE_COLOR, width=CS_LINE_WIDTH),
+        line=dict(color=CS_LINE, width=CS_LINE_WIDTH),
         hoverinfo='skip', showlegend=True, legendgroup='cs',
         legendrank=2000))
     fig.add_trace(go.Scatter(
         x=dotted_dates, y=dotted_ys,
         mode='lines', name='Estimated 5K pace',
-        line=dict(color=CS_LINE_COLOR, width=CS_LINE_WIDTH, dash='dot'),
+        line=dict(color=CS_LINE, width=CS_LINE_WIDTH, dash='dot'),
         hoverinfo='skip', showlegend=True, legendgroup='cs',
         legendrank=2001))
 
@@ -729,7 +632,7 @@ def add_race_traces_filterable(fig, df, *, marker_size=9):
         sub = df[df['surface_plot'] == surf]
         if len(sub) == 0:
             continue
-        color = SURFACE_COLORS.get(surf, '#888888')
+        color = SURFACES.get(surf, '#888888')
         common_marker = dict(
             color=color, size=marker_size, symbol='diamond',
             opacity=0.85,
@@ -740,6 +643,8 @@ def add_race_traces_filterable(fig, df, *, marker_size=9):
             marker=common_marker,
             legendgroup=surf, showlegend=True, hoverinfo='skip'))
         # Per-bin data traces (no legend; tagged for the filter JS).
+        # snap_eligible = True so the smart spikeline scaffold treats each
+        # race marker as a snap target and reads customdata for snap content.
         for bin_name in bin_names:
             s2 = sub[sub['filter_bin'] == bin_name]
             if len(s2) == 0:
@@ -748,11 +653,12 @@ def add_race_traces_filterable(fig, df, *, marker_size=9):
                 x=s2['date'], y=s2['pace_norm_min'],
                 mode='markers', name=surf,
                 marker=common_marker,
-                hovertemplate='%{customdata}<extra></extra>',
+                hoverinfo='skip',
                 customdata=s2['hover'],
                 legendgroup=surf, showlegend=False,
                 meta={'filter_bin': bin_name,
-                      'pr_eligible': is_pr_eligible(surf)}))
+                      'pr_eligible': is_pr_eligible(surf),
+                      'snap_eligible': True}))
 
 
 def add_pr_overlay_filterable(fig, df, *, value_col='pace_norm_min',
@@ -793,26 +699,109 @@ def add_pr_overlay_filterable(fig, df, *, value_col='pace_norm_min',
         meta={'is_pr_legend_sentinel': True}))
 
 
-def build_pr_nonclick_js():
-    """Standalone JS that makes the PR-effort legend entry non-clickable.
+def build_per_panel_pr_js():
+    """JS for the by-distance plot: per-panel PR overlay that recomputes
+    on legend toggle.
 
-    Used by the by-distance plot, which doesn't have the filter UI's JS.
-    Returning false from plotly_legendclick cancels the toggle AND prevents
-    the legend marker from dimming.
+    Each race trace is tagged with meta.panel_name + meta.pr_eligible. Each
+    PR overlay is tagged with meta.panel_name + meta.is_pr_overlay. On any
+    plotly_restyle that isn't self-inflicted (i.e. didn't only touch PR
+    overlays), we walk all traces, group races by panel, compute the
+    chronological running min on visible PR-eligible races, and update
+    each panel's overlay in a single batched restyle.
+
+    The PR-effort legend sentinel still returns false from legendclick so
+    clicking it doesn't toggle visibility.
     """
     return """
 <script>
-(function() {
+(function () {
+  function findPlot() { return document.querySelector('.plotly-graph-div'); }
+
+  // Plotly may pack numeric arrays as a typedarray spec. _inputArray is the
+  // original, typically Float64Array (Array.isArray returns false on it).
+  function asArray(v) {
+    if (v == null) return null;
+    if (Array.isArray(v)) return v;
+    if (v._inputArray && typeof v._inputArray.length === 'number') return v._inputArray;
+    if (typeof v.length === 'number') return v;
+    return null;
+  }
+
+  function recomputePanelPRs() {
+    var plot = findPlot();
+    if (!plot || !plot.data || !window.Plotly) return;
+    var byPanel = {};
+    plot.data.forEach(function (t, i) {
+      var m = t.meta;
+      if (!m || !m.panel_name) return;
+      var p = byPanel[m.panel_name];
+      if (!p) { p = byPanel[m.panel_name] = { races: [], overlayIdx: -1 }; }
+      if (m.is_pr_overlay) {
+        p.overlayIdx = i;
+      } else if (m.pr_eligible) {
+        var v = t.visible;
+        if (v === false || v === 'legendonly') return;
+        var xs = asArray(t.x);
+        var ys = asArray(t.y);
+        if (!xs || !ys) return;
+        for (var k = 0; k < xs.length; k++) {
+          var y = ys[k];
+          if (y == null || isNaN(y)) continue;
+          p.races.push({ x: xs[k], y: y, ts: new Date(xs[k]).getTime() });
+        }
+      }
+    });
+
+    var indices = [], xs_all = [], ys_all = [];
+    Object.keys(byPanel).forEach(function (name) {
+      var info = byPanel[name];
+      if (info.overlayIdx < 0) return;
+      info.races.sort(function (a, b) { return a.ts - b.ts; });
+      var best = Infinity, prX = [], prY = [];
+      for (var i = 0; i < info.races.length; i++) {
+        var p = info.races[i];
+        if (p.y < best) { best = p.y; prX.push(p.x); prY.push(p.y); }
+      }
+      indices.push(info.overlayIdx);
+      xs_all.push(prX);
+      ys_all.push(prY);
+    });
+    if (indices.length === 0) return;
+    Plotly.restyle(plot, { x: xs_all, y: ys_all }, indices);
+  }
+
+  function isSelfRestyle(eventData) {
+    var indices = (eventData && eventData[1]) || null;
+    if (!indices || !indices.length) return false;
+    var plot = findPlot();
+    if (!plot) return false;
+    return indices.every(function (i) {
+      var m = plot.data[i] && plot.data[i].meta;
+      return m && m.is_pr_overlay;
+    });
+  }
+
   function attach() {
-    var plot = document.querySelector('.plotly-graph-div');
+    var plot = findPlot();
     if (!plot || !plot.data || !window.Plotly) { setTimeout(attach, 100); return; }
-    plot.on('plotly_legendclick', function(ev) {
+    plot.on('plotly_legendclick', function (ev) {
       var t = plot.data[ev.curveNumber];
       if (t && t.meta && t.meta.is_pr_legend_sentinel) return false;
     });
-    plot.on('plotly_legenddoubleclick', function(ev) {
+    plot.on('plotly_legenddoubleclick', function (ev) {
       var t = plot.data[ev.curveNumber];
       if (t && t.meta && t.meta.is_pr_legend_sentinel) return false;
+    });
+    // Run synchronously inside the restyle event so our overlay update
+    // is batched with the visibility-toggle paint. Deferring via
+    // setTimeout(0) splits this into two paints — visibility changes
+    // first, PR diamonds catch up a frame later. Plotly's plotly_restyle
+    // is dispatched after its internal state mutation completes, so it
+    // is safe to issue another restyle from inside the handler.
+    plot.on('plotly_restyle', function (ev) {
+      if (isSelfRestyle(ev)) return;
+      recomputePanelPRs();
     });
   }
   attach();
@@ -823,7 +812,7 @@ def build_pr_nonclick_js():
 
 def yearly_x_axis(**kwargs):
     """Yearly gridline + label config for the x-axis (matches CS plot)."""
-    base = dict(showgrid=True, gridcolor='#333',
+    base = dict(showgrid=True, gridcolor=GRID,
                 dtick='M12', tickformat='%Y')
     base.update(kwargs)
     return base
@@ -833,7 +822,7 @@ def reversed_pace_y_axis(**kwargs):
     base = dict(title='5K-equivalent pace (min/mi)',
                 range=[Y_MAX, Y_MIN],
                 tickmode='array', tickvals=YTICK_VALS, ticktext=YTICK_TXT,
-                showgrid=True, gridcolor='#333')
+                showgrid=True, gridcolor=GRID)
     base.update(kwargs)
     return base
 
@@ -907,25 +896,127 @@ def main():
     add_cs_line_blended(fig1, daily_summary, elig['date'])
     add_race_traces_filterable(fig1, elig, marker_size=9)
     add_pr_overlay_filterable(fig1, elig, value_col='pace_norm_min')
-    fig1.update_layout(
-        title=dict(text='Lifetime races: 5K-equivalent pace<br>'
-                        '<sub style="font-size:13px;color:#bbb">'
-                        'Hyperbolic CS projection with corrections applied for short and long distances'
-                        '</sub>',
-                   y=0.97, yanchor='top'),
-        template='plotly_dark',
-        paper_bgcolor='#1a1a1a', plot_bgcolor='#1a1a1a',
-        font=dict(color='#eee'),
+    apply_default_layout(
+        fig1,
+        title=title_block(
+            'Lifetime races: 5K-equivalent pace',
+            'Hyperbolic CS projection with corrections applied for short and long distances',
+        ),
         hovermode='closest',
-        autosize=True,
-        margin=dict(t=130, l=70, r=200, b=60),
+        margin=dict(t=TITLE_MARGIN_TOP, l=70, r=200, b=60),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02),
         xaxis=yearly_x_axis(title='Date', range=[x_lo, x_hi]),
         yaxis=reversed_pace_y_axis())
 
     out1 = os.path.join(args.out_dir, 'race_pace_all.html')
     filter_ui = build_distance_filter_ui([b[0] for b in FILTER_BINS])
-    write_dark_html(fig1, out1, extra_html=filter_ui)
+
+    # Smooth-mode tooltip payload: per-day CS pace + sorted race list, so
+    # the cursor scaffold can show "CS pace at this date + nearest race
+    # within ±N days" when hovering empty space. Snap mode is per-marker
+    # via customdata (already populated by add_race_traces_filterable).
+    js_epoch = pd.Timestamp('1970-01-01')
+    cs_dates = pd.to_datetime(daily_summary['date'])
+    cs_first_day = int((cs_dates.iloc[0] - js_epoch).days)
+    cs_last_day  = int((cs_dates.iloc[-1] - js_epoch).days)
+    cs_pace_per_day = [round(float(v), 4)
+                       for v in daily_summary['p5k_implied_min'].values]
+
+    sessions_all = []
+    for _, r in elig.iterrows():
+        sessions_all.append({'day': int((r['date'] - js_epoch).days),
+                             'html': r['hover']})
+    sessions_all.sort(key=lambda s: s['day'])
+
+    payload_all = {
+        'first_day': cs_first_day,
+        'cs_pace':   cs_pace_per_day,
+        'sessions':  sessions_all,
+        'nearest_window_days': 60,
+    }
+    smooth_build_js_all = r"""
+function buildTooltip(day, isSnap, pointHtml) {
+  var P = window.__TT_DATA;
+  var idx = day - P.first_day;
+  if (idx < 0 || idx >= P.cs_pace.length) return '';
+
+  var DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  function paceMSS(min) {
+    if (min == null || isNaN(min)) return '—';
+    var s = Math.round(min * 60);
+    var mn = Math.floor(s / 60), sc = s % 60;
+    return mn + ':' + (sc < 10 ? '0' : '') + sc;
+  }
+  function dateLabel(d) {
+    var dt = new Date(d * 86400000);
+    var y = dt.getUTCFullYear();
+    var m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    var dd = String(dt.getUTCDate()).padStart(2, '0');
+    return y + '-' + m + '-' + dd + ' (' + DOW[dt.getUTCDay()] + ')';
+  }
+
+  var html = '';
+  html += '<div class="tt-date">' + dateLabel(day) + '</div>';
+
+  // Section 1: trend info — CS-derived 5K pace at this date.
+  html += '<div class="tt-section">';
+  html += '<div class="tt-row"><span>CS-derived pace</span><b>' + paceMSS(P.cs_pace[idx]) + '/mi</b></div>';
+  html += '</div>';
+
+  // Section 2: race details. Smooth = nearest race within window.
+  var run = null;
+  var s = P.sessions;
+  if (isSnap) {
+    var lo = 0, hi = s.length - 1;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (s[mid].day < day) lo = mid + 1; else hi = mid;
+    }
+    if (s[lo] && s[lo].day === day) run = s[lo];
+  } else if (s.length) {
+    var lo = 0, hi = s.length - 1;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (s[mid].day < day) lo = mid + 1; else hi = mid;
+    }
+    var cands = [s[lo]];
+    if (lo > 0) cands.push(s[lo - 1]);
+    var best = null, bestAbs = 9999;
+    for (var k = 0; k < cands.length; k++) {
+      var ad = Math.abs(cands[k].day - day);
+      if (ad < bestAbs) { bestAbs = ad; best = cands[k]; }
+    }
+    if (best && bestAbs <= P.nearest_window_days) run = best;
+  }
+
+  if (run || (isSnap && pointHtml)) {
+    html += '<div class="tt-section">';
+    if (!isSnap && run) {
+      var dd2 = run.day - day;
+      var lbl = dd2 === 0 ? 'same day'
+              : (dd2 > 0 ? '+' + dd2 + ' day' + (dd2 === 1 ? '' : 's')
+                         :  dd2 + ' day' + (dd2 === -1 ? '' : 's'));
+      html += '<div class="tt-section-title">Nearest race [' + lbl + ']</div>';
+    }
+    html += (isSnap && pointHtml ? pointHtml : run.html);
+    html += '</div>';
+  }
+  return html;
+}
+"""
+
+    render_plot(
+        fig1, out1,
+        title_slug='race_pace_all',
+        page_title='Races',
+        cursor_tooltip=CursorTooltip(
+            payload=payload_all,
+            build_js=smooth_build_js_all,
+            first_day=cs_first_day,
+            last_day=cs_last_day,
+        ),
+        overlay_html=filter_ui,
+    )
     print(f'Wrote {out1}')
 
     # ---------- plot 2: 8 distance-bin subplots ----------
@@ -971,7 +1062,17 @@ def main():
 
     surfaces_seen = set()
     cs_legend_drawn = False
-    pr_legend_drawn = False
+
+    # Per-panel data for the smart-spikeline buildTooltip — keyed by the
+    # subplot's xaxis id (Plotly assigns 'x', 'x2', ... left-to-right /
+    # top-to-bottom). The scaffold passes the active xaxisId to
+    # buildTooltip, which then looks up the right panel's CS prediction
+    # array and race list.
+    js_epoch = pd.Timestamp('1970-01-01')
+    panel_payload = {}
+    panel_first_day = int((daily_summary['date'].iloc[0] - js_epoch).days)
+    panel_last_day  = int((daily_summary['date'].iloc[-1] - js_epoch).days)
+    daily_dates_idx = ((daily_summary['date'] - js_epoch).dt.days).astype(int).values
 
     for i, name in enumerate(group_names):
         r = i // 4 + 1
@@ -1022,6 +1123,39 @@ def main():
         sub_proj['hover'] = sub_proj.apply(
             lambda row: build_hover_anchored(row, anchor), axis=1)
 
+        # Build the per-panel tooltip payload. cs_for_day uses the cubic
+        # in the hand-drawn era and the real CS line afterwards (same
+        # rule as _cs_at above). round() keeps the JSON small.
+        cs_for_day = []
+        for d_idx, d_val in zip(daily_dates_idx, daily_summary['date']):
+            d_date = d_val.date()
+            v = (cubic_by_date.loc[d_date] if d_date <= hd_end_date
+                 and d_date in cubic_by_date.index else cs_by_date.get(d_date, np.nan))
+            cs_for_day.append(None if v is None or pd.isna(v) else round(float(v), 1))
+        panel_sessions = []
+        for _, r2 in sub_proj.iterrows():
+            panel_sessions.append({
+                'day':  int((r2['date'] - js_epoch).days),
+                'time_norm_sec': (None if pd.isna(r2.get('time_norm_sec'))
+                                  else round(float(r2['time_norm_sec']), 1)),
+                'cs_pred_sec':   (None if pd.isna(r2.get('cs_pred_sec'))
+                                  else round(float(r2['cs_pred_sec']), 1)),
+                'html':  r2['hover'],
+            })
+        panel_sessions.sort(key=lambda s: s['day'])
+
+        # Plotly 'x' for the first subplot, 'x2' onward for subsequent.
+        # The make_subplots layout ordering puts row=1 col=1 at index 1,
+        # row=1 col=2 at index 2, etc. (i.e. left-to-right, top-to-bottom).
+        sp_idx = i + 1
+        xa_id = 'x' if sp_idx == 1 else f'x{sp_idx}'
+        panel_payload[xa_id] = {
+            'name':        name,
+            'anchor_m':    anchor,
+            'cs_pred_sec': cs_for_day,
+            'sessions':    panel_sessions,
+        }
+
         # 5. CS solid trace (post-handdrawn) and dotted (handdrawn).
         #    Only the first subplot puts the entries in the legend.
         daily_dates = daily_summary['date'].values
@@ -1030,7 +1164,7 @@ def main():
             x=daily_dates[mask_solid],
             y=cs_times[mask_solid],
             mode='lines', name='CS-derived',
-            line=dict(color=CS_LINE_COLOR, width=CS_LINE_WIDTH),
+            line=dict(color=CS_LINE, width=CS_LINE_WIDTH),
             hoverinfo='skip', legendgroup='cs',
             showlegend=(not cs_legend_drawn),
             legendrank=2000),
@@ -1039,7 +1173,7 @@ def main():
             fig2.add_trace(go.Scatter(
                 x=dotted_dates, y=dotted_times,
                 mode='lines', name='Estimated',
-                line=dict(color=CS_LINE_COLOR, width=CS_LINE_WIDTH, dash='dot'),
+                line=dict(color=CS_LINE, width=CS_LINE_WIDTH, dash='dot'),
                 hoverinfo='skip', legendgroup='cs',
                 showlegend=(not cs_legend_drawn),
                 legendrank=2001),
@@ -1052,7 +1186,7 @@ def main():
             s2 = sub_proj[sub_proj['surface_plot'] == surf]
             if len(s2) == 0:
                 continue
-            color = SURFACE_COLORS.get(surf, '#888888')
+            color = SURFACES.get(surf, '#888888')
             show_legend = surf not in surfaces_seen
             surfaces_seen.add(surf)
             fig2.add_trace(go.Scatter(
@@ -1061,34 +1195,38 @@ def main():
                 marker=dict(color=color, size=8, symbol='diamond',
                             opacity=0.85,
                             line=dict(width=0.5, color='white')),
-                hovertemplate='%{customdata}<extra></extra>',
+                hoverinfo='skip',
                 customdata=s2['hover'],
-                legendgroup=surf, showlegend=show_legend),
+                legendgroup=surf, showlegend=show_legend,
+                meta={'panel_name': name,
+                      'pr_eligible': bool(is_pr_eligible(surf)),
+                      'snap_eligible': True}),
                 row=r, col=c)
 
         # 6b. Within-panel PR overlay. Running min on time_norm_sec
         #     (= time at this panel's anchor distance), computed across all
         #     PR-eligible races in this panel — Downhill races are excluded
         #     from PR competition (they still display as colored markers,
-        #     they just don't earn the white ring).
+        #     they just don't earn the white ring). Tagged with panel_name
+        #     so the legend-toggle handler can recompute it per panel.
+        #
+        #     The legend entry for "PR effort" lives on a dedicated
+        #     off-range sentinel trace added once after this loop; that
+        #     way the legend item never disappears when a panel's overlay
+        #     goes empty (e.g. user hides the only surface in that bin).
         eligible = sub_proj[sub_proj['surface_plot'].apply(is_pr_eligible)]
         is_pr_panel = compute_pr_mask(eligible, value_col='time_norm_sec')
         pr_panel = eligible[is_pr_panel].sort_values('date')
         if len(pr_panel) > 0:
-            owns_legend = not pr_legend_drawn
             fig2.add_trace(go.Scatter(
                 x=pr_panel['date'], y=pr_panel['time_norm_sec'],
                 mode='markers', name=PR_LEGEND_NAME,
                 marker=pr_marker(base_size=8),
                 hoverinfo='skip',
                 legendgroup='pr',
-                showlegend=owns_legend,
-                legendrank=PR_LEGEND_RANK,
-                # Only the legend-owning trace flags as sentinel — that's
-                # the one whose click event the JS handler intercepts.
-                meta=({'is_pr_legend_sentinel': True} if owns_legend else None)),
+                showlegend=False,
+                meta={'panel_name': name, 'is_pr_overlay': True}),
                 row=r, col=c)
-            pr_legend_drawn = True
 
         # 7. Per-subplot dynamic axes
         x_data_min = sub_proj['date'].min()
@@ -1126,31 +1264,150 @@ def main():
         fig2.update_xaxes(
             range=[x_lo_sub, x_hi_sub],
             tickmode='array', tickvals=xticks, ticktext=xlabels,
-            showgrid=True, gridcolor='#333',
+            showgrid=True, gridcolor=GRID,
             row=r, col=c)
         fig2.update_yaxes(
             range=[y_hi_sub, y_lo_sub],   # reversed: faster up
             tickmode='array', tickvals=ticks, ticktext=labels,
-            showgrid=True, gridcolor='#333',
+            showgrid=True, gridcolor=GRID,
             row=r, col=c)
 
-    fig2.update_layout(
-        title=dict(text='Lifetime races normalized by distance<br>'
-                        '<sub style="font-size:13px;color:#bbb">'
-                        'Hyperbolic CS projection with time prediction lines'
-                        '</sub>',
-                   y=0.97, yanchor='top'),
-        template='plotly_dark',
-        paper_bgcolor='#1a1a1a', plot_bgcolor='#1a1a1a',
-        font=dict(color='#eee'),
-        autosize=True,
+    # Off-range PR-legend sentinel — a single point at (1900-01-01, 6.0)
+    # outside every subplot's x-range. Hosts the legend entry that
+    # represents PR effort across all panels; never goes empty even when
+    # a panel's overlay is restyled to []. Click is suppressed by the
+    # plotly_legendclick handler (returns false on this trace).
+    fig2.add_trace(go.Scatter(
+        x=[pd.Timestamp('1900-01-01')], y=[6.0],
+        mode='markers', name=PR_LEGEND_NAME,
+        marker=pr_marker(base_size=8),
+        hoverinfo='skip',
+        legendgroup='pr',
+        showlegend=True,
+        legendrank=PR_LEGEND_RANK,
+        meta={'is_pr_legend_sentinel': True}),
+        row=1, col=1)
+
+    apply_default_layout(
+        fig2,
+        title=title_block(
+            'Lifetime races normalized by distance',
+            'Hyperbolic CS projection with time prediction lines',
+        ),
         hovermode='closest',
-        margin=dict(t=130, l=70, r=200, b=60),
+        margin=dict(t=TITLE_MARGIN_TOP, l=70, r=200, b=60),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02))
     fig2.update_xaxes(title_text='Date', row=2)
 
     out2 = os.path.join(args.out_dir, 'race_pace_by_distance.html')
-    write_dark_html(fig2, out2, extra_html=build_pr_nonclick_js())
+
+    # Smooth + snap behaviour per panel. The scaffold passes the cursor's
+    # active xaxisId; buildTooltip indexes panel_payload by that ID to
+    # show the panel's anchor + CS prediction + nearest race in time.
+    payload_by_dist = {
+        'first_day': panel_first_day,
+        'panels':    panel_payload,
+        'nearest_window_days': 60,
+    }
+    smooth_build_js_by_dist = r"""
+function buildTooltip(day, isSnap, pointHtml, ctx) {
+  var P = window.__TT_DATA;
+  var xaId = (ctx && ctx.xaxisId) || 'x';
+  var panel = P.panels[xaId];
+  if (!panel) return '';
+  var idx = day - P.first_day;
+  if (idx < 0 || idx >= panel.cs_pred_sec.length) return '';
+
+  var DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  function timeFmt(s) {
+    if (s == null) return '—';
+    var x = Math.round(s);
+    if (x >= 3600) {
+      var h = Math.floor(x / 3600), m = Math.floor((x % 3600) / 60), sc = x % 60;
+      return h + ':' + (m < 10 ? '0' : '') + m + ':' + (sc < 10 ? '0' : '') + sc;
+    }
+    var mn = Math.floor(x / 60), sc = x % 60;
+    return mn + ':' + (sc < 10 ? '0' : '') + sc;
+  }
+  function distLabel(m) {
+    if (Math.abs(m - 1609.344) < 5) return '1 mi';
+    if (Math.abs(m - 3218.688) < 5) return '2 mi';
+    if (m >= 19410 && m <= 22785) return 'half marathon';
+    if (m >= 38819 && m <= 45570) return 'marathon';
+    return Math.round(m) + 'm';
+  }
+  function dateLabel(d) {
+    var dt = new Date(d * 86400000);
+    var y = dt.getUTCFullYear();
+    var mo = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    var dd = String(dt.getUTCDate()).padStart(2, '0');
+    return y + '-' + mo + '-' + dd + ' (' + DOW[dt.getUTCDay()] + ')';
+  }
+
+  var html = '';
+  html += '<div class="tt-date">' + dateLabel(day) + '</div>';
+
+  // Section 1: per-panel CS prediction at the panel's anchor distance.
+  html += '<div class="tt-section">';
+  html += '<div class="tt-section-title">' + panel.name + '</div>';
+  html += '<div class="tt-row"><span>CS-predicted ' + distLabel(panel.anchor_m) + '</span><b>'
+        + timeFmt(panel.cs_pred_sec[idx]) + '</b></div>';
+  html += '</div>';
+
+  // Section 2: race details. Smooth = nearest within window in this panel.
+  var run = null;
+  var s = panel.sessions;
+  if (isSnap) {
+    var lo = 0, hi = s.length - 1;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (s[mid].day < day) lo = mid + 1; else hi = mid;
+    }
+    if (s[lo] && s[lo].day === day) run = s[lo];
+  } else if (s.length) {
+    var lo = 0, hi = s.length - 1;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (s[mid].day < day) lo = mid + 1; else hi = mid;
+    }
+    var cands = [s[lo]];
+    if (lo > 0) cands.push(s[lo - 1]);
+    var best = null, bestAbs = 9999;
+    for (var k = 0; k < cands.length; k++) {
+      var ad = Math.abs(cands[k].day - day);
+      if (ad < bestAbs) { bestAbs = ad; best = cands[k]; }
+    }
+    if (best && bestAbs <= P.nearest_window_days) run = best;
+  }
+
+  if (run || (isSnap && pointHtml)) {
+    html += '<div class="tt-section">';
+    if (!isSnap && run) {
+      var dd2 = run.day - day;
+      var lbl = dd2 === 0 ? 'same day'
+              : (dd2 > 0 ? '+' + dd2 + ' day' + (dd2 === 1 ? '' : 's')
+                         :  dd2 + ' day' + (dd2 === -1 ? '' : 's'));
+      html += '<div class="tt-section-title">Nearest race [' + lbl + ']</div>';
+    }
+    html += (isSnap && pointHtml ? pointHtml : run.html);
+    html += '</div>';
+  }
+  return html;
+}
+"""
+
+    render_plot(
+        fig2, out2,
+        title_slug='race_pace_by_distance',
+        page_title='Races by distance',
+        cursor_tooltip=CursorTooltip(
+            payload=payload_by_dist,
+            build_js=smooth_build_js_by_dist,
+            first_day=panel_first_day,
+            last_day=panel_last_day,
+        ),
+        overlay_html=build_per_panel_pr_js(),
+    )
     print(f'Wrote {out2}')
 
     # (The dedicated 5K plot was replaced by the distance-filter checkboxes

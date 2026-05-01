@@ -42,6 +42,9 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.plotting import (render_plot, apply_default_layout,
+                            title_block, TITLE_MARGIN_TOP,
+                            FG, GRID)
 
 
 DEFAULT_DAILY = str(DATA_DIR / 'daily.csv')
@@ -536,20 +539,7 @@ def build_tickvals_for_monthly(monthly_bin_list):
 
 # ---------- write HTML ----------
 def write_html(fig, path, legend_html, payload):
-    fig.write_html(path, include_plotlyjs=True, full_html=True,
-                   config={'responsive': True})
-
-    fullview_css = (
-        '<style>'
-        'html,body{margin:0;padding:0;width:100%;height:100%;'
-        'background:#1a1a1a;color:#eee;'
-        'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",'
-        'Roboto,Arial,sans-serif;}'
-        '.plotly-graph-div,.js-plotly-plot{width:100%!important;'
-        'height:100vh!important;}'
-        '.barlayer path{shape-rendering:crispEdges;}'
-        '</style>'
-    )
+    extra_head_css = '.barlayer path{shape-rendering:crispEdges;}'
 
     overlay_css = r"""
 <style>
@@ -906,13 +896,15 @@ def write_html(fig, path, legend_html, payload):
 
     js = js.replace('__GEO_PAYLOAD__', json.dumps(payload))
 
-    with open(path, 'r') as f:
-        html = f.read()
-    html = html.replace('<head>', '<head>' + fullview_css + overlay_css, 1)
-    html = html.replace('</body>',
-                        toggle_html + legend_html + tooltip_html + js + '</body>')
-    with open(path, 'w') as f:
-        f.write(html)
+    overlay_html = (overlay_css + toggle_html + legend_html
+                    + tooltip_html + js)
+    render_plot(
+        fig, path,
+        title_slug='mileage_by_geography',
+        page_title='Geography',
+        overlay_html=overlay_html,
+        extra_head_css=extra_head_css,
+    )
 
 
 # ---------- main ----------
@@ -971,36 +963,26 @@ def main():
     n_cities = df['city_state'].nunique()
 
     fig = go.Figure(data=bar_traces)
-    fig.update_layout(
-        title=dict(
-            text=('<b>Mileage locations by city</b>'
-                  '<br><sub style="font-size:13px;color:#bbb">'
-                  f'{total_miles:,.0f} mi across {n_cities} cities, '
-                  f'2016-present'
-                  '</sub>'),
-            x=0.01, xanchor='left',
-            y=0.965, yanchor='top',
-            font=dict(color='#eee'),
+    apply_default_layout(
+        fig,
+        title=title_block(
+            'Mileage locations by city',
+            f'{total_miles:,.0f} mi across {n_cities} cities, 2016-present',
         ),
         barmode='stack',
         bargap=0,
-        template='plotly_dark',
-        paper_bgcolor='#1a1a1a',
-        plot_bgcolor='#1a1a1a',
-        font=dict(color='#eee'),
-        autosize=True,
-        margin=dict(t=110, l=70, r=340, b=60),
+        margin=dict(t=TITLE_MARGIN_TOP, l=70, r=340, b=60),
         showlegend=False,
         hovermode=False,
         xaxis=dict(
             type='category',
-            gridcolor='#2a2a2a',
+            gridcolor=GRID,
             tickmode='array',
             tickvals=y_bins,
             ticktext=y_bins,
         ),
-        yaxis=dict(title='Miles', gridcolor='#2a2a2a',
-                   zerolinecolor='#2a2a2a'),
+        yaxis=dict(title='Miles', gridcolor=GRID,
+                   zerolinecolor=GRID),
     )
 
     out_path = os.path.join(args.out_dir, 'mileage_by_geography.html')
