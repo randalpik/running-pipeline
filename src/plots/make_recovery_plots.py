@@ -99,6 +99,7 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             sec_to_mss, FG,
                             CS_LINE, CS_LINE_WIDTH, TREND_LINE, TREND_WIDTH,
                             GRID, gaussian_rolling_trend)
+from src.shared.paths import DEBUG_DIR
 from src.shared.cs_projection import load_cs_outputs
 
 
@@ -235,6 +236,11 @@ def main():
     ap.add_argument('--daily', default=DEFAULT_DAILY)
     ap.add_argument('--races', default=DEFAULT_RACES)
     ap.add_argument('--out-dir', default=DEFAULT_OUT)
+    ap.add_argument('--diagnostics', action='store_true',
+                    help='Also write route_betas.csv (per-route pace '
+                         'coefficients) into output/debug/. Off by default '
+                         '— the file is informational and not consumed by '
+                         'anything downstream.')
     args = ap.parse_args()
 
     print(f'Loading daily.csv from {args.daily}...')
@@ -853,14 +859,18 @@ function buildTooltip(day, isSnap, pointHtml) {
     # uncontaminated and represent the pace cost of each route at easy
     # effort. The elev/terrain model parameters from the cross-route
     # exploration are NOT exported here since they're a separate analysis.
-    suffix = f'_{args.tag}' if args.tag else ''
-    betas_csv = os.path.join(args.out_dir, f'route_betas{suffix}.csv')
-    betas_df = pd.DataFrame([
-        {'route': r, 'n': int(route_counts[r]), 'beta_sec_per_mi': betas[route_col_map[r]]}
-        for r in qualifying_routes
-    ]).sort_values('beta_sec_per_mi')
-    betas_df.to_csv(betas_csv, index=False)
-    print(f'Wrote {betas_csv} ({len(betas_df)} routes)')
+    # Currently no downstream code reads this file, so it's gated behind
+    # --diagnostics and routed to output/debug/.
+    if args.diagnostics:
+        suffix = f'_{args.tag}' if args.tag else ''
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        betas_csv = DEBUG_DIR / f'route_betas{suffix}.csv'
+        betas_df = pd.DataFrame([
+            {'route': r, 'n': int(route_counts[r]), 'beta_sec_per_mi': betas[route_col_map[r]]}
+            for r in qualifying_routes
+        ]).sort_values('beta_sec_per_mi')
+        betas_df.to_csv(betas_csv, index=False)
+        print(f'Wrote {betas_csv} ({len(betas_df)} routes)')
 
 
 def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,

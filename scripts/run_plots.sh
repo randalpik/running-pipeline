@@ -4,28 +4,36 @@
 # are already present in data/. Run scripts/run_pipeline.sh first if not.
 #
 # Flags:
-#   --verbose / -v   Show full output from every plot script (default: quiet).
-#   --help           Show this help.
+#   --diagnostics / -d   Also write per-plot diagnostic artifacts (currently:
+#                        route_betas.csv from the recovery plot) into
+#                        output/debug/. Off by default.
+#   --verbose     / -v   Show full output from every plot script (default: quiet).
+#   --help               Show this help.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+diagnostics=0
 verbose=0
 
 for arg in "$@"; do
   case "$arg" in
-    --verbose|-v) verbose=1 ;;
+    --diagnostics|-d) diagnostics=1 ;;
+    --verbose|-v)     verbose=1 ;;
     --help)
-      sed -n '2,8p' "$0"
+      sed -n '2,11p' "$0"
       exit 0
       ;;
     *)
       echo "Unknown argument: $arg" >&2
-      echo "Usage: $0 [--verbose|-v]" >&2
+      echo "Usage: $0 [--diagnostics|-d] [--verbose|-v]" >&2
       exit 2
       ;;
   esac
 done
+
+diag_flag=()
+[[ $diagnostics -eq 1 ]] && diag_flag+=(--diagnostics)
 
 quiet_step() {
   local label="$1"; shift
@@ -50,7 +58,7 @@ quiet_step() {
 quiet_step "bayes_cs_plot"           python src/plots/bayes_cs_plot.py
 quiet_step "plot_training_quality"   python src/plots/plot_training_quality.py
 quiet_step "plot_qualitative_trends" python src/plots/plot_qualitative_trends.py
-quiet_step "make_recovery_plots"     python src/plots/make_recovery_plots.py
+quiet_step "make_recovery_plots"     python src/plots/make_recovery_plots.py "${diag_flag[@]}"
 quiet_step "make_race_plots"         python src/plots/make_race_plots.py
 quiet_step "make_geography_plot"     python src/plots/make_geography_plot.py
 

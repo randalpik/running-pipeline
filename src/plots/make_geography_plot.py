@@ -983,7 +983,7 @@ def main():
     out_path = os.path.join(args.out_dir, 'mileage_by_geography.html')
     write_html(
         fig, out_path, legend_html, payload,
-        title='Running locations by city',
+        title='Mileage by location',
         subtitle=f'{total_miles:,.0f} mi across {n_cities} cities, 2016-present',
     )
 

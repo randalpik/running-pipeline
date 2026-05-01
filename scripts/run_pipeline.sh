@@ -2,10 +2,14 @@
 # Run the data pipeline.
 # Default: refresh drive_snapshot from Drive, then build_dataset + parse_workouts.
 # Flags:
-#   --historical / -h   Run a full historical re-freeze before everything else.
-#   --fit        / -f   Run the Bayesian CS fit at the end (slow, ~5-20 min).
-#   --verbose    / -v   Show full output from every step (default: quiet).
-#   --help              Show this help.
+#   --historical  / -h   Run a full historical re-freeze before everything else.
+#   --fit         / -f   Run the Bayesian CS fit at the end (slow, ~5-20 min).
+#   --diagnostics / -d   Also write diagnostic-only artifacts (workout_pruned,
+#                        bayes_cs_residuals/posterior/diagnostics) into
+#                        output/debug/. Off by default — these are not
+#                        consumed by the plot pipeline.
+#   --verbose     / -v   Show full output from every step (default: quiet).
+#   --help               Show this help.
 #
 # The model fit always shows its progress regardless of -v; everything else
 # is silenced by default and only printed if a step fails.
@@ -15,24 +19,29 @@ cd "$(dirname "$0")/.."
 
 historical=0
 fit=0
+diagnostics=0
 verbose=0
 
 for arg in "$@"; do
   case "$arg" in
-    --historical|-h) historical=1 ;;
-    --fit|-f)        fit=1 ;;
-    --verbose|-v)    verbose=1 ;;
+    --historical|-h)  historical=1 ;;
+    --fit|-f)         fit=1 ;;
+    --diagnostics|-d) diagnostics=1 ;;
+    --verbose|-v)     verbose=1 ;;
     --help)
-      sed -n '2,11p' "$0"
+      sed -n '2,14p' "$0"
       exit 0
       ;;
     *)
       echo "Unknown argument: $arg" >&2
-      echo "Usage: $0 [--historical|-h] [--fit|-f] [--verbose|-v]" >&2
+      echo "Usage: $0 [--historical|-h] [--fit|-f] [--diagnostics|-d] [--verbose|-v]" >&2
       exit 2
       ;;
   esac
 done
+
+diag_flag=()
+[[ $diagnostics -eq 1 ]] && diag_flag+=(--diagnostics)
 
 # quiet_step: hide stdout/stderr unless --verbose; on failure, dump the captured
 # log so the error is still visible. Use for chatty steps where progress is noise.
@@ -72,10 +81,10 @@ fi
 
 quiet_step "drive_fetch (snapshot)"  python src/parsers/drive_fetch.py snapshot --year "$(date +%Y)"
 quiet_step "build_dataset"           python src/parsers/build_dataset.py
-quiet_step "parse_workouts"          python src/parsers/parse_workouts.py
+quiet_step "parse_workouts"          python src/parsers/parse_workouts.py "${diag_flag[@]}"
 
 if [[ $fit -eq 1 ]]; then
-  loud_step "bayes_cs_fit"  python src/models/bayes_cs_fit.py
+  loud_step "bayes_cs_fit"  python src/models/bayes_cs_fit.py "${diag_flag[@]}"
 fi
 
 echo

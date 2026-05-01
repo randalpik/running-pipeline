@@ -87,7 +87,7 @@ with:
 ### XC pre-correction
 
 XC race times are divided by `(1 + xc_correction)` BEFORE entering the model
-(`--xc-correction 0.06` by default — 6% terrain penalty). This is exogenous,
+(`--xc-correction 0.08` by default — 8% terrain penalty). This is exogenous,
 not learned, because XC races cluster in fall seasons with no concurrent
 non-XC races for the model to compare against — so the model can't
 empirically separate terrain from fitness loss. We encode terrain

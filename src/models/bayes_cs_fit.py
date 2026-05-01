@@ -46,7 +46,7 @@ import pymc as pm
 import arviz as az
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from src.shared.paths import DATA_DIR
+from src.shared.paths import DATA_DIR, DEBUG_DIR
 
 
 DEFAULT_RACES   = str(DATA_DIR / 'races.csv')
@@ -278,9 +278,9 @@ def main():
                    help='LogNormal location (in years) for ell_cs (default 0.25)')
     p.add_argument('--ell-cs-sigma', type=float, default=0.4,
                    help='LogNormal scale (log-space) for ell_cs (default 0.4)')
-    p.add_argument('--xc-correction', type=float, default=0.06,
+    p.add_argument('--xc-correction', type=float, default=0.08,
                    help='Multiplicative correction applied to XC race times '
-                        'before fitting (default 0.06 = 6%% terrain-effect '
+                        'before fitting (default 0.08 = 8%% terrain-effect '
                         'compensation). Pre-model adjustment: XC time_sec is '
                         'divided by (1+c) so XC races enter the model as if '
                         'they were equivalent flat-course times. Set to 0 to '
@@ -289,6 +289,11 @@ def main():
     p.add_argument('--tag', default='',
                    help='Suffix for output filenames (e.g. "v4a") to keep '
                         'experiments separate')
+    p.add_argument('--diagnostics', action='store_true',
+                   help='Also write bayes_cs_residuals.csv, '
+                        'bayes_cs_posterior.nc, and bayes_cs_diagnostics.txt '
+                        'into output/debug/. These are not consumed by the '
+                        'plot pipeline; off by default to keep data/ clean.')
     args = p.parse_args()
 
     if not os.path.exists(args.races):
@@ -501,53 +506,64 @@ def main():
     elapsed = tclock.time() - t0
     print(f"Sampling done in {elapsed/60:.1f} min")
 
-    # ---------- diagnostics ----------
-    # (suffix was already computed earlier for the auto-exclusions audit)
-    diag_path = os.path.join(args.out_dir, f'bayes_cs_diagnostics{suffix}.txt')
+    # ---------- output paths ----------
+    # summary + params CSVs are essential inputs to the plot pipeline and
+    # always go to args.out_dir (data/). The other three files (diagnostics
+    # text, per-race residuals CSV, full posterior netCDF) are diagnostic-
+    # only — gated behind --diagnostics and routed to DEBUG_DIR so they
+    # don't clutter data/ on default runs.
+    # The summary CSV is an essential input to the plot pipeline and lands
+    # in args.out_dir (data/). Diagnostic outputs (residuals.csv,
+    # posterior.nc, diagnostics.txt) are gated behind --diagnostics and
+    # routed to DEBUG_DIR — see paths.py.
     summary_path = os.path.join(args.out_dir, f'bayes_cs_summary{suffix}.csv')
-    resid_path = os.path.join(args.out_dir, f'bayes_cs_residuals{suffix}.csv')
-    nc_path = os.path.join(args.out_dir, f'bayes_cs_posterior{suffix}.nc')
 
-    with open(diag_path, 'w') as f:
-        f.write(f"=== Run config ===\n")
-        f.write(f"tag: {args.tag or '(none)'}\n")
-        f.write(f"sigma_base prior: HalfNormal(σ={args.sigma_base_prior})\n")
-        f.write(f"ell_cs_dev prior: LogNormal(μ=log({args.ell_cs_mu}), σ={args.ell_cs_sigma})\n")
-        f.write(f"chains: {args.chains}, draws: {args.draws}, tune: {args.tune}\n")
-        f.write(f"target_accept: 0.95\n")
-        f.write(f"xc_correction: {args.xc_correction:.4f} ({args.xc_correction*100:.1f}% terrain penalty)\n")
+    if args.diagnostics:
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        diag_path = str(DEBUG_DIR / f'bayes_cs_diagnostics{suffix}.txt')
+        resid_path = str(DEBUG_DIR / f'bayes_cs_residuals{suffix}.csv')
+        nc_path = str(DEBUG_DIR / f'bayes_cs_posterior{suffix}.nc')
 
-        f.write(f"\n=== Auto-derived exclusions ===\n")
-        f.write(f"Total: {len(excl_df)} races pruned from {len(elig_full)} hard-eligible\n")
-        f.write(f"Sub-marathon σ_global (iterated trimmed MAD): {sigma_g:.4f} "
-                f"(≈ {sigma_g*100:.2f}% pace) | median: {sigma_med:+.4f}\n")
-        if len(excl_df):
-            f.write(f"\n{'date':<12s} {'dist':>6s} {'surf':<5s} {'tier':<6s} "
-                    f"{'metric':<22s} {'value':>10s} {'thresh':>8s} {'n':>3s}  event\n")
-            for _, r in excl_df.iterrows():
-                f.write(f"{str(r['date']):<12s} {r['distance_m']:>6d} "
-                        f"{str(r['surface'])[:5]:<5s} {r['tier']:<6s} "
-                        f"{r['metric']:<22s} {r['value']:>10.2f} "
-                        f"{r['threshold']:>8.1f} {r['n_neighbors']:>3d}  "
-                        f"{str(r.get('event',''))[:40]}\n")
+        with open(diag_path, 'w') as f:
+            f.write(f"=== Run config ===\n")
+            f.write(f"tag: {args.tag or '(none)'}\n")
+            f.write(f"sigma_base prior: HalfNormal(σ={args.sigma_base_prior})\n")
+            f.write(f"ell_cs_dev prior: LogNormal(μ=log({args.ell_cs_mu}), σ={args.ell_cs_sigma})\n")
+            f.write(f"chains: {args.chains}, draws: {args.draws}, tune: {args.tune}\n")
+            f.write(f"target_accept: 0.95\n")
+            f.write(f"xc_correction: {args.xc_correction:.4f} ({args.xc_correction*100:.1f}% terrain penalty)\n")
 
-        f.write(f"\n=== Hyperparameter posterior summary ===\n")
-        summ = az.summary(trace, var_names=['mu_cs', 'mu_dp',
-                                             'sf_cs_long', 'ell_cs_long',
-                                             'sf_cs_dev',  'ell_cs_dev',
-                                             'sf_dp', 'ell_dp',
-                                             'sigma_base', 'alpha_sig',
-                                             'beta_long'])
-        f.write(summ.to_string())
-        f.write("\n\n")
-        n_div = int(trace.sample_stats['diverging'].sum())
-        n_total = int(trace.sample_stats['diverging'].size)
-        f.write(f"Divergences: {n_div} / {n_total}\n")
-        f.write(f"Sampling time: {elapsed/60:.1f} min\n")
-        f.write(f"Grid points: {n_grid}\n")
-        f.write(f"HSGP basis size m: {args.m_basis}\n")
+            f.write(f"\n=== Auto-derived exclusions ===\n")
+            f.write(f"Total: {len(excl_df)} races pruned from {len(elig_full)} hard-eligible\n")
+            f.write(f"Sub-marathon σ_global (iterated trimmed MAD): {sigma_g:.4f} "
+                    f"(≈ {sigma_g*100:.2f}% pace) | median: {sigma_med:+.4f}\n")
+            if len(excl_df):
+                f.write(f"\n{'date':<12s} {'dist':>6s} {'surf':<5s} {'tier':<6s} "
+                        f"{'metric':<22s} {'value':>10s} {'thresh':>8s} {'n':>3s}  event\n")
+                for _, r in excl_df.iterrows():
+                    f.write(f"{str(r['date']):<12s} {r['distance_m']:>6d} "
+                            f"{str(r['surface'])[:5]:<5s} {r['tier']:<6s} "
+                            f"{r['metric']:<22s} {r['value']:>10.2f} "
+                            f"{r['threshold']:>8.1f} {r['n_neighbors']:>3d}  "
+                            f"{str(r.get('event',''))[:40]}\n")
 
-    print(f"Wrote {diag_path}")
+            f.write(f"\n=== Hyperparameter posterior summary ===\n")
+            summ = az.summary(trace, var_names=['mu_cs', 'mu_dp',
+                                                 'sf_cs_long', 'ell_cs_long',
+                                                 'sf_cs_dev',  'ell_cs_dev',
+                                                 'sf_dp', 'ell_dp',
+                                                 'sigma_base', 'alpha_sig',
+                                                 'beta_long'])
+            f.write(summ.to_string())
+            f.write("\n\n")
+            n_div = int(trace.sample_stats['diverging'].sum())
+            n_total = int(trace.sample_stats['diverging'].size)
+            f.write(f"Divergences: {n_div} / {n_total}\n")
+            f.write(f"Sampling time: {elapsed/60:.1f} min\n")
+            f.write(f"Grid points: {n_grid}\n")
+            f.write(f"HSGP basis size m: {args.m_basis}\n")
+
+        print(f"Wrote {diag_path}")
 
     # ---------- posterior summary on grid ----------
     log_cs_trend_post = trace.posterior['log_cs_trend'].values
@@ -587,108 +603,109 @@ def main():
     summary_df.to_csv(summary_path, index=False)
     print(f"Wrote {summary_path} ({len(summary_df)} rows)")
 
-    # ---------- per-race residuals ----------
-    cs_at_race_med = np.median(cs_flat[:, race_grid_idx], axis=0)
-    dp_at_race_med = np.median(dp_flat[:, race_grid_idx], axis=0)
-    # Apply long-distance bias correction (matching the likelihood model).
-    # XC races already had their times pre-corrected, so no β_xc here.
-    beta_long_med = float(np.median(trace.posterior['beta_long'].values))
-    log_d_ratio_np = np.maximum(0.0, np.log(race_distances / 10000.0))
-    bias_factor_med = 1.0 + beta_long_med * log_d_ratio_np
-    pred_t = (race_distances - dp_at_race_med) / cs_at_race_med * bias_factor_med
-    pct_resid = (race_times / pred_t - 1) * 100
+    # ---------- per-race residuals + posterior predictive (diagnostics only) ----------
+    if args.diagnostics:
+        cs_at_race_med = np.median(cs_flat[:, race_grid_idx], axis=0)
+        dp_at_race_med = np.median(dp_flat[:, race_grid_idx], axis=0)
+        # Apply long-distance bias correction (matching the likelihood model).
+        # XC races already had their times pre-corrected, so no β_xc here.
+        beta_long_med = float(np.median(trace.posterior['beta_long'].values))
+        log_d_ratio_np = np.maximum(0.0, np.log(race_distances / 10000.0))
+        bias_factor_med = 1.0 + beta_long_med * log_d_ratio_np
+        pred_t = (race_distances - dp_at_race_med) / cs_at_race_med * bias_factor_med
+        pct_resid = (race_times / pred_t - 1) * 100
 
-    resid_df = pd.DataFrame({
-        'date': elig['date'].values,
-        'distance_m': race_distances,
-        'actual_sec': race_times,
-        'actual_sec_original': elig['time_sec_original'].values,
-        'surface': elig['surface'].values if 'surface' in elig.columns else [''] * len(elig),
-        'predicted_sec': pred_t,
-        'pct_resid': pct_resid,
-        'cs_pace_med_at_race': 1609.344 / cs_at_race_med / 60,
-        'dp_med_at_race': dp_at_race_med,
-        'event': elig['event'].values if 'event' in elig.columns else [''] * len(elig),
-    })
-    resid_df.to_csv(resid_path, index=False)
-    print(f"Wrote {resid_path}")
+        resid_df = pd.DataFrame({
+            'date': elig['date'].values,
+            'distance_m': race_distances,
+            'actual_sec': race_times,
+            'actual_sec_original': elig['time_sec_original'].values,
+            'surface': elig['surface'].values if 'surface' in elig.columns else [''] * len(elig),
+            'predicted_sec': pred_t,
+            'pct_resid': pct_resid,
+            'cs_pace_med_at_race': 1609.344 / cs_at_race_med / 60,
+            'dp_med_at_race': dp_at_race_med,
+            'event': elig['event'].values if 'event' in elig.columns else [''] * len(elig),
+        })
+        resid_df.to_csv(resid_path, index=False)
+        print(f"Wrote {resid_path}")
 
-    # Append residual band summary to diagnostics
-    with open(diag_path, 'a') as f:
-        f.write("\n=== Residuals by distance band ===\n")
-        bands = [
-            ('< 1500m',         resid_df['distance_m'] < 1500),
-            ('1500-3500m',      (resid_df['distance_m'] >= 1500) & (resid_df['distance_m'] < 3500)),
-            ('5K (3500-5500)',  (resid_df['distance_m'] >= 3500) & (resid_df['distance_m'] < 5500)),
-            ('10K (8K-12K)',    (resid_df['distance_m'] >= 8000) & (resid_df['distance_m'] < 12000)),
-            ('HM (15K-25K)',    (resid_df['distance_m'] >= 15000) & (resid_df['distance_m'] < 25000)),
-            ('Marathon (>25K)', resid_df['distance_m'] >= 25000),
-        ]
-        f.write(f"{'band':<22} {'n':>4} {'mean_pct':>10} {'std_pct':>10}\n")
-        for label, mask in bands:
-            sub = resid_df[mask]
-            if len(sub) == 0: continue
-            f.write(f"{label:<22} {len(sub):>4} {sub['pct_resid'].mean():>+9.2f}% "
-                    f"{sub['pct_resid'].std():>9.2f}%\n")
-        f.write("\n=== Marathon residuals (each) ===\n")
-        for _, r in resid_df[resid_df['distance_m'] >= 25000].iterrows():
-            f.write(f"  {r['date']}  actual={r['actual_sec']:.0f}s  pred={r['predicted_sec']:.0f}s  "
-                    f"resid={r['pct_resid']:+.1f}%  "
-                    f"CS@={r['cs_pace_med_at_race']:.2f} min/mi  D'@={r['dp_med_at_race']:.0f}m  "
-                    f"{r['event']}\n")
+        # Append residual band summary to diagnostics
+        with open(diag_path, 'a') as f:
+            f.write("\n=== Residuals by distance band ===\n")
+            bands = [
+                ('< 1500m',         resid_df['distance_m'] < 1500),
+                ('1500-3500m',      (resid_df['distance_m'] >= 1500) & (resid_df['distance_m'] < 3500)),
+                ('5K (3500-5500)',  (resid_df['distance_m'] >= 3500) & (resid_df['distance_m'] < 5500)),
+                ('10K (8K-12K)',    (resid_df['distance_m'] >= 8000) & (resid_df['distance_m'] < 12000)),
+                ('HM (15K-25K)',    (resid_df['distance_m'] >= 15000) & (resid_df['distance_m'] < 25000)),
+                ('Marathon (>25K)', resid_df['distance_m'] >= 25000),
+            ]
+            f.write(f"{'band':<22} {'n':>4} {'mean_pct':>10} {'std_pct':>10}\n")
+            for label, mask in bands:
+                sub = resid_df[mask]
+                if len(sub) == 0: continue
+                f.write(f"{label:<22} {len(sub):>4} {sub['pct_resid'].mean():>+9.2f}% "
+                        f"{sub['pct_resid'].std():>9.2f}%\n")
+            f.write("\n=== Marathon residuals (each) ===\n")
+            for _, r in resid_df[resid_df['distance_m'] >= 25000].iterrows():
+                f.write(f"  {r['date']}  actual={r['actual_sec']:.0f}s  pred={r['predicted_sec']:.0f}s  "
+                        f"resid={r['pct_resid']:+.1f}%  "
+                        f"CS@={r['cs_pace_med_at_race']:.2f} min/mi  D'@={r['dp_med_at_race']:.0f}m  "
+                        f"{r['event']}\n")
 
-        # ---------- posterior predictive coverage ----------
-        # For each race, the model implies a posterior-predictive distribution
-        # over log(time) given (CS, D', σ_per_race) at that race's date.
-        # Mean: log((d - D')/CS).  Std: σ_per_race.
-        # Coverage: % of races where the actual log(time) falls in the 50%
-        # and 95% intervals of this distribution. A well-calibrated model has
-        # 50%-coverage ≈ 50% and 95%-coverage ≈ 95%.
-        cs_post = cs_flat[:, race_grid_idx]   # (samples, races)
-        dp_post = dp_flat[:, race_grid_idx]   # (samples, races)
-        # σ_per_race posterior: σ_base * (d/D_REF)^α, sample by sample
-        sb_post = trace.posterior['sigma_base'].values.reshape(-1)
-        a_post  = trace.posterior['alpha_sig'].values.reshape(-1)
-        beta_post = trace.posterior['beta_long'].values.reshape(-1)
-        # Broadcast σ across races: shape (samples, races)
-        D_REF_arr = 5000.0
-        ratio = (race_distances[None, :] / D_REF_arr) ** a_post[:, None]
-        sig_per_race = sb_post[:, None] * ratio   # (samples, races)
-        # Per-sample bias factor (long-distance only; XC corrected upstream)
-        bias_factor_post = 1.0 + beta_post[:, None] * log_d_ratio_np[None, :]
-        # Posterior-predictive log-time mean (with bias) and noise per sample
-        expected_t_pp = (race_distances[None, :] - dp_post) / cs_post * bias_factor_post
-        mean_log_t = np.log(expected_t_pp)  # (samples, races)
-        # Draw one log_t per (sample, race): mean + σ * N(0,1)
-        rng = np.random.default_rng(args.seed)
-        eps = rng.standard_normal(mean_log_t.shape)
-        pp_log_t = mean_log_t + sig_per_race * eps   # (samples, races)
-        # Per-race quantiles
-        q025 = np.percentile(pp_log_t, 2.5, axis=0)
-        q975 = np.percentile(pp_log_t, 97.5, axis=0)
-        q25  = np.percentile(pp_log_t, 25,   axis=0)
-        q75  = np.percentile(pp_log_t, 75,   axis=0)
-        actual_log_t = np.log(race_times)
-        in_95 = (actual_log_t >= q025) & (actual_log_t <= q975)
-        in_50 = (actual_log_t >= q25)  & (actual_log_t <= q75)
+            # ---------- posterior predictive coverage ----------
+            # For each race, the model implies a posterior-predictive distribution
+            # over log(time) given (CS, D', σ_per_race) at that race's date.
+            # Mean: log((d - D')/CS).  Std: σ_per_race.
+            # Coverage: % of races where the actual log(time) falls in the 50%
+            # and 95% intervals of this distribution. A well-calibrated model has
+            # 50%-coverage ≈ 50% and 95%-coverage ≈ 95%.
+            cs_post = cs_flat[:, race_grid_idx]   # (samples, races)
+            dp_post = dp_flat[:, race_grid_idx]   # (samples, races)
+            # σ_per_race posterior: σ_base * (d/D_REF)^α, sample by sample
+            sb_post = trace.posterior['sigma_base'].values.reshape(-1)
+            a_post  = trace.posterior['alpha_sig'].values.reshape(-1)
+            beta_post = trace.posterior['beta_long'].values.reshape(-1)
+            # Broadcast σ across races: shape (samples, races)
+            D_REF_arr = 5000.0
+            ratio = (race_distances[None, :] / D_REF_arr) ** a_post[:, None]
+            sig_per_race = sb_post[:, None] * ratio   # (samples, races)
+            # Per-sample bias factor (long-distance only; XC corrected upstream)
+            bias_factor_post = 1.0 + beta_post[:, None] * log_d_ratio_np[None, :]
+            # Posterior-predictive log-time mean (with bias) and noise per sample
+            expected_t_pp = (race_distances[None, :] - dp_post) / cs_post * bias_factor_post
+            mean_log_t = np.log(expected_t_pp)  # (samples, races)
+            # Draw one log_t per (sample, race): mean + σ * N(0,1)
+            rng = np.random.default_rng(args.seed)
+            eps = rng.standard_normal(mean_log_t.shape)
+            pp_log_t = mean_log_t + sig_per_race * eps   # (samples, races)
+            # Per-race quantiles
+            q025 = np.percentile(pp_log_t, 2.5, axis=0)
+            q975 = np.percentile(pp_log_t, 97.5, axis=0)
+            q25  = np.percentile(pp_log_t, 25,   axis=0)
+            q75  = np.percentile(pp_log_t, 75,   axis=0)
+            actual_log_t = np.log(race_times)
+            in_95 = (actual_log_t >= q025) & (actual_log_t <= q975)
+            in_50 = (actual_log_t >= q25)  & (actual_log_t <= q75)
 
-        f.write(f"\n=== Posterior predictive coverage ===\n")
-        f.write(f"Well-calibrated target: 50%-coverage ≈ 50%, 95%-coverage ≈ 95%\n")
-        f.write(f"Overall (n={len(elig)}): "
-                f"50%-coverage = {in_50.mean()*100:.1f}%  "
-                f"95%-coverage = {in_95.mean()*100:.1f}%\n")
-        f.write(f"\nBy distance band:\n")
-        f.write(f"{'band':<22} {'n':>4} {'cov_50':>9} {'cov_95':>9}\n")
-        for label, mask in bands:
-            mask_arr = mask.values
-            if mask_arr.sum() == 0: continue
-            f.write(f"{label:<22} {int(mask_arr.sum()):>4} "
-                    f"{in_50[mask_arr].mean()*100:>8.1f}% "
-                    f"{in_95[mask_arr].mean()*100:>8.1f}%\n")
+            f.write(f"\n=== Posterior predictive coverage ===\n")
+            f.write(f"Well-calibrated target: 50%-coverage ≈ 50%, 95%-coverage ≈ 95%\n")
+            f.write(f"Overall (n={len(elig)}): "
+                    f"50%-coverage = {in_50.mean()*100:.1f}%  "
+                    f"95%-coverage = {in_95.mean()*100:.1f}%\n")
+            f.write(f"\nBy distance band:\n")
+            f.write(f"{'band':<22} {'n':>4} {'cov_50':>9} {'cov_95':>9}\n")
+            for label, mask in bands:
+                mask_arr = mask.values
+                if mask_arr.sum() == 0: continue
+                f.write(f"{label:<22} {int(mask_arr.sum()):>4} "
+                        f"{in_50[mask_arr].mean()*100:>8.1f}% "
+                        f"{in_95[mask_arr].mean()*100:>8.1f}%\n")
 
-    # ---------- save full posterior ----------
-    trace.to_netcdf(nc_path)
-    print(f"Wrote {nc_path}")
+        # ---------- save full posterior ----------
+        trace.to_netcdf(nc_path)
+        print(f"Wrote {nc_path}")
 
     # ---------- write bias-parameter CSV for the plot script ----------
     # The plot script reads this to apply the same long-distance and XC bias

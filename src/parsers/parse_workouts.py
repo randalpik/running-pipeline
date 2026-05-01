@@ -2,11 +2,17 @@
 parse_workouts.py — Decompose quality workouts from daily.csv into
                     (date, type, rep_dist, rep_count, pace_per_mile, rest_per_mile).
 
-Output: workout_decomposed.csv  (one row per resolved quality workout)
-        workout_pruned.csv      (rows that didn't make it, with reasons)
+Output: workout_decomposed.csv (one row per resolved quality workout) lands
+in data/ and is consumed by the training-quality plot.
 
-Reads daily.csv from data/ and writes both outputs alongside it.
+The audit trail of rows that didn't decompose (workout_pruned.csv) is a
+diagnostic-only artifact — useful for human inspection but not consumed
+anywhere in the pipeline. Pass ``--diagnostics`` to also write
+workout_pruned.csv into output/debug/.
+
+Reads daily.csv from data/.
 """
+import argparse
 import sys
 import pandas as pd
 import re
@@ -14,7 +20,7 @@ from pathlib import Path
 from datetime import date
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from src.shared.paths import DATA_DIR
+from src.shared.paths import DATA_DIR, DEBUG_DIR
 
 MILE_M = 1609.344
 
@@ -257,6 +263,14 @@ def decompose(daily_df):
 
 
 def main():
+    p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    p.add_argument('--diagnostics', action='store_true',
+                   help='Also write workout_pruned.csv (audit of rows that '
+                        'failed to decompose) into output/debug/. Off by '
+                        'default — the file is informational and not '
+                        'consumed by anything downstream.')
+    args = p.parse_args()
+
     src = DATA_DIR / 'daily.csv'
     if not src.exists():
         raise SystemExit(
@@ -270,12 +284,15 @@ def main():
     pruned = pruned.sort_values('date').reset_index(drop=True) if len(pruned) else pruned
 
     decomposed_path = DATA_DIR / 'workout_decomposed.csv'
-    pruned_path = DATA_DIR / 'workout_pruned.csv'
     decomposed.to_csv(decomposed_path, index=False)
-    pruned.to_csv(pruned_path, index=False)
-
     print(f'Wrote {decomposed_path}  ({len(decomposed)} rows)')
-    print(f'Wrote {pruned_path}      ({len(pruned)} rows)')
+
+    if args.diagnostics:
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        pruned_path = DEBUG_DIR / 'workout_pruned.csv'
+        pruned.to_csv(pruned_path, index=False)
+        print(f'Wrote {pruned_path}      ({len(pruned)} rows)')
+
     print()
     print('Type counts:')
     print(decomposed['type'].value_counts().to_string())

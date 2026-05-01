@@ -46,10 +46,11 @@
       ttW = tt.offsetWidth;
       ttH = tt.offsetHeight;
     }
+    var heightBoundary = Math.max(ttH, 240);
     var x = pending.x + 15;
     var y = pending.y + 10;
     if (x + ttW > window.innerWidth)  x = pending.x - ttW - 15;
-    if (y + ttH > window.innerHeight) y = pending.y - ttH - 10;
+    if (y + heightBoundary > window.innerHeight) y = pending.y - ttH - 10;
     if (x < 0) x = 0;
     if (y < 0) y = 0;
     tt.style.transform = 'translate(' + x + 'px,' + y + 'px)';

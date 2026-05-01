@@ -20,6 +20,8 @@ self-contained document, so per-plot CSS/JS scopes don't collide and
 livereload reloads only the active iframe on its source change.
 """
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 from livereload import Server
@@ -248,7 +250,27 @@ def write_index():
     INDEX_PATH.write_text(new_html)
 
 
+def rebuild_all():
+    """Regenerate every plot HTML before the server starts serving.
+
+    Plot HTMLs on disk reflect whatever state the source was in the last
+    time their script ran — which can drift arbitrarily far from the
+    current source if you've edited src/plotting/, tweaked tokens, or
+    just pulled new code. Doing a clean rebuild on startup means the
+    first thing you see in the browser always matches the current
+    source, with no "why isn't my edit reflecting" surprises.
+    """
+    script = REPO_ROOT / "scripts" / "run_plots.sh"
+    if not script.exists():
+        print(f"WARN: {script} not found; skipping startup rebuild.",
+              file=sys.stderr)
+        return
+    print("Rebuilding all plots before starting server...")
+    subprocess.run([str(script)], check=False)
+
+
 def main():
+    rebuild_all()
     write_index()
 
     server = Server()
