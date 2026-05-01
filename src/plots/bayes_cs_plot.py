@@ -40,7 +40,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.cs_projection import load_cs_outputs, project_races_to_5k_pace
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            title_block, TITLE_MARGIN_TOP,
                             sec_to_mss, sec_to_mss_full, SURFACES, rgba, GRID)
 
 
@@ -205,16 +204,9 @@ def main():
     ytick_vals = [4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0]
     ytick_txt = [sec_to_mss(v * 60) for v in ytick_vals]
 
-    bias_str = f"β_long={beta_long_med:.3f}, xc_correction={xc_correction:.3f}"
     apply_default_layout(
         fig,
-        title=title_block(
-            'Critical Speed fitness trend — Bayesian latent-process model',
-            'Posterior median (line) with 50% and 95% credible-interval ribbons · '
-            'Diamonds show race performance projected to 5K-equivalent via hyperbolic CS model · '
-            f'<i>{bias_str}</i>',
-        ),
-        margin=dict(t=TITLE_MARGIN_TOP, l=70, r=200, b=60),
+        margin=dict(t=20, l=70, r=200, b=60),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02, groupclick='toggleitem'),
         xaxis=dict(title='Date', showgrid=True, gridcolor=GRID,
                    dtick='M12', tickformat='%Y',
@@ -339,6 +331,8 @@ function buildTooltip(day, isSnap, pointHtml) {
         fig, out_html,
         title_slug=f'cs_timeline{suffix}',
         page_title='CS fitness',
+        title='Fitness trend as Critical Speed over time',
+        subtitle='Posterior median and credible-interval ribbons from Bayesian latent-process model analysis',
         cursor_tooltip=CursorTooltip(
             payload=payload,
             build_js=build_js,

@@ -20,7 +20,6 @@ import plotly.graph_objects as go
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            title_block, TITLE_MARGIN_TOP,
                             sec_to_mss, fmt_min, CAT_COLORS, GRID,
                             GAP_BREAK_DAYS, adaptive_gauss_smoother)
 
@@ -484,11 +483,7 @@ def main():
 
     apply_default_layout(
         fig,
-        title=title_block(
-            'Training quality vs. observed race fitness',
-            '5K fitness trend across normalized training data compared to race-derived baseline',
-        ),
-        margin=dict(t=TITLE_MARGIN_TOP, l=70, r=220, b=60),
+        margin=dict(t=20, l=70, r=220, b=60),
         hovermode=False,
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     groupclick='toggleitem', font=dict(size=11)),
@@ -643,6 +638,8 @@ function buildTooltip(day, isSnap, pointHtml) {
         fig, OUT_HTML,
         title_slug='training_quality',
         page_title='Training quality',
+        title='Training quality vs. observed race fitness',
+        subtitle='5K fitness trend across normalized training data compared to race-derived baseline',
         cursor_tooltip=CursorTooltip(
             payload=payload,
             build_js=build_js,

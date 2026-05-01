@@ -37,7 +37,6 @@ from plotly.subplots import make_subplots
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            title_block, TITLE_MARGIN_TOP,
                             FG, FG_DIM, GRID)
 
 
@@ -358,13 +357,8 @@ def main():
 
     apply_default_layout(
         fig,
-        title=title_block(
-            'Miscellaneous Trends',
-            'Mileage, temperature, and weight: moving average trendlines '
-            'with 14-day rolling min-max envelopes',
-        ),
         font=dict(color=FG, size=12),
-        margin=dict(t=TITLE_MARGIN_TOP, l=70, r=40, b=70),
+        margin=dict(t=40, l=70, r=40, b=70),
         showlegend=False,
         hovermode=False,
     )
@@ -390,6 +384,9 @@ def main():
         fig, out_path,
         title_slug='qualitative_trends',
         page_title='Volume / temp / weight',
+        title='Miscellaneous Trends',
+        subtitle='Mileage, temperature, and weight: moving-average trendlines '
+                 'with 14-day rolling min-max envelopes',
         cursor_tooltip=CursorTooltip(
             payload=payload,
             build_js=_BUILD_JS,

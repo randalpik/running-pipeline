@@ -42,7 +42,6 @@ from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.cs_projection import (load_cs_outputs, project_races_to_5k_pace,
                                        cs_line_at_anchor, cubic_at_anchor)
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            title_block, TITLE_MARGIN_TOP,
                             sec_to_mss, sec_to_mss_full,
                             SURFACES, CS_LINE, CS_LINE_WIDTH, GRID,
                             pr_marker, is_pr_eligible,
@@ -898,12 +897,8 @@ def main():
     add_pr_overlay_filterable(fig1, elig, value_col='pace_norm_min')
     apply_default_layout(
         fig1,
-        title=title_block(
-            'Lifetime races: 5K-equivalent pace',
-            'Hyperbolic CS projection with corrections applied for short and long distances',
-        ),
         hovermode='closest',
-        margin=dict(t=TITLE_MARGIN_TOP, l=70, r=200, b=60),
+        margin=dict(t=20, l=70, r=200, b=60),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02),
         xaxis=yearly_x_axis(title='Date', range=[x_lo, x_hi]),
         yaxis=reversed_pace_y_axis())
@@ -1009,6 +1004,8 @@ function buildTooltip(day, isSnap, pointHtml) {
         fig1, out1,
         title_slug='race_pace_all',
         page_title='Races',
+        title='Lifetime races: 5K-equivalent pace',
+        subtitle='Hyperbolic CS projection with corrections applied for short and long distances',
         cursor_tooltip=CursorTooltip(
             payload=payload_all,
             build_js=smooth_build_js_all,
@@ -1290,12 +1287,8 @@ function buildTooltip(day, isSnap, pointHtml) {
 
     apply_default_layout(
         fig2,
-        title=title_block(
-            'Lifetime races normalized by distance',
-            'Hyperbolic CS projection with time prediction lines',
-        ),
         hovermode='closest',
-        margin=dict(t=TITLE_MARGIN_TOP, l=70, r=200, b=60),
+        margin=dict(t=40, l=70, r=200, b=60),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02))
     fig2.update_xaxes(title_text='Date', row=2)
 
@@ -1400,6 +1393,8 @@ function buildTooltip(day, isSnap, pointHtml, ctx) {
         fig2, out2,
         title_slug='race_pace_by_distance',
         page_title='Races by distance',
+        title='Lifetime races normalized by distance',
+        subtitle='Hyperbolic CS projection with time prediction lines',
         cursor_tooltip=CursorTooltip(
             payload=payload_by_dist,
             build_js=smooth_build_js_by_dist,

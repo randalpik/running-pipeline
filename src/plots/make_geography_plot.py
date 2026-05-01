@@ -42,9 +42,7 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.plotting import (render_plot, apply_default_layout,
-                            title_block, TITLE_MARGIN_TOP,
-                            FG, GRID)
+from src.plotting import (render_plot, apply_default_layout, GRID)
 
 
 DEFAULT_DAILY = str(DATA_DIR / 'daily.csv')
@@ -538,7 +536,7 @@ def build_tickvals_for_monthly(monthly_bin_list):
 
 
 # ---------- write HTML ----------
-def write_html(fig, path, legend_html, payload):
+def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
     extra_head_css = '.barlayer path{shape-rendering:crispEdges;}'
 
     overlay_css = r"""
@@ -866,7 +864,6 @@ def write_html(fig, path, legend_html, payload):
       var ttW = tt.offsetWidth, ttH = tt.offsetHeight;
       var x = e.clientX + 14, y = e.clientY + 12;
       if (x + ttW > window.innerWidth)  x = e.clientX - ttW - 14;
-      if (y + ttH > window.innerHeight) y = e.clientY - ttH - 12;
       tt.style.transform = 'translate(' + x + 'px,' + y + 'px)';
 
       var pitch = bg.w / GEO[mode].bins.length;
@@ -901,7 +898,9 @@ def write_html(fig, path, legend_html, payload):
     render_plot(
         fig, path,
         title_slug='mileage_by_geography',
-        page_title='Geography',
+        page_title='Locations',
+        title=title,
+        subtitle=subtitle,
         overlay_html=overlay_html,
         extra_head_css=extra_head_css,
     )
@@ -965,13 +964,9 @@ def main():
     fig = go.Figure(data=bar_traces)
     apply_default_layout(
         fig,
-        title=title_block(
-            'Mileage locations by city',
-            f'{total_miles:,.0f} mi across {n_cities} cities, 2016-present',
-        ),
         barmode='stack',
         bargap=0,
-        margin=dict(t=TITLE_MARGIN_TOP, l=70, r=340, b=60),
+        margin=dict(t=20, l=70, r=340, b=60),
         showlegend=False,
         hovermode=False,
         xaxis=dict(
@@ -986,7 +981,11 @@ def main():
     )
 
     out_path = os.path.join(args.out_dir, 'mileage_by_geography.html')
-    write_html(fig, out_path, legend_html, payload)
+    write_html(
+        fig, out_path, legend_html, payload,
+        title='Running locations by city',
+        subtitle=f'{total_miles:,.0f} mi across {n_cities} cities, 2016-present',
+    )
 
     print(f'wrote {out_path}')
     print(f'  total: {total_miles:,.0f} mi · {n_cities} cities')

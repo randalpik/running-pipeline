@@ -96,7 +96,6 @@ from plotly.subplots import make_subplots
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            title_block, TITLE_MARGIN_TOP,
                             sec_to_mss, FG,
                             CS_LINE, CS_LINE_WIDTH, TREND_LINE, TREND_WIDTH,
                             GRID, gaussian_rolling_trend)
@@ -648,13 +647,8 @@ def main():
 
     apply_default_layout(
         fig,
-        title=title_block(
-            'Recovery runs vs. race fitness',
-            'Absolute pace and relative fitness signal, '
-            'controlling for combinations of factors',
-        ),
         font=dict(color=FG, size=12),
-        margin=dict(l=70, r=300, t=TITLE_MARGIN_TOP, b=70),
+        margin=dict(l=70, r=300, t=40, b=70),
         hoverlabel=dict(bgcolor='#222', bordercolor='#555',
                         font=dict(color=FG, size=12)),
         hovermode='closest',
@@ -829,6 +823,9 @@ function buildTooltip(day, isSnap, pointHtml) {
         fig, out_path,
         title_slug='recovery_pace',
         page_title='Recovery',
+        title='Recovery runs vs. race fitness',
+        subtitle='Absolute pace and relative fitness signal, '
+                 'controlling for combinations of factors',
         cursor_tooltip=CursorTooltip(
             payload=payload,
             build_js=smooth_build_js,

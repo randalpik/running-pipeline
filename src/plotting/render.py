@@ -79,6 +79,8 @@ def render_plot(
     *,
     title_slug: str,
     page_title: str,
+    title: Optional[str] = None,
+    subtitle: Optional[str] = None,
     cursor_tooltip: Optional[CursorTooltip] = None,
     overlay_html: str = '',
     extra_head_css: str = '',
@@ -93,8 +95,14 @@ def render_plot(
     title_slug : str
         Short id used as the iframe ``<title>`` and tab-shell href stem.
     page_title : str
-        Human-readable title written into ``<title>``. (Tab labels live in
-        the shell manifest, not here.)
+        Human-readable title written into the document ``<title>`` element.
+    title : str | None
+        Main title rendered as a plain-HTML overlay at the top of the
+        iframe (NOT via Plotly's ``layout.title``). HTML is passed through
+        — embed ``<i>``, ``<b>``, etc. as needed.
+    subtitle : str | None
+        Optional subtitle on a second line below the main title. HTML
+        passed through (CSS gives ``<i>`` an accent color).
     cursor_tooltip : CursorTooltip | None
         If supplied, the cursor-tooltip scaffold is injected. Otherwise no
         tooltip-related markup is written and the plot is responsible for
@@ -124,6 +132,8 @@ def render_plot(
         head_css = head_css + '\n' + extra_head_css
 
     body_pre_close_parts = [_TAB_KEY_FORWARDER_JS]
+    if title is not None:
+        body_pre_close_parts.append(_render_title_bar(title, subtitle))
     if overlay_html:
         body_pre_close_parts.append(overlay_html)
     if cursor_tooltip is not None:
@@ -143,6 +153,14 @@ def render_plot(
         html = html.replace('</body>', body_pre_close + '\n</body>', 1)
     out_path.write_text(html)
     return out_path
+
+
+def _render_title_bar(title: str, subtitle: Optional[str]) -> str:
+    """Inline HTML for the per-plot title overlay (see base.css)."""
+    parts = [f'<div class="rp-title-main">{title}</div>']
+    if subtitle:
+        parts.append(f'<div class="rp-title-sub">{subtitle}</div>')
+    return '<div class="rp-title-bar">\n' + '\n'.join(parts) + '\n</div>'
 
 
 def _render_cursor_tooltip(ct: CursorTooltip) -> str:

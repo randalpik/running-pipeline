@@ -41,12 +41,12 @@ os.chdir(REPO_ROOT)
 # corresponding plot script runs.
 TABS = [
     ("race_pace_all",          "Races"),
-    ("race_pace_by_distance",  "Races by distance"),
-    ("cs_timeline",            "CS fitness"),
-    ("training_quality",       "Training quality"),
+    ("race_pace_by_distance",  "Race Distances"),
+    ("cs_timeline",            "Fitness"),
+    ("training_quality",       "Training"),
     ("recovery_pace",          "Recovery"),
-    ("qualitative_trends",     "Volume / temp / weight"),
-    ("mileage_by_geography",   "Geography"),
+    ("qualitative_trends",     "Misc. Trends"),
+    ("mileage_by_geography",   "Locations"),
 ]
 
 
@@ -163,7 +163,13 @@ def _shell_html(tabs):
     }});
     if (!found) return;
     if (frame.dataset.slug !== slug) {{
-      frame.src = slug + '.html';
+      // Cache-bust on every src assignment. Without this, the parent
+      // reload triggered by livereload would re-set frame.src to the
+      // same string the iframe already had, and the browser treats a
+      // same-URL src assignment as a no-op (no new fetch). Appending
+      // Date.now() guarantees the iframe loads the freshly-regenerated
+      // HTML on every parent reload + every tab activation.
+      frame.src = slug + '.html?v=' + Date.now();
       frame.dataset.slug = slug;
     }}
     try {{ localStorage.setItem(STORE_KEY, slug); }} catch (e) {{}}
@@ -219,7 +225,15 @@ def _shell_html(tabs):
 
 
 def write_index():
-    """Generate output/index.html: tab shell over every existing plot HTML."""
+    """Generate output/index.html: tab shell over every existing plot HTML.
+
+    No-op when the rendered shell would be identical to what's on disk.
+    The watch in main() fires on any change to ``output/*.html`` — which
+    includes ``index.html`` itself — so without this guard, every write
+    here re-triggers the watch and creates an infinite reload loop.
+    Skipping the write when content is unchanged breaks the loop once
+    the tab list stabilizes.
+    """
     OUTPUT_DIR.mkdir(exist_ok=True)
     existing = {p.stem for p in OUTPUT_DIR.glob("*.html") if p.name != "index.html"}
     tabs = [(slug, label) for slug, label in TABS if slug in existing]
@@ -228,7 +242,10 @@ def write_index():
     extras = sorted(existing - {slug for slug, _ in TABS})
     for slug in extras:
         tabs.append((slug, slug.replace('_', ' ')))
-    INDEX_PATH.write_text(_shell_html(tabs))
+    new_html = _shell_html(tabs)
+    if INDEX_PATH.exists() and INDEX_PATH.read_text() == new_html:
+        return
+    INDEX_PATH.write_text(new_html)
 
 
 def main():
