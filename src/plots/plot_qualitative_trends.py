@@ -44,7 +44,7 @@ DEFAULT_DAILY = str(DATA_DIR / 'daily.csv')
 DEFAULT_OUT = str(OUTPUT_DIR)
 START_DATE = '2016-01-01'
 
-MA_WINDOW = {'volume': 56, 'temp': 28, 'weight': 56}
+MA_WINDOW = {'volume': 56, 'temp': 28, 'sleep': 28, 'weight': 56}
 
 RANGE_WINDOW = 14
 RANGE_SMOOTH = 7
@@ -117,9 +117,10 @@ def load_series(daily_path, start_date):
     df = df[df['date'] >= pd.Timestamp(start_date)].copy()
     end = df['date'].max()
     cal = pd.DataFrame({'date': pd.date_range(start_date, end, freq='D')})
-    keep = df[['date', 'miles', 'temp_c', 'weight_lbs']]
+    keep = df[['date', 'miles', 'temp_c', 'sleep_cycles', 'weight_lbs']]
     full = cal.merge(keep, on='date', how='left').set_index('date')
     full['miles'] = full['miles'].fillna(0.0)
+    full['sleep_hours'] = full['sleep_cycles'] * 1.5
     full['weight_interp'] = interpolate_short_gaps(
         full['weight_lbs'], WEIGHT_INTERP_MAX_GAP)
     return full
@@ -136,8 +137,13 @@ def smooth_series(s, window):
 
 
 def rolling_ma(s, window):
+    # Gaussian-weighted MA: same window as a uniform rolling mean, but
+    # the per-day weights taper at the edges, killing per-pixel jitter
+    # without widening the effective kernel meaningfully (σ ≈ window/7
+    # → ~4d for 28d, ~8d for 56d).
+    sigma = max(2.0, window / 7)
     return s.rolling(window, min_periods=max(1, window // 4),
-                     center=True).mean()
+                     center=True, win_type='gaussian').mean(std=sigma)
 
 
 # ---------- envelope strips ----------
@@ -269,6 +275,14 @@ def main():
              # ~30% so white trendline pops at full opacity.
              anchors=[(-10.0, '#0E7BAA'), (22.0, '#5A9E3D'),
                       (40.0, '#C82020')]),
+        dict(key='sleep', label='Sleep', unit='hr',
+             series=full['sleep_hours'],
+             # CF source: gradients.sleep_cycles — 0c #C00000 → 8c
+             # #00B050, converted to hours (×1.5). Hues preserved from
+             # the spreadsheet; brightness left at CF level so the band
+             # matches Temp's #C82020 / #5A9E3D anchors rather than
+             # reading muted next to them.
+             anchors=[(0.0, '#C00000'), (12.0, '#00B050')]),
         dict(key='weight', label='Weight', unit='lbs',
              series=full['weight_interp'],
              # 3-stop orange-family gradient. Mid-stop at 156 lbs places
@@ -278,8 +292,8 @@ def main():
     ]
 
     fig = make_subplots(
-        rows=3, cols=1, shared_xaxes=True,
-        vertical_spacing=0.05,
+        rows=4, cols=1, shared_xaxes=True,
+        vertical_spacing=0.03,
         subplot_titles=[
             f"{m['label']} ({MA_WINDOW[m['key']]}-day trend, min-max gradient)"
             for m in metrics
@@ -358,7 +372,7 @@ def main():
     apply_default_layout(
         fig,
         font=dict(color=FG, size=12),
-        margin=dict(t=40, l=70, r=40, b=70),
+        margin=dict(t=24, l=70, r=40, b=48),
         showlegend=False,
         hovermode=False,
     )
@@ -392,6 +406,7 @@ def main():
             build_js=_BUILD_JS,
             first_day=first_day,
             last_day=last_day,
+            spike_full_plot=True,
         ),
     )
     print(f'wrote {out_path}')
@@ -403,6 +418,9 @@ def main():
     t = full['temp_c'].dropna()
     print(f"  temp    n={len(t):>5d}  min={t.min():.1f}  "
           f"max={t.max():.1f}  median={t.median():.1f}")
+    s = full['sleep_hours'].dropna()
+    print(f"  sleep   n={len(s):>5d}  min={s.min():.1f}  "
+          f"max={s.max():.1f}  median={s.median():.1f}")
     w = full['weight_interp'].dropna()
     raw_w = full['weight_lbs'].dropna()
     print(f"  weight  n={len(w):>5d}  ({len(raw_w)} raw, "
@@ -418,10 +436,10 @@ function buildTooltip(day) {
   if (idx < 0 || idx >= P.n_days) return '';
 
   var DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  var metricKeys   = ['volume', 'temp', 'weight'];
+  var metricKeys   = ['volume', 'temp', 'sleep', 'weight'];
   var metricLabels = {volume: 'Avg. volume', temp: 'Avg. temp',
-                      weight: 'Avg. weight'};
-  var metricUnits  = {volume: 'mi', temp: '°C', weight: 'lbs'};
+                      sleep: 'Avg. sleep', weight: 'Avg. weight'};
+  var metricUnits  = {volume: 'mi', temp: '°C', sleep: 'hr', weight: 'lbs'};
 
   function fmt(v, n) {
     if (v === null || v === undefined || isNaN(v)) return null;

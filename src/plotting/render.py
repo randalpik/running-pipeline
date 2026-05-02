@@ -63,6 +63,11 @@ class CursorTooltip:
     Set ``always_snap=True`` for plots whose data is purely discrete (e.g.
     geography bars): the scaffold never falls back to smooth mode and
     suppresses the tooltip when no snap-eligible point is found.
+
+    Set ``spike_full_plot=True`` for stacked-subplot plots whose spike
+    should visually span every panel (e.g. qualitative_trends). Default
+    is per-subplot clipping so multi-panel plots don't draw a spike
+    across panels the cursor isn't currently in.
     """
     payload: object = None
     build_js: str = ''
@@ -71,6 +76,7 @@ class CursorTooltip:
     spike: bool = True
     snap_px: int = 30
     always_snap: bool = False
+    spike_full_plot: bool = False
 
 
 def render_plot(
@@ -173,6 +179,7 @@ def _render_cursor_tooltip(ct: CursorTooltip) -> str:
     range_json = json.dumps(range_obj if range_obj else {})
     spike_json = 'true' if ct.spike else 'false'
     always_snap_json = 'true' if ct.always_snap else 'false'
+    spike_full_json = 'true' if ct.spike_full_plot else 'false'
 
     return (
         '<div class="rp-tooltip"></div>\n'
@@ -183,6 +190,7 @@ def _render_cursor_tooltip(ct: CursorTooltip) -> str:
         f'window.__TT_SPIKE = {spike_json};\n'
         f'window.__TT_SNAP_PX = {ct.snap_px};\n'
         f'window.__TT_ALWAYS_SNAP = {always_snap_json};\n'
+        f'window.__TT_SPIKE_FULL_PLOT = {spike_full_json};\n'
         f'{ct.build_js}\n'
         f'{_CURSOR_TOOLTIP_JS}\n'
         '</script>\n'

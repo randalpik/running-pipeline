@@ -22,6 +22,7 @@
   var SNAP_PX        = window.__TT_SNAP_PX || 30;
   var ALWAYS_SNAP    = window.__TT_ALWAYS_SNAP === true;
   var SHOW_SPIKE     = window.__TT_SPIKE !== false;
+  var SPIKE_FULL     = window.__TT_SPIKE_FULL_PLOT === true;
   var range          = window.__TT_RANGE || { firstDay: -Infinity, lastDay: Infinity };
 
   var tt    = document.querySelector('.rp-tooltip');
@@ -198,6 +199,16 @@
     return null;
   }
 
+  // Plot-area bounds (top/bottom of the entire cartesian region, not a
+  // single subplot). Used when SPIKE_FULL is set so the spike spans every
+  // stacked panel.
+  function plotAreaBounds(pdiv) {
+    var fl = pdiv._fullLayout;
+    var rect = pdiv.getBoundingClientRect();
+    var sz = fl._size;
+    return { top: rect.top + sz.t, bottom: rect.top + sz.t + sz.h };
+  }
+
   function subplotForTrace(pdiv, trace) {
     var fl = pdiv._fullLayout;
     var rect = pdiv.getBoundingClientRect();
@@ -264,12 +275,13 @@
         var ctx = { xaxisId: snapSp.xaxisId, yaxisId: snapSp.yaxisId };
         var html = callBuilder(snapDay, true, snap.html, ctx);
         if (!html) { pending.show = false; schedule(); return; }
+        var sb = SPIKE_FULL ? plotAreaBounds(pdiv) : snapSp;
         pending.html        = html;
         pending.x           = snap.screenX;
         pending.y           = snap.screenY;
         pending.spikeX      = snap.screenX;
-        pending.spikeTop    = snapSp.top;
-        pending.spikeHeight = snapSp.bottom - snapSp.top;
+        pending.spikeTop    = sb.top;
+        pending.spikeHeight = sb.bottom - sb.top;
         pending.show        = true;
         schedule();
         return;
@@ -284,12 +296,13 @@
       var ctx = { xaxisId: sp.xaxisId, yaxisId: sp.yaxisId };
       var html = callBuilder(day, false, null, ctx);
       if (!html) { pending.show = false; schedule(); return; }
+      var sb2 = SPIKE_FULL ? plotAreaBounds(pdiv) : sp;
       pending.html        = html;
       pending.x           = e.clientX;
       pending.y           = e.clientY;
       pending.spikeX      = e.clientX;
-      pending.spikeTop    = sp.top;
-      pending.spikeHeight = sp.bottom - sp.top;
+      pending.spikeTop    = sb2.top;
+      pending.spikeHeight = sb2.bottom - sb2.top;
       pending.show        = true;
       schedule();
     });

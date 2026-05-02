@@ -383,8 +383,8 @@ function buildTooltip(day, isSnap, pointHtml) {
         fig, OUT_HTML,
         title_slug='workouts',
         page_title='Workouts',
-        title='Every workout at 5K-equivalent pace',
-        subtitle='Quality sessions projected to 5K via CS+D′ — including those pruned by the training-quality model',
+        title='All workouts at 5K-equivalent pace',
+        subtitle='Corrections applied per category',
         cursor_tooltip=CursorTooltip(
             payload=payload,
             build_js=build_js,
