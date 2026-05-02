@@ -63,6 +63,7 @@ quiet_step "plot_qualitative_trends" python src/plots/plot_qualitative_trends.py
 quiet_step "make_recovery_plots"     python src/plots/make_recovery_plots.py "${diag_flag[@]}"
 quiet_step "make_race_plots"         python src/plots/make_race_plots.py
 quiet_step "make_geography_plot"     python src/plots/make_geography_plot.py
+quiet_step "make_world_map"          python src/plots/make_world_map.py
 
 echo
 echo "All plots written to output/."
