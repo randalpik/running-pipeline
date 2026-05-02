@@ -46,6 +46,8 @@ TABS = [
     ("race_pace_by_distance",  "Race Distances"),
     ("cs_timeline",            "Fitness"),
     ("training_quality",       "Training"),
+    ("workouts",               "Workouts"),
+    ("long_runs",              "Long Runs"),
     ("recovery_pace",          "Recovery"),
     ("qualitative_trends",     "Misc. Trends"),
     ("mileage_by_geography",   "Locations"),

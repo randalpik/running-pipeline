@@ -46,14 +46,15 @@ CAT_COLORS = {
     # close in hue and too low in saturation; these are spread out and
     # punched up.
     'interval':           '#F1C40F',  # saturated gold (CF pale yellow → vivid)
-    'tempo':              '#CDDC39',  # lime / yellow-green (separated from interval)
-    'rep':                '#F39C12',  # carrot orange (CF peach → vivid)
-    'continuous_fartlek': '#FF7043',  # warm orange (CF peach → vivid, distinct from rep)
+    'tempo':              "#83CC1D",  # lime / yellow-green (separated from interval)
+    'rep':                "#F38A12",  # carrot orange (CF peach → vivid)
+    'continuous_fartlek': "#FF5643",  # warm orange (CF peach → vivid, distinct from rep)
     'lr_lo':              '#B19CD9',  # lavender (CF light purple, more saturated)
     'lr_hi':              '#674EA7',  # deep purple
     'hill_lc':            '#3D85C6',  # saturated medium blue (CF light blue → vivid)
     'hill_rc':            '#3D85C6',
     'hill_pwr1':          '#3D85C6',
+    'hill_rep':           '#1ABC9C',  # vivid teal (CF muted teal #A2C4C9 → vivid)
 }
 
 

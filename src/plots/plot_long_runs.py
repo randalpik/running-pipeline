@@ -1,0 +1,301 @@
+"""
+plot_long_runs.py — Qualitative "every long run" plot at absolute pace.
+
+Shows every `run_type == 'long'` session — including those outside the TQ
+model's [LONG_FLOOR, LONG_CEIL] slice — at absolute pace (no 5K-equivalent
+projection, no per-route correction). Two CS-derived reference curves give
+the equivalent half-marathon and marathon paces from the model: how fast a
+given fitness predicts you could run those distances.
+
+Marker color encodes distance via a continuous lavender→deep-purple gradient,
+bracketed at the dataset's miles min/max.
+"""
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.shared.workouts import load_cs, project_long_runs
+from src.shared.cs_projection import load_cs_outputs, cs_line_at_anchor
+from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
+                            sec_to_mss, GRID, CAT_COLORS, CS_LINE, rgba)
+
+
+OUTPUT_DIR.mkdir(exist_ok=True)
+OUT_HTML = str(OUTPUT_DIR / 'long_runs.html')
+
+# Distance gradient: 3-stop blue → purple → magenta for high contrast across
+# the long-run distance range. cmin/cmax are computed from the dataset's
+# miles min/max.
+LR_GRAD_BLUE    = '#3498DB'  # bright blue   (short)
+LR_GRAD_PURPLE  = '#8E44AD'  # vivid purple  (mid)
+LR_GRAD_MAGENTA = '#E91E63'  # magenta       (long)
+LR_GRADIENT = [[0.0, LR_GRAD_BLUE], [0.5, LR_GRAD_PURPLE], [1.0, LR_GRAD_MAGENTA]]
+
+# CS reference curve colors. Marathon = full CS_LINE gold (darker because
+# longer-distance fade pushes pace slower); HM = a lighter, semi-transparent
+# version of the same orange/gold so both read as the same "CS" family.
+CS_LINE_HM       = rgba('#ffb450', 0.55)
+CS_LINE_MARATHON = CS_LINE
+
+
+def _y_safe(arr):
+    return [None if (v is None or (isinstance(v, float) and np.isnan(v)))
+            else float(v) for v in arr]
+
+
+def _route_paren(display_name, city_state):
+    parts = [str(x).strip() for x in (display_name, city_state)
+             if pd.notna(x) and str(x).strip()]
+    return f' ({", ".join(parts)})' if parts else ''
+
+
+def long_run_hover(r):
+    title = f"Long run{_route_paren(r.get('display_name'), r.get('city_state'))}"
+    pace_sec = float(r['recovery_pace_sec_per_mi'])
+    parts = [
+        f"<b>{title}</b>",
+        f"{r['miles']:.1f} mi @ {sec_to_mss(pace_sec)}/mi",
+    ]
+    return "<br>".join(parts)
+
+
+def main():
+    cs, epoch = load_cs()
+    lr = project_long_runs(cs, epoch)
+    if lr.empty:
+        raise SystemExit('No long runs to plot.')
+
+    # CS reference curves at HM and marathon. cs_line_at_anchor returns total
+    # time in seconds; convert to pace (min/mi) for display.
+    daily_summary, beta_long, d_thresh, _ = load_cs_outputs(str(DATA_DIR), '')
+    daily_plot = daily_summary[daily_summary['date'] >= pd.Timestamp('2016-01-01')].copy()
+
+    hm_dist_m, mar_dist_m = 21097.5, 42195.0
+    t_hm  = cs_line_at_anchor(daily_plot, hm_dist_m, beta_long, d_thresh)
+    t_mar = cs_line_at_anchor(daily_plot, mar_dist_m, beta_long, d_thresh)
+    hm_pace_min  = t_hm  / (hm_dist_m  / 1609.344) / 60.0
+    mar_pace_min = t_mar / (mar_dist_m / 1609.344) / 60.0
+
+    pace_min = lr['recovery_pace_sec_per_mi'].astype(float) / 60.0
+    miles    = lr['miles'].astype(float)
+
+    # ---------- figure ----------
+    fig = go.Figure()
+
+    # Marathon curve (darker gold, full saturation).
+    fig.add_trace(go.Scatter(
+        x=daily_plot['date'], y=_y_safe(mar_pace_min),
+        mode='lines', name='CS marathon pace',
+        line=dict(color=CS_LINE_MARATHON, width=2.2),
+        hoverinfo='skip',
+    ))
+    # HM curve (lighter gold).
+    fig.add_trace(go.Scatter(
+        x=daily_plot['date'], y=_y_safe(hm_pace_min),
+        mode='lines', name='CS half-marathon pace',
+        line=dict(color=CS_LINE_HM, width=2.0),
+        hoverinfo='skip',
+    ))
+
+    # Long-run markers: single trace, continuous purple gradient by distance.
+    cd = [long_run_hover(r) for _, r in lr.iterrows()]
+    fig.add_trace(go.Scatter(
+        x=lr['date'], y=_y_safe(pace_min.values),
+        mode='markers', name=f'Long runs (n={len(lr)})',
+        marker=dict(
+            color=miles.values, size=8,
+            colorscale=LR_GRADIENT,
+            cmin=float(miles.min()), cmax=float(miles.max()),
+            showscale=False,
+            line=dict(color='rgba(255,255,255,0.4)', width=0.5),
+            opacity=0.9,
+        ),
+        customdata=cd,
+        hoverinfo='skip',
+        meta={'snap_eligible': True},
+    ))
+
+    # ---------- layout ----------
+    # Absolute pace axis: 4:30–8:30 min/mi (descending = faster up).
+    y_min, y_max = 4.5, 8.5
+    tickvals = [4.5 + 0.25 * k for k in range(int((y_max - y_min) / 0.25) + 1)]
+    ticktext = [sec_to_mss(v * 60) for v in tickvals]
+
+    apply_default_layout(
+        fig,
+        margin=dict(t=20, l=70, r=200, b=60),
+        hovermode=False,
+        legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
+                    font=dict(size=11)),
+        xaxis=dict(title='Date', showgrid=True, gridcolor=GRID,
+                   tick0='2016-01-01', dtick='M12',
+                   range=[pd.Timestamp('2016-01-01'),
+                          pd.Timestamp(lr['date'].max()) + pd.Timedelta(days=30)]),
+        yaxis=dict(title='Pace (min/mi)',
+                   range=[y_max, y_min],
+                   tickmode='array', tickvals=tickvals, ticktext=ticktext,
+                   showgrid=True, gridcolor=GRID, zeroline=False),
+    )
+
+    # ---------- distance-gradient legend overlay ----------
+    # No native colorbar (showscale=False) since the encoding is
+    # "intuitive: bigger = darker"; provide a small textual key by the legend
+    # for explicit distance anchors.
+    miles_min_int = int(np.floor(miles.min()))
+    miles_max_int = int(np.ceil(miles.max()))
+    overlay_html = f"""
+<style>
+#lr-gradient {{
+  position: fixed; right: 12px; bottom: 80px;
+  background: rgba(26,26,26,0.92);
+  border: 1px solid #444;
+  padding: 8px 10px;
+  border-radius: 4px;
+  color: #eee;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 11px;
+  z-index: 100;
+  user-select: none;
+}}
+#lr-gradient .gtitle {{ margin-bottom: 5px; color: #eee; }}
+#lr-gradient .gbar {{
+  width: 160px; height: 10px;
+  background: linear-gradient(to right, {LR_GRAD_BLUE}, {LR_GRAD_PURPLE}, {LR_GRAD_MAGENTA});
+  border-radius: 2px;
+  margin-bottom: 3px;
+}}
+#lr-gradient .glabels {{
+  display: flex; justify-content: space-between;
+  font-size: 10.5px; color: #aaa;
+}}
+</style>
+<div id="lr-gradient">
+  <div class="gtitle">Distance (mi)</div>
+  <div class="gbar"></div>
+  <div class="glabels"><span>{miles_min_int}</span><span>{miles_max_int}</span></div>
+</div>
+"""
+
+    # ---------- cursor-tooltip payload ----------
+    js_epoch = pd.Timestamp('1970-01-01')
+    plot_start = pd.Timestamp('2016-01-01')
+    plot_end   = pd.Timestamp(lr['date'].max()) + pd.Timedelta(days=30)
+    all_days   = pd.date_range(plot_start, plot_end, freq='D')
+
+    # Per-day HM and marathon CS pace (min/mi) for the smooth-mode tooltip.
+    days_2016 = (all_days - epoch).days.astype(float).values
+    daily_days = (daily_plot['date'] - epoch).dt.days.astype(float).values
+    hm_per_day  = np.interp(days_2016, daily_days, hm_pace_min)
+    mar_per_day = np.interp(days_2016, daily_days, mar_pace_min)
+
+    sessions = []
+    for _, r in lr.iterrows():
+        sessions.append({'day': int((r['date'] - js_epoch).days),
+                         'html': long_run_hover(r)})
+    sessions.sort(key=lambda s: s['day'])
+
+    first_day = int((all_days[0]  - js_epoch).days)
+    last_day  = int((all_days[-1] - js_epoch).days)
+
+    payload = {
+        'first_day': first_day,
+        'hm_pace':  [round(float(v), 4) for v in hm_per_day],
+        'mar_pace': [round(float(v), 4) for v in mar_per_day],
+        'sessions': sessions,
+        'nearest_window_days': 60,
+    }
+
+    build_js = r"""
+function buildTooltip(day, isSnap, pointHtml) {
+  var P = window.__TT_DATA;
+  var idx = day - P.first_day;
+  if (idx < 0 || idx >= P.hm_pace.length) return '';
+
+  var DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  function fmtMin(v) {
+    if (v === null || v === undefined || isNaN(v)) return '—';
+    var s = Math.round(v * 60);
+    var m = Math.floor(s / 60), r = s % 60;
+    return m + ':' + (r < 10 ? '0' : '') + r;
+  }
+  function dateLabel(d) {
+    var dt = new Date(d * 86400000);
+    var y = dt.getUTCFullYear();
+    var m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    var dd = String(dt.getUTCDate()).padStart(2, '0');
+    return y + '-' + m + '-' + dd + ' (' + DOW[dt.getUTCDay()] + ')';
+  }
+
+  var html = '';
+  html += '<div class="tt-date">' + dateLabel(day) + '</div>';
+  html += '<div class="tt-section">';
+  html += '<div class="tt-row"><span>CS half-marathon</span><b>' + fmtMin(P.hm_pace[idx]) + '/mi</b></div>';
+  html += '<div class="tt-row"><span>CS marathon</span><b>' + fmtMin(P.mar_pace[idx]) + '/mi</b></div>';
+  html += '</div>';
+
+  var run = null;
+  var s = P.sessions;
+  if (isSnap) {
+    var lo = 0, hi = s.length - 1;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (s[mid].day < day) lo = mid + 1; else hi = mid;
+    }
+    if (s[lo] && s[lo].day === day) run = s[lo];
+  } else if (s.length) {
+    var lo = 0, hi = s.length - 1;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (s[mid].day < day) lo = mid + 1; else hi = mid;
+    }
+    var cands = [s[lo]];
+    if (lo > 0) cands.push(s[lo - 1]);
+    var best = null, bestAbs = 9999;
+    for (var k = 0; k < cands.length; k++) {
+      var ad = Math.abs(cands[k].day - day);
+      if (ad < bestAbs) { bestAbs = ad; best = cands[k]; }
+    }
+    if (best && bestAbs <= P.nearest_window_days) run = best;
+  }
+
+  if (run || (isSnap && pointHtml)) {
+    html += '<div class="tt-section">';
+    if (!isSnap && run) {
+      var dd2 = run.day - day;
+      var lbl = dd2 === 0 ? 'same day'
+              : (dd2 > 0 ? '+' + dd2 + ' day' + (dd2 === 1 ? '' : 's')
+                         :  dd2 + ' day' + (dd2 === -1 ? '' : 's'));
+      html += '<div class="tt-section-title">Nearest long run [' + lbl + ']</div>';
+    }
+    html += (isSnap && pointHtml ? pointHtml : run.html);
+    html += '</div>';
+  }
+  return html;
+}
+"""
+
+    render_plot(
+        fig, OUT_HTML,
+        title_slug='long_runs',
+        page_title='Long Runs',
+        title='Every long run at absolute pace',
+        subtitle='With CS-derived reference paces at half-marathon and marathon distances',
+        cursor_tooltip=CursorTooltip(
+            payload=payload,
+            build_js=build_js,
+            first_day=first_day,
+            last_day=last_day,
+        ),
+        overlay_html=overlay_html,
+    )
+    print(f'Wrote {OUT_HTML}  ({len(lr)} long runs, '
+          f'miles {miles.min():.1f}–{miles.max():.1f})')
+
+
+if __name__ == '__main__':
+    main()

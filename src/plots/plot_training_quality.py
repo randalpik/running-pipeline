@@ -21,29 +21,26 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.parsers.snapshot import find_snapshot, read_snapshot
+from src.shared.workouts import (
+    load_cs, add_cs,
+    project_workouts, project_long_runs, project_hill_continuous,
+    LONG_FLOOR, LONG_CEIL, LR_INTERNAL_BIN,
+    WORKOUTS_PATH, DAILY_PATH, CS_PATH,
+)
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             sec_to_mss, fmt_min, CAT_COLORS, GRID, CS_LINE,
                             GAP_BREAK_DAYS, adaptive_gauss_smoother)
 
 
-# ---------- paths ----------
-WORKOUTS_PATH = DATA_DIR / 'workout_decomposed.csv'
-DAILY_PATH    = DATA_DIR / 'daily.csv'
-CS_PATH       = DATA_DIR / 'bayes_cs_summary.csv'
 OUTPUT_DIR.mkdir(exist_ok=True)
 OUT_HTML = str(OUTPUT_DIR / 'training_quality.html')
+TRACK_CSV = DATA_DIR / 'training_quality_track.csv'
 
 for _required in (WORKOUTS_PATH, DAILY_PATH, CS_PATH):
     if not _required.exists():
         raise SystemExit(f'Could not find {_required}')
 
 # ---------- pipeline parameters (match training_unified_pipeline.py) ----------
-TAU = 210.0
-# Long-run scope and binning
-LONG_FLOOR      = 15.1   # lower scope: separates long-run effort from mid-week aerobic
-LONG_CEIL       = 25.3   # upper scope: trims marathon-distance fade regime (n too small)
-LR_INTERNAL_BIN = 21.0   # within-slice bin split (effort regime change)
 MIN_ROUTE_N     = 5      # min long runs per location to qualify for route beta
 PRUNE_SIGMA     = 3.0    # iterative MAD-based outlier threshold
 
@@ -64,88 +61,8 @@ CAT_LABEL = {
 
 
 # ---------- pipeline ----------
-def load_cs():
-    cs = pd.read_csv(CS_PATH, parse_dates=['date']).sort_values('date').reset_index(drop=True)
-    cs['t5k_pred_sec'] = (5000.0 - cs['dp_med']) / cs['cs_mps_med']
-    cs['p5k_implied_min'] = 1609.344 * cs['t5k_pred_sec'] / 5000.0 / 60.0
-    epoch = cs['date'].min()
-    cs['day'] = (cs['date'] - epoch).dt.days.astype(float)
-    return cs, epoch
-
-
-def add_cs(df, cs, epoch):
-    df = df.copy()
-    df['day'] = (df['date'] - epoch).dt.days.astype(float)
-    df['p5k_cs_min'] = np.interp(df['day'], cs['day'].values, cs['p5k_implied_min'].values)
-    df['dp_t']       = np.interp(df['day'], cs['day'].values, cs['dp_med'].values)
-    df['year']       = df['date'].dt.year
-    return df
-
-
-def project_workouts(cs, epoch):
-    w = pd.read_csv(WORKOUTS_PATH, parse_dates=['date'])
-    # bring along workout_raw + conditions + qd for filters and hover
-    daily = pd.read_csv(DAILY_PATH, parse_dates=['date'])
-    w = w.merge(daily[['date', 'workout_raw', 'conditions', 'quality_distance_m',
-                       'display_name', 'city_state']],
-                on='date', how='left')
-
-    # Rule: a tempo whose decomposition is implicit (no explicit "Nx<dist>" in
-    # the log) and lands at rep_dist >= 1600 should be treated as an interval.
-    # Explicit-Nx tempos like "4x1600t" stay as tempos. Catches 2024-05-04 only.
-    import re
-    has_nx = w['workout_raw'].astype(str).str.contains(r'\d+x\d+', regex=True, na=False)
-    mask = (w['type'] == 'tempo') & (w['rep_dist'] >= 1600) & (~has_nx)
-    w.loc[mask, 'type'] = 'interval'
-
-    # Reps excluded: anaerobic top-end fitness, noisy contributor.
-    w = w[w['type'] != 'rep'].copy()
-
-    # Snow prune: 'snow' in log string or conditions. Removes 4 sessions.
-    snow_w = w['workout_raw'].astype(str).str.contains('snow', case=False, na=False)
-    snow_c = w['conditions'].astype(str).str.contains('snow', case=False, na=False)
-    w = w[~(snow_w | snow_c)].copy()
-
-    # XC correction: two rules combined.
-    # (1) 2016-07 through 2016-10 was XC season — Max's HS XC year. No surface
-    #     field in the workout log, but the period is XC by recall.
-    # (2) Any tempo with quality_distance_m == 5000 was on his HS 5K course,
-    #     run as 5 segments with very short rest. Always XC.
-    # Both get the standard -6% pace correction (divide by 1.06), same
-    # convention as the XC race correction.
-    fall_2016 = (w['date'] >= pd.Timestamp('2016-07-01')) & (w['date'] <= pd.Timestamp('2016-10-31'))
-    hs_5k = (w['type'] == 'tempo') & (w['quality_distance_m'] == 5000)
-    xc_mask = fall_2016 | hs_5k
-    w.loc[xc_mask, 'pace_per_mile'] = w.loc[xc_mask, 'pace_per_mile'] / 1.06
-    w['xc_corrected'] = xc_mask
-
-    w = add_cs(w, cs, epoch)
-    decay = np.exp(-w['rest_per_mile'] / TAU)
-    w['D_eff']    = w['rep_dist'] * (1 + (w['rep_count'] - 1) * decay)
-    w['t_eff']    = w['pace_per_mile'] * w['D_eff'] / 1609.344
-    w['t_5k_hyp'] = (5000 - w['dp_t']) * w['t_eff'] / (w['D_eff'] - w['dp_t'])
-    w['p5k_min']  = w['t_5k_hyp'] * 1609.344 / 5000 / 60.0
-    w['raw_resid'] = (w['p5k_min'] - w['p5k_cs_min']) * 60
-    w['category'] = w['type']
-    return w
-
-
-def project_long_runs(cs, epoch):
-    d = pd.read_csv(DAILY_PATH, parse_dates=['date'])
-    lr = d[d['run_type'] == 'long'].copy().dropna(subset=['recovery_pace_sec_per_mi', 'miles'])
-    lr = lr[lr['miles'].between(LONG_FLOOR, LONG_CEIL)].copy()
-    # Snow prune.
-    snow_w = lr['workout_raw'].astype(str).str.contains('snow', case=False, na=False)
-    snow_c = lr['conditions'].astype(str).str.contains('snow', case=False, na=False)
-    lr = lr[~(snow_w | snow_c)].copy()
-
-    lr = add_cs(lr, cs, epoch)
-    lr['t_run']   = lr['recovery_pace_sec_per_mi'] * lr['miles']
-    lr['d_m']     = lr['miles'] * 1609.344
-    lr['t_5k_hyp'] = (5000 - lr['dp_t']) * lr['t_run'] / (lr['d_m'] - lr['dp_t'])
-    lr['p5k_min'] = lr['t_5k_hyp'] * 1609.344 / 5000.0 / 60.0
-    lr['raw_resid'] = (lr['p5k_min'] - lr['p5k_cs_min']) * 60
-    return lr
+# load_cs, add_cs, project_workouts, project_long_runs, project_hill_continuous,
+# HC_LOOPS, HILL_LOOP_META are imported from src.shared.workouts.
 
 
 def fit_long_run_model(lr_in):
@@ -233,117 +150,6 @@ def fit_long_run_model(lr_in):
         n_kept=n_kept,
     )
     return lr_in, fit, qualifying_routes
-
-
-# ---------- hill continuous ----------
-# Loop lookup: per-loop offsets absorb grade/surface/terrain in the TQ
-# projection, so only `distance_m` is needed there. The elev fields and
-# location join are loaded from the snapshot's hills + locations sections
-# for tooltip display (see load_hill_loop_meta below).
-HC_LOOPS = {
-    'lc':   {'distance_m': 1290},
-    'rc':   {'distance_m':  850},
-    'pwr1': {'distance_m':  620},
-}
-
-
-def load_hill_loop_meta():
-    """Return {abbrev: {display_name, city_state, elev_up, elev_down}} from
-    the snapshot's `hills` + `locations` sections. Loop abbrev → location
-    via the hills sheet; location → display_name + city_state via the
-    locations sheet. Falls back to empty dict if snapshot missing."""
-    snapshot_path = find_snapshot([str(DATA_DIR / 'drive_snapshot.csv')])
-    if snapshot_path is None:
-        return {}
-    sections, _ = read_snapshot(snapshot_path)
-    hills_df = sections.get('hills', pd.DataFrame())
-    locs_df = sections.get('locations', pd.DataFrame())
-
-    loc_lookup = {}
-    if 'log_location' in locs_df.columns:
-        for _, r in locs_df.iterrows():
-            ll = str(r.get('log_location', '')).strip().lower()
-            if ll:
-                loc_lookup[ll] = (r.get('display_name'), r.get('city_state'))
-
-    out = {}
-    for _, r in hills_df.iterrows():
-        for ab in [a.strip() for a in str(r.get('abbrev', '')).split(',')]:
-            if ab not in HC_LOOPS:
-                continue
-            loc = str(r.get('location', '')).strip().lower()
-            display_name, city_state = loc_lookup.get(loc, (None, None))
-            out[ab] = {
-                'display_name': display_name,
-                'city_state': city_state,
-                'elev_up': r.get('elev_gain_up'),
-                'elev_down': r.get('elev_gain_down'),
-            }
-    return out
-
-
-HILL_LOOP_META = load_hill_loop_meta()
-
-
-def project_hill_continuous(cs, epoch):
-    """Project hill_cont sessions to P5K via CS-hyp on actual loop pace.
-
-    No grade adjustment. The per-loop offset (Stage 5) absorbs all loop-
-    specific systematics — grade, surface, terrain — by construction, since
-    Minetti-style adjustments produce a uniform multiplicative shift per
-    loop that the offset would just subtract back out.
-
-    Scope: lc, rc, pwr1 only (n>7 cutoff). Other loops are dropped here and
-    will be displayed without TQ contribution on the all-workouts plot.
-    """
-    import re
-    d = pd.read_csv(DAILY_PATH, parse_dates=['date'])
-    h = d[d['run_type'] == 'hill_cont'].copy()
-    # Drop hc/rep hybrids (Sept 2016)
-    h = h[~h['workout_raw'].astype(str).str.contains(r'hc/rep', regex=True, na=False)].copy()
-
-    def _parse(row):
-        s = str(row['workout_raw'])
-        m_min = re.search(r'(\d+)hc-', s)
-        minutes = int(m_min.group(1)) if m_min else None
-        m_n = re.search(r'hc-(\d+)x', s)
-        nreps = int(m_n.group(1)) if m_n else None
-        m_loc = re.search(r'hc-\d+x\s+([a-zA-Z0-9]+)', s)
-        loop = m_loc.group(1) if m_loc else None
-        if loop is None:
-            loc_col = str(row['location']).lower()
-            if 'rollercoaster' in loc_col: loop = 'rc'
-            elif 'powerline west' in loc_col: loop = 'pwr1'
-        return pd.Series([minutes, nreps, loop])
-
-    h[['session_min', 'nreps', 'loop']] = h.apply(_parse, axis=1)
-    h = h[h['loop'].isin(HC_LOOPS.keys())].copy()
-    h = h.dropna(subset=['session_min', 'nreps'])
-
-    # Snow prune (consistency with workouts/long runs)
-    snow_w = h['workout_raw'].astype(str).str.contains('snow', case=False, na=False)
-    snow_c = h['conditions'].astype(str).str.contains('snow', case=False, na=False)
-    h = h[~(snow_w | snow_c)].copy()
-
-    h['quality_dist_m'] = h.apply(
-        lambda r: r['nreps'] * HC_LOOPS[r['loop']]['distance_m'], axis=1)
-    h['actual_pace_s'] = (h['session_min'] * 60.0) / (h['quality_dist_m'] / 1609.344)
-    h['d_m']     = h['quality_dist_m']
-    h['t_eff']   = h['actual_pace_s'] * h['d_m'] / 1609.344
-    h = add_cs(h, cs, epoch)
-    h['t_5k_hyp'] = (5000 - h['dp_t']) * h['t_eff'] / (h['d_m'] - h['dp_t'])
-    h['p5k_min']  = h['t_5k_hyp'] * 1609.344 / 5000.0 / 60.0
-    h['raw_resid'] = (h['p5k_min'] - h['p5k_cs_min']) * 60
-    h['category'] = 'hill_' + h['loop'].astype(str)
-
-    def _meta(loop, key):
-        return HILL_LOOP_META.get(loop, {}).get(key)
-    h['loop_display_name'] = h['loop'].map(lambda l: _meta(l, 'display_name'))
-    h['loop_city_state']   = h['loop'].map(lambda l: _meta(l, 'city_state'))
-    h['loop_elev_up']      = h['loop'].map(lambda l: _meta(l, 'elev_up'))
-    h['loop_elev_down']    = h['loop'].map(lambda l: _meta(l, 'elev_down'))
-    h['ft_gained'] = (h['loop_elev_up'].fillna(0) + h['loop_elev_down'].fillna(0)) * h['nreps']
-    return h
 
 
 def apply_offsets(workouts, hills=None):
@@ -451,9 +257,16 @@ def hill_hover(r):
 # ---------- main ----------
 def main():
     cs, epoch = load_cs()
+    # Shared projection helpers return ALL rows with `excluded_reason` flagged
+    # for snow / reps / out-of-slice / hc-rep-hybrid / hc-loop-other. Training
+    # plot keeps only in-scope rows (excluded_reason is None) and drops the
+    # flag column afterwards.
     workouts  = project_workouts(cs, epoch)
     long_runs = project_long_runs(cs, epoch)
     hills     = project_hill_continuous(cs, epoch)
+    workouts  = workouts[workouts['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
+    long_runs = long_runs[long_runs['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
+    hills     = hills[hills['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
 
     # Long-run model: fit raw_resid ~ C(bin) + C(route) on the in-slice set
     # with iterative MAD-based outlier prune. Outliers are dropped from the
@@ -538,6 +351,15 @@ def main():
     for c, o in sorted(offsets.items()):
         print(f'  {c:<22} offset={o:+6.2f}')
 
+    # Persist final per-category offsets so the Workouts plot can position
+    # markers on the same per-category baseline TQ uses for its smoother.
+    offsets_csv = DATA_DIR / 'training_quality_offsets.csv'
+    pd.DataFrame({
+        'category': list(offsets.keys()),
+        'offset_sec_per_mi': [float(v) for v in offsets.values()],
+    }).to_csv(offsets_csv, index=False)
+    print(f'Wrote {offsets_csv}')
+
     # Combined for the smoother. Long runs use the model-corrected residual.
     combined = pd.concat([
         workouts[['date', 'resid']],
@@ -574,6 +396,31 @@ def main():
 
     p5k_at_grid = np.interp(grid_days, cs['day'].values, cs['p5k_implied_min'].values)
     track = p5k_at_grid + smoothed / 60.0
+
+    # Persist the smoother track at daily resolution so other plots (Workouts
+    # tab) can position hill_rep markers at the TQ smoother y-value on each
+    # date. NaN values within the 2020-21 labrum gap (and any other > 90-day
+    # gaps) are propagated to the daily output via np.interp; the track CSV
+    # consumer treats them as "no smoother value here, skip the marker".
+    track_dates_daily = pd.date_range(grid_dates[0], grid_dates[-1], freq='D')
+    track_days_daily  = (track_dates_daily - epoch).days.astype(float).values
+    track_min_daily = np.full(len(track_dates_daily), np.nan)
+    for i, t in enumerate(track_days_daily):
+        j = np.searchsorted(grid_days, t)
+        if j == 0 or j >= len(grid_days):
+            continue
+        lv, rv = track[j-1], track[j]
+        if np.isnan(lv) or np.isnan(rv):
+            continue
+        lg, rg = grid_days[j-1], grid_days[j]
+        frac = (t - lg) / (rg - lg) if rg != lg else 0.0
+        track_min_daily[i] = lv * (1 - frac) + rv * frac
+    pd.DataFrame({
+        'date': track_dates_daily,
+        'p5k_track_min': track_min_daily,
+    }).to_csv(TRACK_CSV, index=False)
+    print(f'Wrote {TRACK_CSV} ({int(np.isfinite(track_min_daily).sum())} '
+          f'finite of {len(track_min_daily)} daily points)')
 
     # Position each session at CS-implied + corrected residual.
     # `pos_min` is the raw min/mi position (CS line + residual/60), `pos_norm`

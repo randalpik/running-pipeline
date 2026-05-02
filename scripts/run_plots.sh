@@ -57,6 +57,8 @@ quiet_step() {
 
 quiet_step "bayes_cs_plot"           python src/plots/bayes_cs_plot.py
 quiet_step "plot_training_quality"   python src/plots/plot_training_quality.py
+quiet_step "plot_workouts"           python src/plots/plot_workouts.py
+quiet_step "plot_long_runs"          python src/plots/plot_long_runs.py
 quiet_step "plot_qualitative_trends" python src/plots/plot_qualitative_trends.py
 quiet_step "make_recovery_plots"     python src/plots/make_recovery_plots.py "${diag_flag[@]}"
 quiet_step "make_race_plots"         python src/plots/make_race_plots.py
