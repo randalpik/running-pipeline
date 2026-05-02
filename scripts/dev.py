@@ -6,9 +6,14 @@ Usage:
 Then open http://localhost:5500/ (or wait for it to open automatically).
 
 Watches every src/plots/*.py — saving a plot script reruns just that script
-and reloads any open browser tab pointed at its HTML output. Editing
-src/shared/*.py, src/plotting/**/* or any data/*.csv reruns every plot via
-scripts/run_plots.sh (dumb default; smarter per-CSV mapping can come later).
+and reloads any open browser tab pointed at its HTML output. Editing a
+src/shared/*.py helper reruns only the plots that import it (dep map built
+once at startup by parsing each plot's imports). Editing src/plotting/**/*
+or any data/*.csv reruns every plot.
+
+All rebuilds run on a background worker thread so the Tornado IOLoop stays
+responsive — tab clicks keep working while plots regenerate. Saves that land
+during an in-flight rebuild coalesce into a single follow-up rebuild.
 
 Pipeline scripts (build_dataset / parse_workouts / bayes_cs_fit) are
 intentionally NOT watched — those are deliberate batch operations and stay
@@ -20,8 +25,11 @@ self-contained document, so per-plot CSS/JS scopes don't collide and
 livereload reloads only the active iframe on its source change.
 """
 import os
+import re
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 from livereload import Server
@@ -271,34 +279,184 @@ def rebuild_all():
     subprocess.run([str(script)], check=False)
 
 
+# ----- Background rebuild worker --------------------------------------------
+#
+# livereload runs watch callbacks synchronously inside the Tornado IOLoop
+# (see livereload/handlers.py:65). Running an 8-second `run_plots.sh` there
+# wedges the whole server: tab clicks, websocket pings, and static-file
+# requests all freeze until the subprocess returns. We solve that by
+# enqueueing a job and letting a daemon worker drain the queue off-loop.
+#
+# A "job" is either the sentinel `_REBUILD_ALL` (rebuild every plot via
+# scripts/run_plots.sh) or a frozenset of plot-script Paths to rerun
+# individually. While the worker is busy, additional saves coalesce into a
+# single follow-up job — no kill/restart, no parallel rebuilds.
+
+_REBUILD_ALL = "__all__"
+_jobs_lock = threading.Lock()
+_jobs_cond = threading.Condition(_jobs_lock)
+_pending = None  # None | _REBUILD_ALL | frozenset[Path]
+
+
+def _merge(current, incoming):
+    if current is None:
+        return incoming
+    if current == _REBUILD_ALL or incoming == _REBUILD_ALL:
+        return _REBUILD_ALL
+    return current | incoming
+
+
+def enqueue(job):
+    """Schedule a rebuild. Coalesces with any pending job.
+
+    `job` is either `_REBUILD_ALL` or a frozenset of plot-script Paths.
+    Safe to call from any thread (in practice: the IOLoop thread, via
+    livereload watch callbacks).
+    """
+    global _pending
+    with _jobs_cond:
+        _pending = _merge(_pending, job)
+        _jobs_cond.notify()
+
+
+def _run_subset(paths):
+    """Run a specific set of plot scripts sequentially."""
+    label = ", ".join(sorted(p.stem for p in paths))
+    print(f"==> rebuilding {len(paths)} plot(s): {label}")
+    t0 = time.monotonic()
+    for path in sorted(paths):
+        rel = str(path.relative_to(REPO_ROOT))
+        r = subprocess.run([sys.executable, rel], cwd=REPO_ROOT)
+        if r.returncode != 0:
+            print(f"FAILED: {rel} (exit {r.returncode})", file=sys.stderr)
+    print(f"    done in {time.monotonic() - t0:.1f}s")
+
+
+def _run_all():
+    """Run scripts/run_plots.sh — the same path rebuild_all() uses."""
+    script = REPO_ROOT / "scripts" / "run_plots.sh"
+    if not script.exists():
+        print(f"WARN: {script} not found; skipping rebuild.", file=sys.stderr)
+        return
+    print("==> rebuilding all plots")
+    t0 = time.monotonic()
+    subprocess.run([str(script)], check=False, cwd=REPO_ROOT)
+    print(f"    done in {time.monotonic() - t0:.1f}s")
+
+
+def _worker():
+    global _pending
+    while True:
+        with _jobs_cond:
+            while _pending is None:
+                _jobs_cond.wait()
+            job, _pending = _pending, None
+        if job == _REBUILD_ALL:
+            _run_all()
+        else:
+            _run_subset(job)
+
+
+# ----- Dependency map -------------------------------------------------------
+#
+# Built once at startup. Maps each src/shared/*.py file to the set of
+# src/plots/*.py files that import from it. Lets a single helper edit
+# rebuild only its dependents instead of all 8 plots.
+
+_SHARED_IMPORT_RX = re.compile(r"^\s*from\s+src\.shared\.(\w+)\s+import\b",
+                               re.MULTILINE)
+
+
+def build_shared_dep_map(plot_scripts, shared_dir):
+    """Return {shared_path: frozenset(plot_paths)} by parsing imports."""
+    by_module = {}
+    for plot in plot_scripts:
+        text = plot.read_text()
+        for mod in _SHARED_IMPORT_RX.findall(text):
+            by_module.setdefault(mod, set()).add(plot)
+    dep_map = {}
+    for mod, plots in by_module.items():
+        shared_path = shared_dir / f"{mod}.py"
+        if shared_path.exists():
+            dep_map[shared_path] = frozenset(plots)
+    return dep_map
+
+
 def main():
     rebuild_all()
     write_index()
 
+    threading.Thread(target=_worker, daemon=True).start()
+
     server = Server()
 
-    # One watch per plot script — editing src/plots/foo.py reruns foo.py only.
-    # Passing the command as a string (rather than livereload.shell(...)) lets
-    # livereload tag the task name with the actual command, which shows up in
-    # the dev-server log.
     plot_scripts = sorted(PLOTS_DIR.glob("*.py"))
+    shared_dir = REPO_ROOT / "src" / "shared"
+    dep_map = build_shared_dep_map(plot_scripts, shared_dir)
+
+    print("Shared-helper dependency map:")
+    for shared_path in sorted(dep_map):
+        plots = sorted(p.stem for p in dep_map[shared_path])
+        print(f"  {shared_path.name} -> {len(plots)} plots: {', '.join(plots)}")
+    untracked = sorted(
+        p for p in shared_dir.glob("*.py")
+        if p.name != "__init__.py" and p not in dep_map
+    )
+    for p in untracked:
+        print(f"  {p.name} -> (no plot imports — will rebuild all on change)")
+
+    def _named(label, fn):
+        fn.name = label  # surfaces in livereload's "Running task: <name>" log
+        return fn
+
+    # Per-plot watches: editing src/plots/foo.py reruns foo.py only.
     for script in plot_scripts:
         rel = str(script.relative_to(REPO_ROOT))
-        server.watch(rel, f"python {rel}")
+        server.watch(rel, _named(
+            f"plot:{script.stem}", lambda s=script: enqueue(frozenset({s}))))
 
-    # Shared module changes touch every plot — rerun all.
-    server.watch("src/shared/*.py", "./scripts/run_plots.sh")
-    server.watch("src/plotting/**/*", "./scripts/run_plots.sh")
+    # Per-shared-module watches: rerun only the plots that import this module.
+    # Watch each shared file directly (not the glob) so the per-file callback
+    # carries the right dependent set.
+    for shared_path, dependents in dep_map.items():
+        rel = str(shared_path.relative_to(REPO_ROOT))
+        server.watch(rel, _named(
+            f"shared:{shared_path.stem}",
+            lambda d=dependents: enqueue(d)))
 
-    # Data changes also rerun all (dumb default).
-    server.watch("data/*.csv", "./scripts/run_plots.sh")
+    # Any other src/shared/*.py file (no known importers) falls back to
+    # rebuild-all — safer than silently doing nothing.
+    for p in untracked:
+        rel = str(p.relative_to(REPO_ROOT))
+        server.watch(rel, _named(
+            f"shared-untracked:{p.stem}",
+            lambda: enqueue(_REBUILD_ALL)))
+
+    # These genuinely affect every plot. Watch the directory rather than a
+    # `src/plotting/**/*` glob: pyinotify's add_watch uses non-recursive glob,
+    # so `**` is treated as a literal directory name and the per-file inotify
+    # watches for src/plotting/*.py are never created. A directory path with
+    # rec=True (which pyinotify defaults to) avoids that bug.
+    server.watch("src/plotting", _named(
+        "plotting:*", lambda: enqueue(_REBUILD_ALL)))
+
+    # data/*.csv changes rerun all plots — except plot-derived CSVs that some
+    # plot scripts emit into data/ (training_quality_track.csv,
+    # training_quality_offsets.csv). Those would feed an infinite rebuild
+    # loop: rebuild writes the CSV → CSV watch fires → rebuild again.
+    server.watch(
+        "data/*.csv",
+        _named("data:*.csv", lambda: enqueue(_REBUILD_ALL)),
+        ignore=lambda p: os.path.basename(p).startswith("training_quality_"),
+    )
 
     # Index regenerates whenever a plot HTML appears or disappears.
     server.watch("output/*.html", write_index)
 
     print(f"Serving {OUTPUT_DIR} at http://localhost:{PORT}/")
-    print(f"Watching {len(plot_scripts)} plot scripts + src/shared/*.py "
-          "+ src/plotting/**/* + data/*.csv")
+    print(f"Watching {len(plot_scripts)} plot scripts + "
+          f"{len(dep_map) + len(untracked)} shared modules + "
+          "src/plotting/**/* + data/*.csv")
     print("Ctrl-C to stop.")
     server.serve(root=str(OUTPUT_DIR), port=PORT)
 
