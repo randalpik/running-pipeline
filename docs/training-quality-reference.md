@@ -25,6 +25,17 @@ sits next to CS without feeding back into it.
 - **No β_long anywhere.** β_long encodes max-effort long-distance fade,
   doesn't apply to sub-max efforts. Including it would inflate fitness
   implications beyond what the data demonstrates.
+- **Long-run scope is `[15.1, 25.3]` miles, with a 21mi internal bin.**
+  Replaces `miles ≥ 20` + 23mi split. Lower bound separates honest
+  long-run effort from mid-week aerobic work; upper bound trims the
+  small-n marathon-distance fade regime; 21mi corresponds to where
+  glycogen / fueling effects begin dominating.
+- **Empirical per-route long-run betas at n ≥ 5 within the slice.** Fit
+  inside the TQ plot rather than imported from the recovery plot's
+  betas. Recovery betas systematically under-correct at altitude and
+  miss the 2020–23 single-era Nashville-quality routes. Era-confounding
+  remains for some routes but is acceptable for the residual
+  visualization purpose.
 - **τ = 210 sec/mi for workout D_eff decay.** Calibrated so 6×1600 @ 3:00/mi
   rest gives D_eff ≈ 5000m (anchor preserved from earlier work).
 - **Reps excluded from the smoother.** Anaerobic top-end work, doesn't
@@ -75,17 +86,26 @@ Per workout (in the plot pipeline):
 
 ### Stage 3 — Long run projection
 
-Filter: `run_type == 'long'` AND `miles ≥ 20`. No upper bound (was
-previously `< 26`; removed because peak-volume runs at 26+ are legitimate
-training data).
+Filter: `run_type == 'long'` AND `miles ∈ [15.1, 25.3]`. The slice replaces
+the earlier `miles ≥ 20` cutoff: lower bound separates honest long-run
+effort from shorter mid-week aerobic work; upper bound trims the small-n
+marathon-distance fade regime that would otherwise need its own bin.
+Out-of-scope long runs aren't displayed in the plot and don't feed the
+smoother.
 
-Per long run:
+Per in-scope long run:
 1. `t_run = recovery_pace_sec_per_mi · miles` (seconds)
 2. `D_eff = miles · 1609.344` (continuous, no decay)
 3. `t_5K = (5000 − D'_t) · t_run / (D_eff − D'_t)`
 4. `P5K = t_5K · 1609.344 / 5000`
 5. `raw_resid = P5K − CS_implied_5K_pace`
-6. Bin: `lr_20-22.9` if miles < 23, else `lr_23+`.
+6. Bin: `lr_lo` if `miles < 21`, else `lr_hi`. The 21mi internal split
+   physiologically corresponds to the regime change where glycogen /
+   fueling effects start dominating; supported empirically by a
+   within-slice 2-bin sweep (Δ AIC = −52 vs no bin).
+
+Long-run residuals are then corrected by an OLS fit (Stage 5b) rather
+than by a per-category median offset like workouts and hills.
 
 ### Stage 3.5 — Hill continuous projection
 
@@ -142,37 +162,82 @@ Applied before offset computation:
   summer 2017 entries). Pace divided by 1.06 before projection. Tooltip
   marks corrected sessions with `[XC-corrected −6%]` in light blue.
 
-### Stage 5 — Per-category offsets and outlier prune
+### Stage 5a — Per-category offsets and outlier prune (workouts and hills)
 
-For each category, the median raw residual becomes the offset; the
-corrected residual is `raw_resid − offset`.
+For each workout / hill category, the median raw residual becomes the
+offset; the corrected residual is `raw_resid − offset`.
 
 Outliers are pruned iteratively: any session with corrected residual
 > +23.3 s/mi after offset application is dropped, offsets are recomputed
 on the surviving set, and the cycle repeats until no point exceeds the
-threshold. Converges in 3–4 passes. Currently prunes 5 workouts, 11 long
-runs, and 25 hills as outliers (in addition to the ~35 reps that are
-excluded categorically). Hills have a higher prune rate (~20%) than
-workouts/long runs because the long right tail of "easy hill days" sits
-just above the +23.3 cutoff.
+threshold. Converges in 3–4 passes. Hills have a higher prune rate
+(~20%) than workouts because the long right tail of "easy hill days"
+sits just above the +23.3 cutoff.
 
-### Per-category offsets (final, April 2026)
+### Stage 5b — Long-run model (route betas + bin)
 
-| Category            |   n | Offset (sec/mi) | Interpretation                             |
-|---------------------|----:|----------------:|--------------------------------------------|
-| interval            | 145 |          −3.06  | At ~5K capability                          |
-| continuous_fartlek  |  35 |         +19.68  | Sub-threshold continuous                   |
-| tempo               |  36 |         +15.75  | Sub-threshold by design                    |
-| hill_lc             |  72 |         +31.01  | Paved 3.5% loop, tempo+hill effort         |
-| hill_pwr1           |   7 |         +95.68  | Steep gravel 9.8% loop                     |
-| hill_rc             |  19 |         +74.03  | Rocky-trail 5.8% loop                      |
-| lr_20-22.9          |  62 |         +28.17  | Committed long, ~28s/mi off CS pace        |
-| lr_23+              |  30 |         +47.48  | Peak volume, more conservative             |
+Long runs use an OLS fit on the in-slice set instead of a per-category
+median offset:
+
+```
+raw_resid ~ bin + route
+```
+
+- `bin ∈ {lr_lo, lr_hi}`, reference `lr_hi` (Treatment-encoded).
+- `route` is `location` for routes with at least `MIN_ROUTE_N = 5` long
+  runs in the slice; all others collapse to a single `'other'` bucket
+  used as the route reference. Per-route betas are read directly off the
+  fit.
+- Iterative MAD-based outlier prune at σ = `PRUNE_SIGMA = 3.0` on the
+  V1-corrected residuals (`raw_resid − model.predict()`). Pruned rows
+  are dropped from the figure entirely; they don't feed the smoother
+  and aren't rendered.
+
+Why route betas computed inside the TQ plot rather than imported from
+the recovery plot's `route_betas_{tag}.csv`: long-run effort at altitude
+(Boulder routes) is more impaired than recovery effort, and
+Belle Meade / Greenway / North Greenway are 100% in the 2020–23
+quality-LR era and have insufficient recovery data — recovery betas
+systematically under-correct. Era-confounding remains for some routes
+but is acceptable for plot purposes; the smoother track interpretation
+shifts from "fitness ahead of CS" to "within-route within-era trend."
+The recovery-only design principle (see
+`route-normalization-reference.md`) still holds for the recovery plot.
+
+### Per-category offsets / coefficients (final, May 2026)
+
+Workouts and hills (Stage 5a):
+
+| Category            | Offset (sec/mi) | Interpretation                             |
+|---------------------|----------------:|--------------------------------------------|
+| interval            |          −2.20  | At ~5K capability                          |
+| continuous_fartlek  |         +18.21  | Sub-threshold continuous                   |
+| tempo               |         +19.07  | Sub-threshold by design                    |
+| hill_lc             |         +29.93  | Paved 3.5% loop, tempo+hill effort         |
+| hill_pwr1           |         +96.38  | Steep gravel 9.8% loop                     |
+| hill_rc             |         +73.10  | Rocky-trail 5.8% loop                      |
+
+Long-run model (Stage 5b), reference `bin=lr_hi`, `route=other`:
+
+| Term                       | Coef (sec/mi) | n   |
+|----------------------------|--------------:|----:|
+| Intercept                  |       +56.07  |     |
+| bin = lr_lo                |       +23.24  | 134 |
+| route = belle meade        |       −64.44  |  42 |
+| route = boulder turnpike   |       −12.41  |  22 |
+| route = east boulder       |       −40.02  |  17 |
+| route = greenway           |       −43.99  |  46 |
+| route = lake samm          |       −33.85  |  16 |
+| route = north greenway     |       −57.15  |   9 |
+| route = river trail        |       −30.30  |  12 |
+| route = south lakefront    |       −19.80  |  14 |
+
+Fit on n_kept = 185 (4 pruned): R² = 0.607, resid SD = 12.91 sec/mi.
 
 Reps (~35) are excluded from the smoother.
 
-Total kept after all filters and prunes: 216 workouts + 92 long runs +
-98 hills = 406. Hill offsets are large because they encode actual
+Total kept after all filters and prunes: 215 workouts + 185 long runs
++ 99 hills = 499. Hill offsets are large because they encode actual
 on-loop pace (no grade adjustment); steeper loops have proportionally
 larger offsets.
 
@@ -265,12 +330,11 @@ race residual = −0.16. Three reasons:
 - **β_long correction on long runs.** Would inflate sub-max efforts
   toward max-effort projections. Wrong tool for sub-max physiology.
 - **Three-bin long-run split (16-19.9 / 20-22.9 / 23+).** Considered but
-  rejected. 16-19.9 was too heterogeneous (mix of recovery-style and
-  semi-honest efforts) — the `miles ≥ 20` filter is cleaner than
-  inventing a third bin around a noisy boundary.
-- **Long-run upper bound at 26mi.** Removed. Peak-volume runs at 26+ are
-  legitimate training data; the previous reasoning (race-related) was
-  actually selecting *for* committed efforts.
+  rejected at the time. (Superseded May 2026 by the `[15.1, 25.3]` slice
+  with a single 21mi internal bin — see "Decisions locked in".)
+- **Long-run upper bound at 26mi.** Removed in April 2026. (Re-introduced
+  May 2026 as the `25.3` ceiling of the new slice; the n=7
+  marathon-distance fade regime was distorting the model.)
 - **Race-inclusive gap detection.** Considered using {workouts, long
   runs, races} for the gap-break threshold so summer 2018 (heavy racing,
   light workouts) wouldn't break. Unnecessary: the 120-day threshold

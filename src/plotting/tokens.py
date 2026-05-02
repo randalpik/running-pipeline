@@ -33,17 +33,27 @@ SURFACES = {
 }
 
 # --- Training-quality categories (separate semantic axis from surfaces;
-#     do not unify with SURFACES) ---
+#     do not unify with SURFACES). Palette mirrors the conditional-formatting
+#     scheme of the source running log (running_log_2025_cf.json) so plot and
+#     spreadsheet read consistently. Long runs get two shades of the log's
+#     purple (`long`=#D9D2E9): light for the in-slice low-mileage bin, dark
+#     for the high-mileage bin. Hills share one color since the plot uses a
+#     single combined trace. ---
 CAT_COLORS = {
-    'interval':           '#d62728',
-    'tempo':              '#2ca02c',
-    'rep':                '#9467bd',
-    'continuous_fartlek': '#ff7f0e',
-    'lr_20-22.9':         '#17becf',
-    'lr_23+':             '#1f77b4',
-    'hill_lc':            '#e377c2',
-    'hill_rc':            '#bcbd22',
-    'hill_pwr1':          '#8c564b',
+    # Tuned for visibility on the dark plot background (#1a1a1a) while still
+    # tracking the log's CF hue families (yellow→tempo, gold→interval,
+    # peach→fartlek, blue→hills, purple→long). Original CF pastels were too
+    # close in hue and too low in saturation; these are spread out and
+    # punched up.
+    'interval':           '#F1C40F',  # saturated gold (CF pale yellow → vivid)
+    'tempo':              '#CDDC39',  # lime / yellow-green (separated from interval)
+    'rep':                '#F39C12',  # carrot orange (CF peach → vivid)
+    'continuous_fartlek': '#FF7043',  # warm orange (CF peach → vivid, distinct from rep)
+    'lr_lo':              '#B19CD9',  # lavender (CF light purple, more saturated)
+    'lr_hi':              '#674EA7',  # deep purple
+    'hill_lc':            '#3D85C6',  # saturated medium blue (CF light blue → vivid)
+    'hill_rc':            '#3D85C6',
+    'hill_pwr1':          '#3D85C6',
 }
 
 

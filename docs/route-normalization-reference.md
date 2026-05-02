@@ -131,41 +131,55 @@ Terrain matters: at the same elev_per_mile, mixed routes cost
 unidentifiable from recovery alone (watershed, the only trail route in
 the data, has zero recovery runs — all long).
 
-## Recommended approach for long-run TQ corrections
+## Long-run TQ corrections (May 2026)
 
-Long-run residuals in the training-quality framework currently use
-time-invariant per-category offsets pooled across all years. Route
-correction is a natural sharpening: Belle Meade was a much faster
-long-run route in 2022 than Watershed was in 2024, and the TQ residual
-should reflect that the routes themselves differ in cost, not just
-that the eras differ in fitness.
+Long-run residuals in the training-quality framework are corrected by an
+in-plot OLS fit:
 
-Strategy:
+```
+raw_resid ~ bin + route
+```
 
-1. **For routes with sufficient recovery data** (the 12 in `route_betas
-   _{tag}.csv`): subtract the empirical recovery-only β as the route
-   correction. These are effort-uncontaminated and represent the route's
-   intrinsic cost.
+fit on the in-slice long-run set (`miles ∈ [15.1, 25.3]`), with `route`
+collapsed to `'other'` for any location below `MIN_ROUTE_N = 5` long
+runs. Iterative MAD prune at σ = 3 on the V1-corrected residuals; outliers
+are dropped from the figure entirely. See
+`training-quality-reference.md` Stage 5b for the formula and parameters.
 
-2. **For long-run-only routes** (Belle Meade, Greenway, North Greenway,
-   Watershed, etc., where recovery data is sparse or absent): subtract
-   the **predicted** β from the elev+terrain model:
+### Why fit route betas inside the TQ plot rather than reuse recovery betas
 
-   ```
-   β_predicted = −13.7 + 0.17 · elev_per_mile + 6.6 · is_mixed
-                       + (trail_penalty if is_trail else 0)
-   ```
+The recovery-only design principle (above) holds for the recovery plot.
+For long-run TQ residuals it doesn't, for two reasons:
 
-   Don't use the empirical long-run-derived β for these — it's
-   contaminated by the 2020-23 quality-effort era.
+1. **Altitude under load.** Recovery effort at altitude is mildly
+   suppressed; long-run effort at altitude is more impaired. The
+   altitude-duration interaction means recovery betas systematically
+   under-correct Boulder-area long runs. A long-run-fit beta absorbs
+   the additional load.
 
-3. **For routes with no metadata** (NaN elev_per_mile): no correction.
-   Long-run residual gets only the per-category offset as today.
+2. **Single-era Nashville-quality routes.** Belle Meade, Greenway, North
+   Greenway are 100% in the 2020-23 quality-LR era and have insufficient
+   recovery coverage to estimate effort-uncontaminated betas. The
+   long-run beta entangles route cost with the era's quality
+   prescription — we accept that for the plot's purpose, since the
+   smoother track interpretation shifts to "within-route within-era
+   trend," not "fitness ahead of CS."
 
-The trail penalty is currently underspecified (one observation,
-watershed, gives ~+9 sec/mi over what elev+terrain alone predicts). As
-more trail routes get logged with elev_per_mile populated, this
-coefficient will tighten.
+This is a deliberate departure from the recovery-only design principle,
+scoped to the TQ visualization. The recovery plot stays untouched and
+its `route_betas_{tag}.csv` continues to represent intrinsic route cost.
+
+### When the predicted-β fallback (elev+terrain model) might still be useful
+
+The cross-route fit `β = −13.7 + 0.17 · elev_per_mile + 6.6 · is_mixed`
+documented above is no longer in the production TQ plot. It remains
+useful for:
+
+- Out-of-band analysis: estimating cost of routes with no logged data.
+- Future revisitation: if the era-confounding becomes problematic, the
+  predicted-β fallback can serve as a regularizer for low-n routes.
+- Cross-checking: large divergences between empirical TQ-plot betas and
+  predicted betas highlight era / altitude effects worth investigating.
 
 ## Powerline name disambiguation
 

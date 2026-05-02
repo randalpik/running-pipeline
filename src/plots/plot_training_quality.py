@@ -13,14 +13,17 @@ intended for pruning / outlier evaluation.
 import sys
 from pathlib import Path
 
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.parsers.snapshot import find_snapshot, read_snapshot
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            sec_to_mss, fmt_min, CAT_COLORS, GRID,
+                            sec_to_mss, fmt_min, CAT_COLORS, GRID, CS_LINE,
                             GAP_BREAK_DAYS, adaptive_gauss_smoother)
 
 
@@ -37,8 +40,12 @@ for _required in (WORKOUTS_PATH, DAILY_PATH, CS_PATH):
 
 # ---------- pipeline parameters (match training_unified_pipeline.py) ----------
 TAU = 210.0
-LR_MILES_MIN = 20         # long run filter, low end (no upper bound)
-LR_BIN_SPLIT = 23         # split point for two-bin long run classification
+# Long-run scope and binning
+LONG_FLOOR      = 15.1   # lower scope: separates long-run effort from mid-week aerobic
+LONG_CEIL       = 25.3   # upper scope: trims marathon-distance fade regime (n too small)
+LR_INTERNAL_BIN = 21.0   # within-slice bin split (effort regime change)
+MIN_ROUTE_N     = 5      # min long runs per location to qualify for route beta
+PRUNE_SIGMA     = 3.0    # iterative MAD-based outlier threshold
 
 # ---------- smoother parameters (match training_quality_track.py) ----------
 GAUSS_BASE_BW_DAYS = 30
@@ -50,7 +57,8 @@ GRID_FREQ          = '7D'
 CAT_LABEL = {
     'interval': 'Interval', 'tempo': 'Tempo', 'rep': 'Rep',
     'continuous_fartlek': 'Cont. fartlek',
-    'lr_20-22.9': 'Long 20–22.9', 'lr_23+': 'Long 23+',
+    'lr_lo': f'Long {LONG_FLOOR:g}–{LR_INTERNAL_BIN - 0.1:g}',
+    'lr_hi': f'Long {LR_INTERNAL_BIN:g}–{LONG_CEIL:g}',
     'hill_lc': 'Hill (lc)', 'hill_rc': 'Hill (rc)', 'hill_pwr1': 'Hill (pwr1)',
 }
 
@@ -78,7 +86,8 @@ def project_workouts(cs, epoch):
     w = pd.read_csv(WORKOUTS_PATH, parse_dates=['date'])
     # bring along workout_raw + conditions + qd for filters and hover
     daily = pd.read_csv(DAILY_PATH, parse_dates=['date'])
-    w = w.merge(daily[['date', 'workout_raw', 'conditions', 'quality_distance_m']],
+    w = w.merge(daily[['date', 'workout_raw', 'conditions', 'quality_distance_m',
+                       'display_name', 'city_state']],
                 on='date', how='left')
 
     # Rule: a tempo whose decomposition is implicit (no explicit "Nx<dist>" in
@@ -124,7 +133,7 @@ def project_workouts(cs, epoch):
 def project_long_runs(cs, epoch):
     d = pd.read_csv(DAILY_PATH, parse_dates=['date'])
     lr = d[d['run_type'] == 'long'].copy().dropna(subset=['recovery_pace_sec_per_mi', 'miles'])
-    lr = lr[lr['miles'] >= LR_MILES_MIN].copy()
+    lr = lr[lr['miles'].between(LONG_FLOOR, LONG_CEIL)].copy()
     # Snow prune.
     snow_w = lr['workout_raw'].astype(str).str.contains('snow', case=False, na=False)
     snow_c = lr['conditions'].astype(str).str.contains('snow', case=False, na=False)
@@ -136,21 +145,144 @@ def project_long_runs(cs, epoch):
     lr['t_5k_hyp'] = (5000 - lr['dp_t']) * lr['t_run'] / (lr['d_m'] - lr['dp_t'])
     lr['p5k_min'] = lr['t_5k_hyp'] * 1609.344 / 5000.0 / 60.0
     lr['raw_resid'] = (lr['p5k_min'] - lr['p5k_cs_min']) * 60
-    lr['category'] = np.where(lr['miles'] < LR_BIN_SPLIT, 'lr_20-22.9', 'lr_23+')
     return lr
 
 
+def fit_long_run_model(lr_in):
+    """Fit `raw_resid ~ bin + route` (Treatment-encoded with 'lr_hi' and
+    'other' as reference levels) on the in-slice long runs via OLS, with an
+    iterative MAD-based outlier prune at PRUNE_SIGMA on the V1-corrected
+    residuals.
+
+    Returns (lr_in_augmented, fit, qualifying_routes). `fit` is a
+    SimpleNamespace with `intercept`, `bin_coefs` (dict, ref level absent),
+    `route_coefs` (dict, 'other' absent), `rsquared`, `resid_sd`, `n_kept`.
+
+    The augmented frame carries `bin`, `route`, per-row `bin_coef`,
+    `route_coef`, `model_offset`, `corrected`, an `is_outlier` flag, and
+    `category` set to the bin label for downstream rendering.
+    """
+    loc_counts = lr_in['location'].value_counts()
+    qualifying_routes = sorted(loc_counts[loc_counts >= MIN_ROUTE_N].index)
+    lr_in = lr_in.copy()
+    lr_in['route'] = lr_in['location'].where(
+        lr_in['location'].isin(qualifying_routes), 'other')
+    lr_in['bin'] = np.where(lr_in['miles'] < LR_INTERNAL_BIN, 'lr_lo', 'lr_hi')
+
+    # Treatment encoding with explicit reference categories. 'lr_hi' is the
+    # bin reference (alphabetically first); 'other' is the route reference
+    # so per-route betas read as offsets relative to the unqualified pool.
+    bin_cat = pd.Categorical(lr_in['bin'], categories=['lr_hi', 'lr_lo'])
+    bin_dum = pd.get_dummies(bin_cat, prefix='bin').drop(columns=['bin_lr_hi'])
+    route_cat = pd.Categorical(lr_in['route'],
+                               categories=['other'] + qualifying_routes)
+    route_dum = pd.get_dummies(route_cat, prefix='route').drop(columns=['route_other'])
+    bin_dum.index = lr_in.index
+    route_dum.index = lr_in.index
+
+    X = pd.concat([
+        pd.Series(1.0, index=lr_in.index, name='Intercept'),
+        bin_dum.astype(float),
+        route_dum.astype(float),
+    ], axis=1)
+    y = lr_in['raw_resid'].astype(float)
+
+    pruned = set()
+    coef = None
+    for _ in range(10):
+        keep_mask = ~lr_in.index.isin(pruned)
+        Xa = X.values[keep_mask]
+        ya = y.values[keep_mask]
+        coef, *_ = np.linalg.lstsq(Xa, ya, rcond=None)
+        pred_full = X.values @ coef
+        full_resid = y.values - pred_full
+        active_resid = full_resid[keep_mask]
+        center = float(np.median(active_resid))
+        sd_robust = 1.4826 * float(np.median(np.abs(active_resid - center)))
+        new_pruned = set(lr_in.index[np.abs(full_resid - center)
+                                     > PRUNE_SIGMA * sd_robust])
+        if new_pruned == pruned:
+            break
+        pruned = new_pruned
+
+    coef_map = dict(zip(X.columns, coef))
+    intercept = float(coef_map['Intercept'])
+    bin_coefs = {c.replace('bin_', ''): float(coef_map[c]) for c in bin_dum.columns}
+    route_coefs = {c.replace('route_', ''): float(coef_map[c]) for c in route_dum.columns}
+
+    lr_in['bin_coef'] = lr_in['bin'].map(lambda b: bin_coefs.get(b, 0.0))
+    lr_in['route_coef'] = lr_in['route'].map(lambda r: route_coefs.get(r, 0.0))
+    lr_in['model_offset'] = intercept + lr_in['bin_coef'] + lr_in['route_coef']
+    lr_in['corrected'] = lr_in['raw_resid'] - lr_in['model_offset']
+    lr_in['category'] = lr_in['bin']
+    lr_in['is_outlier'] = lr_in.index.isin(pruned)
+
+    keep_mask = ~lr_in.index.isin(pruned)
+    ya = y.values[keep_mask]
+    pa = (X.values @ coef)[keep_mask]
+    ss_res = float(np.sum((ya - pa) ** 2))
+    ss_tot = float(np.sum((ya - ya.mean()) ** 2))
+    n_kept = int(keep_mask.sum())
+    p = X.shape[1]
+    fit = SimpleNamespace(
+        intercept=intercept,
+        bin_coefs=bin_coefs,
+        route_coefs=route_coefs,
+        rsquared=1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan'),
+        resid_sd=float(np.sqrt(ss_res / (n_kept - p))) if n_kept > p else float('nan'),
+        n_kept=n_kept,
+    )
+    return lr_in, fit, qualifying_routes
+
+
 # ---------- hill continuous ----------
-# Loop lookup: only `distance_m` is needed for TQ projection. Per-loop offsets
-# absorb all loop-specific systematics (grade, surface, terrain), so no grade
-# adjustment is applied here. Elevation data lives in the "hills" tab of
-# Max's Running Data; it's used by the future all-workouts qualitative plot
-# for display purposes (estimated total climb), not in TQ.
+# Loop lookup: per-loop offsets absorb grade/surface/terrain in the TQ
+# projection, so only `distance_m` is needed there. The elev fields and
+# location join are loaded from the snapshot's hills + locations sections
+# for tooltip display (see load_hill_loop_meta below).
 HC_LOOPS = {
     'lc':   {'distance_m': 1290},
     'rc':   {'distance_m':  850},
     'pwr1': {'distance_m':  620},
 }
+
+
+def load_hill_loop_meta():
+    """Return {abbrev: {display_name, city_state, elev_up, elev_down}} from
+    the snapshot's `hills` + `locations` sections. Loop abbrev → location
+    via the hills sheet; location → display_name + city_state via the
+    locations sheet. Falls back to empty dict if snapshot missing."""
+    snapshot_path = find_snapshot([str(DATA_DIR / 'drive_snapshot.csv')])
+    if snapshot_path is None:
+        return {}
+    sections, _ = read_snapshot(snapshot_path)
+    hills_df = sections.get('hills', pd.DataFrame())
+    locs_df = sections.get('locations', pd.DataFrame())
+
+    loc_lookup = {}
+    if 'log_location' in locs_df.columns:
+        for _, r in locs_df.iterrows():
+            ll = str(r.get('log_location', '')).strip().lower()
+            if ll:
+                loc_lookup[ll] = (r.get('display_name'), r.get('city_state'))
+
+    out = {}
+    for _, r in hills_df.iterrows():
+        for ab in [a.strip() for a in str(r.get('abbrev', '')).split(',')]:
+            if ab not in HC_LOOPS:
+                continue
+            loc = str(r.get('location', '')).strip().lower()
+            display_name, city_state = loc_lookup.get(loc, (None, None))
+            out[ab] = {
+                'display_name': display_name,
+                'city_state': city_state,
+                'elev_up': r.get('elev_gain_up'),
+                'elev_down': r.get('elev_gain_down'),
+            }
+    return out
+
+
+HILL_LOOP_META = load_hill_loop_meta()
 
 
 def project_hill_continuous(cs, epoch):
@@ -203,16 +335,23 @@ def project_hill_continuous(cs, epoch):
     h['p5k_min']  = h['t_5k_hyp'] * 1609.344 / 5000.0 / 60.0
     h['raw_resid'] = (h['p5k_min'] - h['p5k_cs_min']) * 60
     h['category'] = 'hill_' + h['loop'].astype(str)
+
+    def _meta(loop, key):
+        return HILL_LOOP_META.get(loop, {}).get(key)
+    h['loop_display_name'] = h['loop'].map(lambda l: _meta(l, 'display_name'))
+    h['loop_city_state']   = h['loop'].map(lambda l: _meta(l, 'city_state'))
+    h['loop_elev_up']      = h['loop'].map(lambda l: _meta(l, 'elev_up'))
+    h['loop_elev_down']    = h['loop'].map(lambda l: _meta(l, 'elev_down'))
+    h['ft_gained'] = (h['loop_elev_up'].fillna(0) + h['loop_elev_down'].fillna(0)) * h['nreps']
     return h
 
 
-def apply_offsets(workouts, long_runs, hills=None):
-    """Compute per-category median offsets across the combined set, return all
-    frames augmented with offset/resid columns, plus the offsets dict."""
-    parts = [
-        workouts[['date', 'category', 'raw_resid']],
-        long_runs[['date', 'category', 'raw_resid']],
-    ]
+def apply_offsets(workouts, hills=None):
+    """Compute per-category median offsets across workouts (+ optional hills),
+    return both frames augmented with offset/resid columns plus the offsets
+    dict. Long runs are corrected by `fit_long_run_model` instead of pooled
+    here — their categories ('lr_lo'/'lr_hi') don't appear in this dict."""
+    parts = [workouts[['date', 'category', 'raw_resid']]]
     if hills is not None and len(hills):
         parts.append(hills[['date', 'category', 'raw_resid']])
     combined = pd.concat(parts, ignore_index=True)
@@ -222,16 +361,12 @@ def apply_offsets(workouts, long_runs, hills=None):
     workouts['offset'] = workouts['category'].map(offsets)
     workouts['resid']  = workouts['raw_resid'] - workouts['offset']
 
-    long_runs = long_runs.copy()
-    long_runs['offset'] = long_runs['category'].map(offsets)
-    long_runs['resid']  = long_runs['raw_resid'] - long_runs['offset']
-
     if hills is not None:
         hills = hills.copy()
         hills['offset'] = hills['category'].map(offsets)
         hills['resid']  = hills['raw_resid'] - hills['offset']
 
-    return workouts, long_runs, hills, offsets
+    return workouts, hills, offsets
 
 
 # ---------- hover string builders ----------
@@ -240,14 +375,39 @@ def apply_offsets(workouts, long_runs, hills=None):
 # section (CS, smoother, diff) and the date itself in smooth mode, so
 # this content focuses on what's session-specific. Category label stays
 # as a small heading.
+
+def _route_paren(display_name, city_state):
+    """Format ' (display_name, city_state)' with graceful fallback when
+    fields are blank. Returns '' if both are missing."""
+    parts = [str(x).strip() for x in (display_name, city_state)
+             if pd.notna(x) and str(x).strip()]
+    return f' ({", ".join(parts)})' if parts else ''
+
+
+# Tooltip-only labels (legend uses CAT_LABEL — keeps abbreviated form there).
+TOOLTIP_TITLE = {
+    'interval': 'Intervals',
+    'continuous_fartlek': 'Continuous fartlek',
+}
+
+
 def workout_hover(r):
+    cat = r['category']
+    title = TOOLTIP_TITLE.get(cat, CAT_LABEL.get(cat, cat))
+    title += _route_paren(r.get('display_name'), r.get('city_state'))
     xc_note = ' <i style="color:#9cf">[XC-corrected -6%]</i>' if r.get('xc_corrected') else ''
+    rep_count = int(r['rep_count'])
+    rep_dist = int(r['rep_dist'])
+    if cat == 'continuous_fartlek' and rep_count == 1:
+        body = f"{rep_dist}m @ {sec_to_mss(r['pace_per_mile'])}/mi"
+    else:
+        body = (f"{rep_count} × {rep_dist}m @ "
+                f"{sec_to_mss(r['pace_per_mile'])}/mi")
+    if pd.notna(r['rest_per_mile']) and r['rest_per_mile'] > 0:
+        body += f", rest {sec_to_mss(r['rest_per_mile'])}/mi"
     parts = [
-        f"<b>{CAT_LABEL.get(r['category'], r['category'])}</b>{xc_note}",
-        f"{int(r['rep_count'])} × {int(r['rep_dist'])}m @ "
-        f"{sec_to_mss(r['pace_per_mile'])}/mi"
-        + (f", rest {sec_to_mss(r['rest_per_mile'])}/mi"
-           if pd.notna(r['rest_per_mile']) and r['rest_per_mile'] > 0 else ""),
+        f"<b>{title}</b>{xc_note}",
+        body,
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
         f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
         f"<b>Raw resid:</b> {r['raw_resid']:+.1f}s/mi   "
@@ -257,22 +417,28 @@ def workout_hover(r):
 
 
 def long_run_hover(r):
+    title = f"Long{_route_paren(r.get('display_name'), r.get('city_state'))}"
     parts = [
-        f"<b>{CAT_LABEL.get(r['category'], r['category'])}</b>",
+        f"<b>{title}</b>",
         f"<b>Distance:</b> {r['miles']:.1f}mi   "
         f"<b>Pace:</b> {sec_to_mss(r['recovery_pace_sec_per_mi'])}/mi",
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
         f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
         f"<b>Raw resid:</b> {r['raw_resid']:+.1f}s/mi   "
-        f"<b>Corrected:</b> {r['resid']:+.1f}s/mi",
+        f"<b>Model offset:</b> {r['model_offset']:+.1f}s/mi   "
+        f"<b>Corrected:</b> {r['corrected']:+.1f}s/mi",
     ]
     return "<br>".join(p for p in parts if p)
 
 
 def hill_hover(r):
+    title = f"Continuous hills{_route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}"
+    nreps = int(r['nreps'])
+    loops_word = 'loop' if nreps == 1 else 'loops'
+    ft_gained = int(round(float(r.get('ft_gained') or 0)))
     parts = [
-        f"<b>{CAT_LABEL.get(r['category'], r['category'])}</b>",
-        f"{int(r['nreps'])} × {r['loop']} loop, {int(r['session_min'])} min total",
+        f"<b>{title}</b>",
+        f"{nreps} {loops_word}, {ft_gained} ft gained, {int(r['session_min'])} min total",
         f"<b>Actual pace:</b> {sec_to_mss(r['actual_pace_s'])}/mi",
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
         f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
@@ -289,57 +455,77 @@ def main():
     long_runs = project_long_runs(cs, epoch)
     hills     = project_hill_continuous(cs, epoch)
 
-    # Iterative resid-cutoff prune. After each pass, recompute category offsets
-    # on the pruned set and check whether any remaining points now exceed the
-    # cutoff (since the median can drop after removing high outliers).
+    # Long-run model: fit raw_resid ~ C(bin) + C(route) on the in-slice set
+    # with iterative MAD-based outlier prune. Outliers are dropped from the
+    # figure entirely (not displayed); kept rows carry per-row model offset
+    # and corrected residual.
+    print(f'\n--- Long-run model: raw_resid ~ bin + route, '
+          f'iterative MAD prune (sigma={PRUNE_SIGMA}) ---')
+    long_runs, lr_fit, qualifying_routes = fit_long_run_model(long_runs)
+    n_in = len(long_runs)
+    n_out = int(long_runs['is_outlier'].sum())
+    print(f'  In-scope long runs: {n_in}  ({n_out} pruned as outliers)')
+    print(f'  Qualifying routes (n>={MIN_ROUTE_N}): {len(qualifying_routes)}')
+    for r in qualifying_routes:
+        n_r = int((long_runs['route'] == r).sum())
+        beta = lr_fit.route_coefs.get(r, 0.0)
+        print(f'    {r:<22} n={n_r:<3d}  beta={beta:+6.2f}')
+    print(f'  Intercept (bin=lr_hi, route=other): {lr_fit.intercept:+6.2f}')
+    for b in ['lr_lo', 'lr_hi']:
+        bcoef = lr_fit.bin_coefs.get(b, 0.0)
+        n_b = int((long_runs['bin'] == b).sum())
+        print(f'  Bin {b} (n={n_b}): coef={bcoef:+6.2f}')
+    print(f'  R^2 = {lr_fit.rsquared:.3f}   resid SD = {lr_fit.resid_sd:.2f} sec/mi   '
+          f'(n_kept = {lr_fit.n_kept})')
+    if n_out:
+        print('  Outlier rows pruned:')
+        for _, row in long_runs[long_runs['is_outlier']].iterrows():
+            print(f'    LR {row["date"].date()}  bin={row["bin"]:<5}  route={row["route"]:<22}  '
+                  f'raw={row["raw_resid"]:+6.1f}  corrected={row["corrected"]:+6.1f}  '
+                  f'miles={row["miles"]:.1f}')
+
+    # Drop pruned long runs from the working frame — they don't contribute to
+    # the smoother and aren't rendered.
+    long_runs = long_runs[~long_runs['is_outlier']].copy()
+
+    # Workouts/hills iterative resid-cutoff prune (long runs handled above).
     CUTOFF = 23.3
-    print(f'\n--- Iterative resid > +{CUTOFF} prune ---')
+    print(f'\n--- Iterative resid > +{CUTOFF} prune (workouts/hills) ---')
     pruned_w_idx = set()
-    pruned_lr_idx = set()
     pruned_h_idx = set()
     initial_offsets = None
     for it in range(15):
         w_keep = workouts.drop(index=list(pruned_w_idx))
-        lr_keep = long_runs.drop(index=list(pruned_lr_idx))
         h_keep = hills.drop(index=list(pruned_h_idx))
-        _, _, _, offsets = apply_offsets(w_keep, lr_keep, h_keep)
+        _, _, offsets = apply_offsets(w_keep, h_keep)
         if initial_offsets is None:
             initial_offsets = offsets
         w_keep = w_keep.copy()
-        lr_keep = lr_keep.copy()
         h_keep = h_keep.copy()
         w_keep['resid'] = w_keep['raw_resid'] - w_keep['category'].map(offsets)
-        lr_keep['resid'] = lr_keep['raw_resid'] - lr_keep['category'].map(offsets)
         h_keep['resid'] = h_keep['raw_resid'] - h_keep['category'].map(offsets)
 
         new_w = w_keep.index[w_keep['resid'] > CUTOFF].tolist()
-        new_lr = lr_keep.index[lr_keep['resid'] > CUTOFF].tolist()
         new_h = h_keep.index[h_keep['resid'] > CUTOFF].tolist()
-        if not new_w and not new_lr and not new_h:
+        if not new_w and not new_h:
             print(f'  Iteration {it+1}: stable. Done.')
             break
 
         pruned_w_idx.update(new_w)
-        pruned_lr_idx.update(new_lr)
         pruned_h_idx.update(new_h)
-        print(f'  Iteration {it+1}: +{len(new_w)} workouts, +{len(new_lr)} long runs, +{len(new_h)} hills')
+        print(f'  Iteration {it+1}: +{len(new_w)} workouts, +{len(new_h)} hills')
         for i in new_w:
             r = workouts.loc[i]
             print(f'    W  {r["date"].date()}  {r["category"]:<22} resid={w_keep.loc[i,"resid"]:+5.1f}  '
                   f'raw={r["raw_resid"]:+5.1f}  pace={int(r["pace_per_mile"])}s/mi')
-        for i in new_lr:
-            r = long_runs.loc[i]
-            print(f'    LR {r["date"].date()}  {r["category"]:<22} resid={lr_keep.loc[i,"resid"]:+5.1f}  '
-                  f'raw={r["raw_resid"]:+5.1f}  miles={r["miles"]:.1f}  pace={int(r["recovery_pace_sec_per_mi"])}s/mi')
         for i in new_h:
             r = hills.loc[i]
             print(f'    H  {r["date"].date()}  {r["category"]:<22} resid={h_keep.loc[i,"resid"]:+5.1f}  '
                   f'raw={r["raw_resid"]:+5.1f}  loop={r["loop"]}  {int(r["nreps"])}x{int(r["session_min"])}min')
 
     workouts = workouts.drop(index=list(pruned_w_idx)).copy()
-    long_runs = long_runs.drop(index=list(pruned_lr_idx)).copy()
     hills = hills.drop(index=list(pruned_h_idx)).copy()
-    workouts, long_runs, hills, offsets = apply_offsets(workouts, long_runs, hills)
+    workouts, hills, offsets = apply_offsets(workouts, hills)
 
     print('\n--- Offset shifts (initial -> final) ---')
     for cat in sorted(set(initial_offsets) | set(offsets)):
@@ -348,15 +534,14 @@ def main():
         print(f'  {cat:<22} {i_off:+6.2f}  ->  {f_off:+6.2f}  (Δ {f_off-i_off:+.2f})')
     print(f'\nKept: {len(workouts)} workouts, {len(long_runs)} long runs, {len(hills)} hills')
 
-    print(f'Workouts: {len(workouts)},  long runs: {len(long_runs)},  hills: {len(hills)}')
     print('Per-category offsets (median raw resid):')
     for c, o in sorted(offsets.items()):
         print(f'  {c:<22} offset={o:+6.2f}')
 
-    # Combined for the smoother
+    # Combined for the smoother. Long runs use the model-corrected residual.
     combined = pd.concat([
         workouts[['date', 'resid']],
-        long_runs[['date', 'resid']],
+        long_runs[['date', 'corrected']].rename(columns={'corrected': 'resid'}),
         hills[['date', 'resid']],
     ], ignore_index=True).sort_values('date').reset_index(drop=True)
 
@@ -390,31 +575,49 @@ def main():
     p5k_at_grid = np.interp(grid_days, cs['day'].values, cs['p5k_implied_min'].values)
     track = p5k_at_grid + smoothed / 60.0
 
-    # Position each session at CS-implied + corrected residual
-    workouts['pos_min']  = workouts['p5k_cs_min']  + workouts['resid']  / 60.0
-    long_runs['pos_min'] = long_runs['p5k_cs_min'] + long_runs['resid'] / 60.0
-    hills['pos_min']     = hills['p5k_cs_min']     + hills['resid']     / 60.0
+    # Position each session at CS-implied + corrected residual.
+    # `pos_min` is the raw min/mi position (CS line + residual/60), `pos_norm`
+    # is the residual in sec/mi used when the "Normalize to CS" toggle is on.
+    workouts['pos_min']  = workouts['p5k_cs_min']  + workouts['resid']     / 60.0
+    long_runs['pos_min'] = long_runs['p5k_cs_min'] + long_runs['corrected'] / 60.0
+    hills['pos_min']     = hills['p5k_cs_min']     + hills['resid']        / 60.0
+    workouts['pos_norm']  = workouts['resid']
+    long_runs['pos_norm'] = long_runs['corrected']
+    hills['pos_norm']     = hills['resid']
 
     # ---------- build figure ----------
+    # Each trace stashes both raw_y (min/mi pace) and norm_y (sec/mi residual
+    # from CS) in `meta`. Initial figure renders in normalized mode (the
+    # default state of the "Normalize to CS" checkbox); the overlay JS
+    # restyles to raw when unchecked.
+    def _y_safe(arr):
+        return [None if (v is None or (isinstance(v, float) and np.isnan(v)))
+                else float(v) for v in arr]
+
     fig = go.Figure()
 
-    # CS-implied 5K reference (full series, clipped at plot range)
     cs_plot = cs[cs['date'] >= pd.Timestamp('2016-01-01')]
+    cs_raw  = _y_safe(cs_plot['p5k_implied_min'].values)
+    cs_norm = [0.0] * len(cs_plot)
     fig.add_trace(go.Scatter(
-        x=cs_plot['date'], y=cs_plot['p5k_implied_min'],
+        x=cs_plot['date'], y=cs_norm,
         mode='lines', name='CS-implied 5K',
-        line=dict(color='steelblue', width=2),
+        line=dict(color=CS_LINE, width=2),
         hoverinfo='skip',
+        meta={'raw_y': cs_raw, 'norm_y': cs_norm},
     ))
 
-    # Smoother track. Pass full array including NaN values: plotly's line mode
-    # skips NaN naturally and creates the visual break at the gap.
+    # Smoother track. NaN positions create the visual break at the
+    # 2020-21 labrum gap; both raw_y and norm_y have NaN at the same indices.
+    track_raw  = _y_safe(track)
+    track_norm = _y_safe(smoothed)
     fig.add_trace(go.Scatter(
-        x=grid_dates, y=track,
+        x=grid_dates, y=track_norm,
         mode='lines', name='Training-quality track',
         line=dict(color='#eaeaea', width=2.5),
         connectgaps=False,
         hoverinfo='skip',
+        meta={'raw_y': track_raw, 'norm_y': track_norm},
     ))
 
     # Workouts: one trace per category for legend filtering (reps excluded
@@ -427,8 +630,10 @@ def main():
         if sub.empty:
             continue
         cd = [workout_hover(r) for _, r in sub.iterrows()]
+        raw_y = _y_safe(sub['pos_min'].values)
+        norm_y = _y_safe(sub['pos_norm'].values)
         fig.add_trace(go.Scatter(
-            x=sub['date'], y=sub['pos_min'],
+            x=sub['date'], y=norm_y,
             mode='markers',
             name=f'{CAT_LABEL[cat]} (n={len(sub)})',
             marker=dict(color=CAT_COLORS[cat], size=7,
@@ -437,49 +642,59 @@ def main():
             customdata=cd,
             hoverinfo='skip',
             legendgroup='workouts', legendgrouptitle_text='Workouts',
-            meta={'snap_eligible': True},
+            meta={'snap_eligible': True, 'raw_y': raw_y, 'norm_y': norm_y},
         ))
 
     # Long runs: one trace per bin
-    for cat in ['lr_20-22.9', 'lr_23+']:
+    for cat in ['lr_lo', 'lr_hi']:
         sub = long_runs[long_runs['category'] == cat]
         if sub.empty:
             continue
         cd = [long_run_hover(r) for _, r in sub.iterrows()]
+        raw_y = _y_safe(sub['pos_min'].values)
+        norm_y = _y_safe(sub['pos_norm'].values)
         fig.add_trace(go.Scatter(
-            x=sub['date'], y=sub['pos_min'],
+            x=sub['date'], y=norm_y,
             mode='markers',
             name=f'{CAT_LABEL[cat]} (n={len(sub)})',
-            marker=dict(color=CAT_COLORS[cat], size=7, symbol='diamond',
+            marker=dict(color=CAT_COLORS[cat], size=7,
                         line=dict(color='rgba(255,255,255,0.4)', width=0.5),
                         opacity=0.85),
             customdata=cd,
             hoverinfo='skip',
             legendgroup='long_runs', legendgrouptitle_text='Long runs',
-            meta={'snap_eligible': True},
+            meta={'snap_eligible': True, 'raw_y': raw_y, 'norm_y': norm_y},
         ))
 
     # Hill continuous: single trace, all loops together
     if len(hills):
         cd = [hill_hover(r) for _, r in hills.iterrows()]
+        raw_y = _y_safe(hills['pos_min'].values)
+        norm_y = _y_safe(hills['pos_norm'].values)
         fig.add_trace(go.Scatter(
-            x=hills['date'], y=hills['pos_min'],
+            x=hills['date'], y=norm_y,
             mode='markers',
-            name=f'Hill continuous (n={len(hills)})',
-            marker=dict(color='#e377c2', size=7, symbol='triangle-up',
+            name=f'Cont. hills (n={len(hills)})',
+            marker=dict(color=CAT_COLORS['hill_lc'], size=7,
                         line=dict(color='rgba(255,255,255,0.4)', width=0.5),
                         opacity=0.85),
             customdata=cd,
             hoverinfo='skip',
             legendgroup='workouts', legendgrouptitle_text='Workouts',
-            meta={'snap_eligible': True},
+            meta={'snap_eligible': True, 'raw_y': raw_y, 'norm_y': norm_y},
         ))
 
     # ---------- layout ----------
-    y_min, y_max = 4.0 + 20/60, 6.00
-    # 10-second tick spacing from 4:20 to 6:00
-    ytick_vals = [4.0 + (20 + 10 * k) / 60 for k in range(11)]
-    ytick_txt  = [sec_to_mss(v * 60) for v in ytick_vals]
+    # Raw axis: 4:20–6:00 min/mi (descending = faster up).
+    y_min_raw, y_max_raw = 4.0 + 20/60, 6.00
+    raw_tickvals = [4.0 + (20 + 10 * k) / 60 for k in range(11)]
+    raw_ticktext = [sec_to_mss(v * 60) for v in raw_tickvals]
+
+    # Normalized axis: residual sec/mi vs CS, signed labels every 10 s/mi.
+    # Range [+80, -40] keeps positive (slower) at the bottom, mirroring the
+    # raw axis orientation.
+    norm_tickvals = list(range(-40, 81, 10))
+    norm_ticktext = ['0' if v == 0 else f'{v:+d}' for v in norm_tickvals]
 
     apply_default_layout(
         fig,
@@ -491,10 +706,11 @@ def main():
                    tick0='2016-01-01', dtick='M12',
                    range=[pd.Timestamp('2016-01-01'),
                           combined['date'].max() + pd.Timedelta(days=30)]),
-        yaxis=dict(title='5K-equivalent pace (min/mi)',
-                   range=[y_max, y_min],
-                   tickmode='array', tickvals=ytick_vals, ticktext=ytick_txt,
-                   showgrid=True, gridcolor=GRID),
+        yaxis=dict(title='Residual from CS (sec/mi)',
+                   range=[80, -40],
+                   tickmode='array',
+                   tickvals=norm_tickvals, ticktext=norm_ticktext,
+                   showgrid=True, gridcolor=GRID, zeroline=False),
     )
 
     # ---------- cursor-tooltip payload ----------
@@ -634,6 +850,127 @@ function buildTooltip(day, isSnap, pointHtml) {
 }
 """
 
+    # ---------- "Normalize to CS" toggle overlay ----------
+    # Checkbox sits in the top-right corner. When checked (default), traces
+    # render in residual sec/mi from the CS curve flattened at y=0; when
+    # unchecked, traces show raw 5K-equivalent pace in min/mi against the
+    # actual CS curve. JS reads `meta.raw_y` / `meta.norm_y` from each trace
+    # and restyles, then relayouts the y-axis.
+    import json as _json
+    axis_raw = {
+        'range': [y_max_raw, y_min_raw],
+        'tickvals': raw_tickvals,
+        'ticktext': raw_ticktext,
+        'title': '5K-equivalent pace (min/mi)',
+    }
+    axis_norm = {
+        'range': [80, -40],
+        'tickvals': norm_tickvals,
+        'ticktext': norm_ticktext,
+        'title': 'Residual from CS (sec/mi)',
+    }
+    # Checkbox left-justifies with the legend's left edge: the legend uses
+    # xanchor='left' x=1.02 with margin r=220, so its left edge sits ~200 px
+    # from the viewport right. The box is anchored by its right edge — set
+    # `right: 60px` so the box's left edge lands at ~200 px (60 + ~140 px
+    # box width). top: 20 px places the checkbox inside the title bar's
+    # right side (the title text is left-anchored, no conflict) above the
+    # legend.
+    #
+    # Route betas table sits below the legend in the same column. Sorted
+    # by beta (most negative first); n is per-route count in the kept set
+    # (post-prune), matching the recovery-plot convention.
+    route_n = long_runs['route'].value_counts().to_dict()
+    routes_by_beta = sorted(qualifying_routes,
+                            key=lambda r: lr_fit.route_coefs.get(r, 0.0))
+    route_rows_html = '\n'.join(
+        f'<tr><td>{r}</td><td style="text-align:right">{int(route_n.get(r, 0))}</td>'
+        f'<td style="text-align:right">{lr_fit.route_coefs.get(r, 0.0):+.1f}</td></tr>'
+        for r in routes_by_beta)
+
+    overlay_html = f"""
+<style>
+#tq-norm-toggle {{
+  position: fixed; right: 60px; top: 20px;
+  background: rgba(26,26,26,0.92);
+  border: 1px solid #444;
+  padding: 5px 10px;
+  border-radius: 4px;
+  color: #eee;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 11px;
+  z-index: 100;
+  user-select: none;
+}}
+#tq-norm-toggle label {{ cursor: pointer; display: flex; align-items: center; gap: 6px; }}
+#tq-norm-toggle input[type=checkbox] {{ cursor: pointer; accent-color: #4aa3ff; margin: 0; }}
+
+#tq-routes {{
+  position: fixed; right: 12px; top: 260px;
+  background: rgba(26,26,26,0.92);
+  border: 1px solid #444;
+  padding: 8px 10px;
+  border-radius: 4px;
+  color: #eee;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 11px;
+  z-index: 100;
+  width: 196px;
+  user-select: none;
+}}
+#tq-routes .tq-routes-title {{ font-weight: 500; margin-bottom: 4px; color: #eee; }}
+#tq-routes .tq-routes-sub {{ font-size: 10.5px; color: #999; margin-bottom: 6px; line-height: 1.3; }}
+#tq-routes table {{ width: 100%; font-size: 10.5px; border-collapse: collapse; }}
+#tq-routes th {{ text-align: left; padding: 2px 4px; color: #aaa; font-weight: 500; }}
+#tq-routes td {{ padding: 1px 4px; }}
+#tq-routes tr:nth-child(even) td {{ background: rgba(255,255,255,0.03); }}
+</style>
+<div id="tq-norm-toggle">
+  <label><input type="checkbox" id="tq-norm-cb" checked> Normalize to CS</label>
+</div>
+<div id="tq-routes">
+  <div class="tq-routes-title">Long-run route offsets</div>
+  <div class="tq-routes-sub">vs. baseline (n &ge; {MIN_ROUTE_N}); intercept {lr_fit.intercept:+.1f}, lr_lo {lr_fit.bin_coefs.get('lr_lo', 0.0):+.1f}</div>
+  <table>
+    <thead><tr><th>Route</th><th style="text-align:right">n</th><th style="text-align:right">β</th></tr></thead>
+    <tbody>{route_rows_html}</tbody>
+  </table>
+</div>
+<script>
+window.__TQ_AXIS_RAW = {_json.dumps(axis_raw)};
+window.__TQ_AXIS_NORM = {_json.dumps(axis_norm)};
+(function() {{
+  function getPlot() {{ return document.querySelector('.plotly-graph-div'); }}
+  function applyState(checked) {{
+    var plot = getPlot();
+    if (!plot || !plot.data || !window.Plotly) {{ setTimeout(function() {{ applyState(checked); }}, 100); return; }}
+    var newY = [], indices = [];
+    for (var i = 0; i < plot.data.length; i++) {{
+      var meta = plot.data[i].meta;
+      if (meta && meta.raw_y && meta.norm_y) {{
+        newY.push(checked ? meta.norm_y : meta.raw_y);
+        indices.push(i);
+      }}
+    }}
+    if (indices.length) {{
+      Plotly.restyle(plot, {{y: newY}}, indices);
+    }}
+    var ax = checked ? window.__TQ_AXIS_NORM : window.__TQ_AXIS_RAW;
+    Plotly.relayout(plot, {{
+      'yaxis.range': ax.range,
+      'yaxis.tickvals': ax.tickvals,
+      'yaxis.ticktext': ax.ticktext,
+      'yaxis.title.text': ax.title,
+    }});
+  }}
+  var cb = document.getElementById('tq-norm-cb');
+  cb.addEventListener('change', function() {{ applyState(cb.checked); }});
+  // Initial python render already matches the default checked state, no
+  // initial restyle needed.
+}})();
+</script>
+"""
+
     render_plot(
         fig, OUT_HTML,
         title_slug='training_quality',
@@ -646,6 +983,7 @@ function buildTooltip(day, isSnap, pointHtml) {
             first_day=first_day,
             last_day=last_day,
         ),
+        overlay_html=overlay_html,
     )
     print(f'\nWrote {OUT_HTML}')
 
