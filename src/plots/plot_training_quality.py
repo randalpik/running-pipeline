@@ -28,8 +28,12 @@ from src.shared.workouts import (
     WORKOUTS_PATH, DAILY_PATH, CS_PATH,
 )
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
+                            right_margin_for_anchored_box,
                             sec_to_mss, fmt_min, CAT_COLORS, GRID, CS_LINE,
                             GAP_BREAK_DAYS, adaptive_gauss_smoother)
+
+# Width of the route-betas box (#tq-routes); also used to size margin.r.
+ROUTES_BOX_WIDTH = 196
 
 
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -230,9 +234,8 @@ def long_run_hover(r):
         f"<b>Pace:</b> {sec_to_mss(r['recovery_pace_sec_per_mi'])}/mi",
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
         f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
-        f"<b>Raw resid:</b> {r['raw_resid']:+.1f}s/mi   "
         f"<b>Model offset:</b> {r['model_offset']:+.1f}s/mi   "
-        f"<b>Corrected:</b> {r['corrected']:+.1f}s/mi",
+        f"<b>Corrected residual:</b> {r['corrected']:+.1f}s/mi",
     ]
     return "<br>".join(p for p in parts if p)
 
@@ -538,14 +541,27 @@ def main():
     raw_ticktext = [sec_to_mss(v * 60) for v in raw_tickvals]
 
     # Normalized axis: residual sec/mi vs CS, signed labels every 10 s/mi.
-    # Range [+80, -40] keeps positive (slower) at the bottom, mirroring the
-    # raw axis orientation.
-    norm_tickvals = list(range(-40, 81, 10))
+    # Range derived from the actual residuals (markers + smoother track) and
+    # snapped outward to the next 10 s/mi with a small pad — keeps the CS
+    # line (y=0) roughly centered instead of clinging to the top.
+    norm_data = np.concatenate([
+        workouts['pos_norm'].to_numpy(dtype=float),
+        long_runs['pos_norm'].to_numpy(dtype=float),
+        hills['pos_norm'].to_numpy(dtype=float),
+        smoothed[np.isfinite(smoothed)],
+    ])
+    pad = 5.0
+    norm_lo = int(np.floor((float(np.nanmin(norm_data)) - pad) / 10.0) * 10)
+    norm_hi = int(np.ceil((float(np.nanmax(norm_data)) + pad) / 10.0) * 10)
+    norm_tickvals = list(range(norm_lo, norm_hi + 1, 10))
     norm_ticktext = ['0' if v == 0 else f'{v:+d}' for v in norm_tickvals]
+    norm_axis_range = [norm_hi, norm_lo]
 
     apply_default_layout(
         fig,
-        margin=dict(t=20, l=70, r=220, b=60),
+        margin=dict(t=20, l=70,
+                    r=right_margin_for_anchored_box(ROUTES_BOX_WIDTH, legend_min_px=220),
+                    b=60),
         hovermode=False,
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     groupclick='toggleitem', font=dict(size=11)),
@@ -554,7 +570,7 @@ def main():
                    range=[pd.Timestamp('2016-01-01'),
                           combined['date'].max() + pd.Timedelta(days=30)]),
         yaxis=dict(title='Residual from CS (sec/mi)',
-                   range=[80, -40],
+                   range=norm_axis_range,
                    tickmode='array',
                    tickvals=norm_tickvals, ticktext=norm_ticktext,
                    showgrid=True, gridcolor=GRID, zeroline=False),
@@ -711,22 +727,13 @@ function buildTooltip(day, isSnap, pointHtml) {
         'title': '5K-equivalent pace (min/mi)',
     }
     axis_norm = {
-        'range': [80, -40],
+        'range': norm_axis_range,
         'tickvals': norm_tickvals,
         'ticktext': norm_ticktext,
         'title': 'Residual from CS (sec/mi)',
     }
-    # Checkbox left-justifies with the legend's left edge: the legend uses
-    # xanchor='left' x=1.02 with margin r=220, so its left edge sits ~200 px
-    # from the viewport right. The box is anchored by its right edge — set
-    # `right: 60px` so the box's left edge lands at ~200 px (60 + ~140 px
-    # box width). top: 20 px places the checkbox inside the title bar's
-    # right side (the title text is left-anchored, no conflict) above the
-    # legend.
-    #
-    # Route betas table sits below the legend in the same column. Sorted
-    # by beta (most negative first); n is per-route count in the kept set
-    # (post-prune), matching the recovery-plot convention.
+    # Routes sorted by beta (most negative first); n is per-route count in
+    # the kept set (post-prune), matching the recovery-plot convention.
     route_n = long_runs['route'].value_counts().to_dict()
     routes_by_beta = sorted(qualifying_routes,
                             key=lambda r: lr_fit.route_coefs.get(r, 0.0))
@@ -753,7 +760,7 @@ function buildTooltip(day, isSnap, pointHtml) {
 #tq-norm-toggle input[type=checkbox] {{ cursor: pointer; accent-color: #4aa3ff; margin: 0; }}
 
 #tq-routes {{
-  position: fixed; right: 12px; top: 260px;
+  position: fixed;
   background: rgba(26,26,26,0.92);
   border: 1px solid #444;
   padding: 8px 10px;
@@ -762,8 +769,11 @@ function buildTooltip(day, isSnap, pointHtml) {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
   font-size: 11px;
   z-index: 100;
-  width: 196px;
+  width: {ROUTES_BOX_WIDTH}px;
+  box-sizing: border-box;
   user-select: none;
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
 }}
 #tq-routes .tq-routes-title {{ font-weight: 500; margin-bottom: 4px; color: #eee; }}
 #tq-routes .tq-routes-sub {{ font-size: 10.5px; color: #999; margin-bottom: 6px; line-height: 1.3; }}
@@ -775,7 +785,7 @@ function buildTooltip(day, isSnap, pointHtml) {
 <div id="tq-norm-toggle">
   <label><input type="checkbox" id="tq-norm-cb" checked> Normalize to CS</label>
 </div>
-<div id="tq-routes">
+<div id="tq-routes" data-rp-anchor="below-legend">
   <div class="tq-routes-title">Long-run route offsets</div>
   <div class="tq-routes-sub">vs. baseline (n &ge; {MIN_ROUTE_N}); intercept {lr_fit.intercept:+.1f}, lr_lo {lr_fit.bin_coefs.get('lr_lo', 0.0):+.1f}</div>
   <table>

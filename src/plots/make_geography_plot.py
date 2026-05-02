@@ -114,6 +114,21 @@ def get_state(city_state):
     return m.group(1) if m else city_state.strip()
 
 
+def split_label_for_singleton(lab):
+    """Return (state_code, city_or_none) for a singleton label.
+
+    'Chicago, IL' -> ('IL', 'Chicago')
+    'China'       -> ('China', None)
+    'MA (other)'  -> ('MA', '(other)')
+    """
+    if lab.endswith(' (other)'):
+        return lab[:-len(' (other)')], '(other)'
+    m = re.match(r'^(.+),\s*([A-Z]{2,3})$', lab)
+    if m:
+        return m.group(2), m.group(1)
+    return lab, None
+
+
 def fmt_miles(v):
     if v >= 100:
         return f'{v:,.0f}'
@@ -432,14 +447,32 @@ def build_bin_hover(pivot, freq, ordered_labels, label_color,
                         parts.append(
                             f'<div class="hov-subs">{render_subcity_html(sub)}</div>')
             else:
+                # Non-grouped rows: render as compressed singletons (bold
+                # state prefix + box + city + miles) so the row reads as a
+                # top-level category, matching the legend treatment. Global
+                # Other has no state code, so keep its plain hov-item form.
+                is_global_other = (g == GLOBAL_OTHER_KEY)
                 for lab, val, color, name, sub in items_ordered:
-                    parts.append(
-                        f'<div class="hov-item">'
-                        f'<span class="hov-box" style="background:'
-                        f'{color}"></span>'
-                        f'<span class="hov-name">{name}</span>'
-                        f'<span class="hov-val">  '
-                        f'<b>{fmt_miles(val)}</b> mi</span></div>')
+                    if is_global_other:
+                        parts.append(
+                            f'<div class="hov-item">'
+                            f'<span class="hov-box" style="background:'
+                            f'{color}"></span>'
+                            f'<span class="hov-name">{name}</span>'
+                            f'<span class="hov-val">  '
+                            f'<b>{fmt_miles(val)}</b> mi</span></div>')
+                    else:
+                        state, city = split_label_for_singleton(name)
+                        display_name = city if city else state
+                        parts.append(
+                            f'<div class="hov-singleton">'
+                            f'<b class="hov-singleton-state">{state}</b>'
+                            f'<span class="hov-sep">  ·  </span>'
+                            f'<span class="hov-box" style="background:'
+                            f'{color}"></span>'
+                            f'<span class="hov-name">{display_name}</span>'
+                            f'<span class="hov-val">  ·  '
+                            f'<b>{fmt_miles(val)}</b> mi</span></div>')
                     if sub:
                         parts.append(
                             f'<div class="hov-subs">{render_subcity_html(sub)}</div>')
@@ -477,18 +510,26 @@ def build_legend_html(ordered_labels, label_color, label_total,
                       other_sublists):
     """Custom HTML legend.
 
-    Group items are indented; singletons flush. Each (other) item (and the
-    global Other) gets a chevron at the start of the row that expands a
-    sub-list of contributing cities. Sub-list is hidden by default.
+    Real groups (>=2 traces) get a bold title row with indented children.
+    State-singletons render as a single compressed line: bold state code,
+    color box, city, lifetime miles — matching group-title typography so
+    they read as top-level categories instead of sub-rows. The Global
+    Other singleton keeps the original chev/box/name form so its expand
+    affordance stays intact. (other) items (and the global Other) carry
+    a chevron that expands a sub-list of contributing cities.
     """
     parts = ['<div id="geo-legend"><div class="legend-inner">']
     last_group = None
+    open_wrapper = False
     for i, lab in enumerate(ordered_labels):
         g = group_for_label[lab]
+        is_real_group     = (group_size[g] >= 2 and g != GLOBAL_OTHER_KEY)
+        is_state_singleton = (not is_real_group and lab != GLOBAL_OTHER_LABEL)
+
         if g != last_group:
-            if last_group is not None:
+            if open_wrapper:
                 parts.append('</div>')
-            is_real_group = (group_size[g] >= 2 and g != GLOBAL_OTHER_KEY)
+                open_wrapper = False
             if is_real_group:
                 parts.append(f'<div class="legend-group" data-group-key="{g}">')
                 parts.append(
@@ -496,13 +537,30 @@ def build_legend_html(ordered_labels, label_color, label_total,
                     f'<b>{g}</b>'
                     f'<span class="legend-life">  ·  '
                     f'{fmt_miles(group_total[g])} mi</span></div>')
+                open_wrapper = True
+            elif is_state_singleton:
+                pass  # no wrapper; the singleton row stands alone
             else:
                 parts.append('<div class="legend-block">')
+                open_wrapper = True
             last_group = g
 
-        is_grouped   = (group_size[g] >= 2 and g != GLOBAL_OTHER_KEY)
-        is_othery    = lab in other_sublists  # has a sub-list to expand
-        cls = 'legend-item' + (' grouped' if is_grouped else '')
+        if is_state_singleton:
+            state, city = split_label_for_singleton(lab)
+            name = city if city else state
+            parts.append(
+                f'<div class="legend-singleton" data-trace-idx="{i}">'
+                f'<b class="legend-singleton-state">{state}</b>'
+                f'<span class="legend-life">  ·  </span>'
+                f'<span class="legend-box" style="background:'
+                f'{label_color[lab]}"></span>'
+                f'<span class="legend-name">{name}</span>'
+                f'<span class="legend-life">  ·  '
+                f'{fmt_miles(label_total[lab])} mi</span></div>')
+            continue  # collapse rule guarantees no sub-list for state singletons
+
+        is_othery = lab in other_sublists  # has a sub-list to expand
+        cls = 'legend-item' + (' grouped' if is_real_group else '')
         chev_html = ('<span class="chev expandable">▶</span>' if is_othery
                      else '<span class="chev"></span>')
         parts.append(
@@ -516,14 +574,14 @@ def build_legend_html(ordered_labels, label_color, label_total,
 
         if is_othery:
             sub_cls_inner = ('legend-subcity'
-                             + (' grouped' if is_grouped else ' singleton'))
+                             + (' grouped' if is_real_group else ' singleton'))
             parts.append('<div class="legend-subgroup">')
             for city, miles in other_sublists[lab]:
                 parts.append(
                     f'<div class="{sub_cls_inner}">{city}: '
                     f'{fmt_miles(miles)} mi</div>')
             parts.append('</div>')
-    if last_group is not None:
+    if open_wrapper:
         parts.append('</div>')
     parts.append('</div></div>')
     return ''.join(parts)
@@ -611,6 +669,22 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
 #geo-legend .legend-item.hidden .legend-name {
   color: #666; text-decoration: line-through;
 }
+#geo-legend .legend-singleton {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 0; cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  line-height: 1.25;
+  margin-bottom: 4px;
+}
+#geo-legend .legend-singleton:hover { color: #fff; }
+#geo-legend .legend-singleton-state {
+  color: #fff; font-size: 14px; font-weight: 600;
+}
+#geo-legend .legend-singleton.hidden .legend-box { opacity: 0.18; }
+#geo-legend .legend-singleton.hidden .legend-name {
+  color: #666; text-decoration: line-through;
+}
 #geo-legend .legend-subgroup { display: none; }
 #geo-legend .legend-subgroup.expanded { display: block; }
 #geo-legend .legend-subcity {
@@ -651,6 +725,16 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
   white-space: nowrap; padding: 1px 0;
 }
 #geo-tooltip .hov-item.grouped { padding-left: 14px; }
+#geo-tooltip .hov-singleton {
+  display: flex; align-items: center; gap: 6px;
+  white-space: nowrap; padding: 1px 0;
+}
+#geo-tooltip .hov-singleton-state {
+  color: #fff; font-size: 13px; font-weight: 600;
+}
+#geo-tooltip .hov-sep {
+  color: #888; font-size: 11px;
+}
 #geo-tooltip .hov-box {
   display: inline-block; width: 9px; height: 9px;
   border-radius: 1px; flex-shrink: 0;
@@ -771,7 +855,7 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
     Plotly.restyle(gd, {visible: visible ? true : 'legendonly'}, indices);
   }
 
-  document.querySelectorAll('#geo-legend .legend-item').forEach(function(el) {
+  document.querySelectorAll('#geo-legend .legend-item, #geo-legend .legend-singleton').forEach(function(el) {
     el.addEventListener('click', function() {
       var idx = parseInt(el.getAttribute('data-trace-idx'));
       var hidden = el.classList.contains('hidden');

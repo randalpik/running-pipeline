@@ -42,10 +42,14 @@ from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.cs_projection import (load_cs_outputs, project_races_to_5k_pace,
                                        cs_line_at_anchor, cubic_at_anchor)
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
+                            right_margin_for_anchored_box,
                             sec_to_mss, sec_to_mss_full,
                             SURFACES, CS_LINE, CS_LINE_WIDTH, GRID,
                             pr_marker, is_pr_eligible,
                             PR_LEGEND_NAME, PR_LEGEND_RANK)
+
+# Width of the distance-filter box (#bin-filter); also used to size margin.r.
+BIN_FILTER_WIDTH = 150
 
 
 DEFAULT_IN_DIR = str(DATA_DIR)
@@ -337,7 +341,7 @@ def build_distance_filter_ui(bin_names):
     return f"""
 <style>
 #bin-filter {{
-  position: fixed; right: 12px; bottom: 20px;
+  position: fixed;
   background: rgba(26,26,26,0.92);
   border: 1px solid #444;
   padding: 12px 14px;
@@ -346,8 +350,11 @@ def build_distance_filter_ui(bin_names):
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
   font-size: 13px;
   z-index: 100;
-  min-width: 110px;
+  width: {BIN_FILTER_WIDTH}px;
+  box-sizing: border-box;
   user-select: none;
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
 }}
 #bin-filter .bf-title {{ font-weight: 500; margin-bottom: 8px; color: #eee; }}
 #bin-filter .bf-buttons {{ margin-bottom: 8px; display: flex; gap: 4px; }}
@@ -360,7 +367,7 @@ def build_distance_filter_ui(bin_names):
 #bin-filter .bf-row {{ display: block; margin: 3px 0; cursor: pointer; line-height: 1.6; }}
 #bin-filter input[type=checkbox] {{ margin-right: 6px; vertical-align: middle; cursor: pointer; accent-color: #4aa3ff; }}
 </style>
-<div id="bin-filter">
+<div id="bin-filter" data-rp-anchor="below-legend">
   <div class="bf-title">Distance</div>
   <div class="bf-buttons">
     <button id="bf-all">All</button>
@@ -898,7 +905,9 @@ def main():
     apply_default_layout(
         fig1,
         hovermode='closest',
-        margin=dict(t=20, l=70, r=200, b=60),
+        margin=dict(t=20, l=70,
+                    r=right_margin_for_anchored_box(BIN_FILTER_WIDTH, legend_min_px=200),
+                    b=60),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02),
         xaxis=yearly_x_axis(title='Date', range=[x_lo, x_hi]),
         yaxis=reversed_pace_y_axis())

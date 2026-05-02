@@ -18,6 +18,22 @@ from __future__ import annotations
 from .tokens import BG, FG
 
 
+# Right-margin padding around an anchored overlay box: 12px from viewport
+# right + 16px buffer between box and data area. MUST stay in sync with
+# BOX_RIGHT_OFFSET + MARGIN_BUFFER in _scaffold/overlay_anchor.js.
+ANCHORED_BOX_RIGHT_PADDING = 28
+
+
+def right_margin_for_anchored_box(box_width_px: int, *, legend_min_px: int = 0) -> int:
+    """Right margin (px) needed to fit an anchored `data-rp-anchor` box of
+    ``box_width_px`` outside the data area. Pass ``legend_min_px`` as the
+    margin you'd otherwise reserve for the legend; the larger of the two
+    wins. Pair the returned value with the same ``box_width_px`` in the
+    box's CSS ``width:`` so the margin and box always agree.
+    """
+    return max(legend_min_px, box_width_px + ANCHORED_BOX_RIGHT_PADDING)
+
+
 def apply_default_layout(fig, **overrides):
     """Stamp dark-theme defaults onto ``fig`` then apply caller overrides.
 

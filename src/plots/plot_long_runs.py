@@ -22,7 +22,12 @@ from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.workouts import load_cs, project_long_runs
 from src.shared.cs_projection import load_cs_outputs, cs_line_at_anchor
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
+                            right_margin_for_anchored_box,
                             sec_to_mss, GRID, CAT_COLORS, CS_LINE, rgba)
+
+# Width of the distance-gradient box (#lr-gradient); also used to size margin.r.
+# Holds a 160px gradient bar with 10px horizontal padding + 1px border per side.
+GRADIENT_BOX_WIDTH = 182
 
 
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -128,7 +133,9 @@ def main():
 
     apply_default_layout(
         fig,
-        margin=dict(t=20, l=70, r=200, b=60),
+        margin=dict(t=20, l=70,
+                    r=right_margin_for_anchored_box(GRADIENT_BOX_WIDTH, legend_min_px=200),
+                    b=60),
         hovermode=False,
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     font=dict(size=11)),
@@ -151,7 +158,7 @@ def main():
     overlay_html = f"""
 <style>
 #lr-gradient {{
-  position: fixed; right: 12px; bottom: 80px;
+  position: fixed;
   background: rgba(26,26,26,0.92);
   border: 1px solid #444;
   padding: 8px 10px;
@@ -160,11 +167,13 @@ def main():
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
   font-size: 11px;
   z-index: 100;
+  width: {GRADIENT_BOX_WIDTH}px;
+  box-sizing: border-box;
   user-select: none;
 }}
 #lr-gradient .gtitle {{ margin-bottom: 5px; color: #eee; }}
 #lr-gradient .gbar {{
-  width: 160px; height: 10px;
+  width: 100%; height: 10px;
   background: linear-gradient(to right, {LR_GRAD_BLUE}, {LR_GRAD_PURPLE}, {LR_GRAD_MAGENTA});
   border-radius: 2px;
   margin-bottom: 3px;
@@ -174,7 +183,7 @@ def main():
   font-size: 10.5px; color: #aaa;
 }}
 </style>
-<div id="lr-gradient">
+<div id="lr-gradient" data-rp-anchor="below-legend">
   <div class="gtitle">Distance (mi)</div>
   <div class="gbar"></div>
   <div class="glabels"><span>{miles_min_int}</span><span>{miles_max_int}</span></div>
@@ -283,8 +292,8 @@ function buildTooltip(day, isSnap, pointHtml) {
         fig, OUT_HTML,
         title_slug='long_runs',
         page_title='Long Runs',
-        title='Every long run at absolute pace',
-        subtitle='With CS-derived reference paces at half-marathon and marathon distances',
+        title='All long runs at absolute pace',
+        subtitle='With marathon and half-marathon pace prediction lines',
         cursor_tooltip=CursorTooltip(
             payload=payload,
             build_js=build_js,

@@ -21,6 +21,7 @@ from typing import Optional
 _SCAFFOLD_DIR = Path(__file__).resolve().parent / '_scaffold'
 _BASE_CSS = (_SCAFFOLD_DIR / 'base.css').read_text()
 _CURSOR_TOOLTIP_JS = (_SCAFFOLD_DIR / 'cursor_tooltip.js').read_text()
+_OVERLAY_ANCHOR_JS = (_SCAFFOLD_DIR / 'overlay_anchor.js').read_text()
 
 # Tiny iframe-side script: forward Alt+ArrowLeft/Right to the host shell so
 # tab cycling keeps working when focus is inside the plot. Skipped when the
@@ -137,7 +138,10 @@ def render_plot(
     if extra_head_css:
         head_css = head_css + '\n' + extra_head_css
 
-    body_pre_close_parts = [_TAB_KEY_FORWARDER_JS]
+    body_pre_close_parts = [
+        _TAB_KEY_FORWARDER_JS,
+        f'<script>\n{_OVERLAY_ANCHOR_JS}\n</script>',
+    ]
     if title is not None:
         body_pre_close_parts.append(_render_title_bar(title, subtitle))
     if overlay_html:
