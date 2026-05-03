@@ -119,7 +119,7 @@ def load_hill_lookup(adj_xlsx_path):
     if adj_xlsx_path is None:
         return {}
     from snapshot import adjustments_dfs_from_xlsx
-    _, _, _, hills_df = adjustments_dfs_from_xlsx(adj_xlsx_path)
+    _, _, _, hills_df, _ = adjustments_dfs_from_xlsx(adj_xlsx_path)
     return ingest_hills_from_df(hills_df)
 
 

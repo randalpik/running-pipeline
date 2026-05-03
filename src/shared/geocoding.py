@@ -102,13 +102,19 @@ def _resort_cache(path: Path) -> None:
 
 
 def ensure_coords(city_states: Iterable[str],
-                  cache_path: Path = CACHE_PATH
+                  cache_path: Path = CACHE_PATH,
+                  overrides: dict[str, tuple[float, float]] | None = None,
                   ) -> dict[str, tuple[float, float]]:
     """Return ``{city_state: (lat, lon)}`` for everything we have coords for.
 
     Geocodes any inputs missing from the cache, appends to disk as it goes,
     and rewrites sorted at the end if anything was added. Failures are
     silently skipped (the city won't be in the returned dict).
+
+    ``overrides`` is applied last and wins over cached / freshly-fetched
+    Nominatim results — used by the snapshot's ``coordinates`` section to
+    correct city-states whose Nominatim lookup is wrong, without mutating
+    ``city_coords.csv`` (which is regenerable from source).
     """
     cache = _read_cache(cache_path)
     missing = sorted(set(city_states) - set(cache.keys()))
@@ -127,4 +133,12 @@ def ensure_coords(city_states: Iterable[str],
     if added:
         _resort_cache(cache_path)
         print(f'[geocode] appended {added} new entries to {cache_path.name}')
+    if overrides:
+        applied = 0
+        for cs, (lat, lon) in overrides.items():
+            if cs in cache and cache[cs] != (lat, lon):
+                applied += 1
+            cache[cs] = (lat, lon)
+        if applied:
+            print(f'[geocode] applied {applied} coordinate override(s) from snapshot')
     return cache

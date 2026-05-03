@@ -4,9 +4,11 @@ Each city is one partially transparent point. Color matches that city's
 color in the Locations plot (make_geography_plot.py). Size encodes total
 miles on a log scale. Hover shows city, mileage, and a context-sensitive
 date range. A toolbar in the top-right toggles the geographic scope
-(World / N. America / Europe) — regional scopes pull in subunit borders
-(US states, Canadian provinces) and lake outlines that aren't shipped in
-plotly's world topojson.
+(World / Europe / N. America / PNW) — regional scopes pull in subunit
+borders (US states, Canadian provinces) that aren't shipped in plotly's
+world topojson, and their lon/lat viewports are computed at render time
+from a per-scope envelope + the actual data bbox + plot-div aspect ratio
+(see _build_scope_toggle's JS).
 """
 import argparse
 import calendar
@@ -20,10 +22,12 @@ import pandas as pd
 import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'parsers'))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.geocoding import ensure_coords
 from src.plotting import render_plot, apply_default_layout
 from src.plots.make_geography_plot import build_categories
+from snapshot import find_snapshot, read_snapshot  # type: ignore
 
 
 DEFAULT_DAILY = str(DATA_DIR / 'daily.csv')
@@ -32,9 +36,13 @@ DEFAULT_OUT   = str(OUTPUT_DIR)
 # Marker sizing: diameter in px = log10(miles + 1) * SIZE_SCALE + SIZE_OFFSET
 SIZE_SCALE  = 8.0
 SIZE_OFFSET = 4.0
-MARKER_OPACITY = 0.85
+MARKER_OPACITY = 0.95
 
 BG = '#1a1a1a'
+# Slightly lighter than BG so land is distinguishable from ocean at a
+# glance — important on zoomed-in regional scopes where the city points
+# alone don't carry the geographic context.
+LAND_COLOR = "#292929"
 LINE_COLOR = '#ffffff'
 COASTLINE_WIDTH = 1.2
 BORDER_WIDTH    = 0.5
@@ -44,28 +52,138 @@ BORDER_WIDTH    = 0.5
 # a regional scope.
 SUBUNIT_WIDTH = 0.5
 
-# Each entry: (toggle_id, button_label, plotly_scope, lon_range, lat_range).
+# Each entry is a dict keyed by:
+#   id           — toggle id used in the toolbar / JS
+#   label        — button text
+#   plotly_scope — passed to `layout.geo.scope`. Plotly only accepts a fixed
+#                  enum ('world', 'usa', 'europe', 'asia', 'africa',
+#                  'north america', 'south america'); finer crops like PNW
+#                  ride on top of an existing scope ('north america'). Two
+#                  ids can share the same plotly_scope.
 #
-# `plotly_scope` is the value passed to `layout.geo.scope`; plotly only
-# accepts a fixed enum ('world', 'usa', 'europe', 'asia', 'africa',
-# 'north america', 'south america'), so finer-grained crops like 'PNW' ride
-# on top of an existing scope ('north america' here) with tighter lon/lat
-# ranges. Two toggle ids can therefore share the same plotly_scope.
+# Then either:
+#   static       — explicit {'lon': [a,b], 'lat': [c,d]} for layout.geo.
+#                  Used by World only.
+# OR:
+#   envelope     — point filter only. Cities outside this lat/lon box are
+#                  hidden in this scope. The envelope does NOT appear in
+#                  any layout property and does NOT bound the viewport.
+#   pad_lat,
+#   pad_lon      — degrees of breathing room around the in-scope cities'
+#                  bbox; JS uses this to seed the viewport before
+#                  expanding to match the div aspect.
+#
+# Non-world scopes have their lonaxis.range / lataxis.range computed by
+# JS at render and resize: lat range = data ± pad_lat (fixed), lon range
+# expanded so the natural-earth-projected aspect of the box equals the
+# div aspect. Plotly's geolayer SVG fits the projected box to the div, so
+# matching aspects means the geolayer rect equals the div rect — no
+# internal letterbox on either side. The whole computation is driven by
+# the in-scope cities + padding; nothing about the envelope itself ends
+# up in a layout property.
 #
 # List order is the order the buttons render in the toolbar.
 SCOPES = [
-    ('world',         'World',      'world',         [-180, 180], [-60, 85]),
-    ('europe',        'Europe',     'europe',        [-25, 55],   [33, 75]),
-    ('north_america', 'N. America', 'north america', [-172, -50], [10, 78]),
-    ('pnw',           'PNW',        'north america', [-129, -114], [41, 51]),
+    # World shows every city — envelope is the whole globe (it's a no-op
+    # filter, just keeps the same code path as other scopes). bbox + JS
+    # aspect-fit handle the rest, with lat clamped to lat_clamp (-60..85
+    # for world, dropping Antarctica — there's no data there) and a
+    # fallback that expands lon when lat alone can't match div_aspect.
+    {'id': 'world', 'label': 'World', 'plotly_scope': 'world',
+     'envelope': {'lon': [-180, 180], 'lat': [-90, 90]},
+     'lat_clamp': [-60, 85],
+     'pad_lat': 1.5, 'pad_lon': 3},
+    # Europe + Asia are sparse maps (low-mileage cities only, since Max lives
+    # in NA). Doubling point sizes makes them visible at a glance — the
+    # log-scale sizing on its own gets too small to spot in these scopes.
+    {'id': 'europe', 'label': 'Europe', 'plotly_scope': 'europe',
+     'envelope': {'lon': [-30, 60], 'lat': [30, 75]},
+     'pad_lat': 1.5, 'pad_lon': 3,
+     'point_size_mult': 1.6},
+    {'id': 'asia', 'label': 'Asia', 'plotly_scope': 'asia',
+     'envelope': {'lon': [60, 180], 'lat': [-10, 75]},
+     'pad_lat': 1.5, 'pad_lon': 3,
+     'point_size_mult': 1.6},
+    {'id': 'north_america', 'label': 'N. America', 'plotly_scope': 'north america',
+     'envelope': {'lon': [-172, -50], 'lat': [10, 78]},
+     'pad_lat': 1.5, 'pad_lon': 3},
+    # PNW envelope: WA + OR + ID + BC + AB + western MT + SE-Alaska room.
+    # Northern bound 60° leaves room for northern BC / SE Alaska. Today this
+    # captures WA + Vancouver BC + Banff + western MT.
+    {'id': 'pnw', 'label': 'PNW', 'plotly_scope': 'north america',
+     'envelope': {'lon': [-140, -110], 'lat': [41, 60]},
+     'pad_lat': 1, 'pad_lon': 2},
 ]
 DEFAULT_SCOPE = 'world'
 
-# Indexed view of SCOPES for lookup by toggle id.
-SCOPE_CONFIG = {
-    sid: {'label': label, 'plotly_scope': pscope, 'lon': lon, 'lat': lat}
-    for sid, label, pscope, lon, lat in SCOPES
+SCOPE_CONFIG = {s['id']: s for s in SCOPES}
+
+# Per-scope geo-feature visibility. The 'thin coastline border' artifact in
+# regional scopes comes from countries' ocean-edge polygons being drawn at
+# higher detail than the world coastline layer — the country polygon traces
+# the coast and creates a parallel thin line just inside the thick coast.
+# Suppressing coastlines in regional scopes hides that artifact; world keeps
+# coastlines because there countries don't trace ocean as densely (and
+# Antarctica / ocean-only islands need them to render at all).
+SCOPE_FEATURES = {
+    # World + Europe + Asia: full hierarchy reads cleanly (no spurious
+    # dual-trace artifact like NA had).
+    'world':         {'show_coastlines': True, 'show_countries': True,  'show_subunits': True},
+    'europe':        {'show_coastlines': True, 'show_countries': True,  'show_subunits': True},
+    'asia':          {'show_coastlines': True, 'show_countries': True,  'show_subunits': True},
+    # NA: country layer carries a spurious curved arc across the northern US
+    # (the line tracks well inland of the 49th parallel). Subunit lines
+    # cover the actual US/Canada border cleanly, so countries are off here.
+    'north_america': {'show_coastlines': True, 'show_countries': False, 'show_subunits': True},
+    # PNW: at this zoom there's a visible coastline-resolution mismatch
+    # between the world coastline layer and the country layer (both trace
+    # the coast at different detail). Subunits trace the coast at the right
+    # resolution on their own, so we drop both upper layers in PNW.
+    # subunit_width bumped because every shared subunit border is drawn by
+    # both regions' polygons (~2× thickness on land), so to keep the *coast*
+    # readable at this scale we have to thicken everything slightly.
+    'pnw':           {'show_coastlines': False, 'show_countries': False, 'show_subunits': True,
+                      'subunit_width': 1.0},
 }
+
+# --debug-borders presets — toggle visibility of geo features for artifact
+# isolation. Apply by passing --debug-borders=N on the CLI; overrides the
+# per-scope SCOPE_FEATURES defaults across all scopes.
+DEBUG_BORDER_PRESETS = {
+    '1.0': {'show_coastlines': True,  'show_countries': True,  'show_subunits': True},   # baseline
+    '1.1': {'show_coastlines': False, 'show_countries': True,  'show_subunits': True},   # coast off
+    '1.2': {'show_coastlines': True,  'show_countries': False, 'show_subunits': True},   # countries off
+    '1.3': {'show_coastlines': True,  'show_countries': True,  'show_subunits': False},  # subunits off
+    '1.4': {'show_coastlines': True,  'show_countries': False, 'show_subunits': False},  # coast only
+}
+
+
+def _load_coord_overrides() -> dict[str, tuple[float, float]]:
+    """Read the snapshot's ``coordinates`` section, if present.
+
+    Returns a ``{city_state: (lat, lon)}`` map for ensure_coords overrides.
+    Resolves the snapshot path via the same default chain as build_dataset
+    (``data/drive_snapshot.csv``); if no snapshot is found, returns an
+    empty dict so plots run fine in environments without one.
+    """
+    snapshot_path = find_snapshot([str(DATA_DIR / 'drive_snapshot.csv')])
+    if not snapshot_path:
+        return {}
+    sections, _ = read_snapshot(snapshot_path)
+    coords_df = sections.get('coordinates')
+    if coords_df is None or coords_df.empty:
+        return {}
+    out = {}
+    for _, row in coords_df.iterrows():
+        cs = row.get('city_state')
+        try:
+            lat = float(row['latitude'])
+            lon = float(row['longitude'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if isinstance(cs, str) and cs.strip():
+            out[cs.strip()] = (lat, lon)
+    return out
 
 
 def fmt_date_range(d_min: pd.Timestamp, d_max: pd.Timestamp) -> str:
@@ -79,37 +197,130 @@ def fmt_date_range(d_min: pd.Timestamp, d_max: pd.Timestamp) -> str:
     return f'{d_min.year}-{d_max.year}'
 
 
-def _scope_geo(scope_id: str) -> dict:
+def _cities_trace(agg_filtered: pd.DataFrame, size_mult: float = 1.0) -> dict:
+    """Cities Scattergeo trace, parameterized by which rows of `agg` to plot.
+
+    ``size_mult`` scales every marker diameter — used by sparse scopes
+    (Europe, Asia) where a 2× bump keeps low-mileage points visible.
+    """
+    return dict(
+        type='scattergeo',
+        meta='cities',
+        lat=agg_filtered['lat'].tolist(),
+        lon=agg_filtered['lon'].tolist(),
+        mode='markers',
+        marker=dict(
+            size=(agg_filtered['size'] * size_mult).tolist(),
+            color=agg_filtered['color'].tolist(),
+            opacity=MARKER_OPACITY,
+            line=dict(width=0.5, color=LINE_COLOR),
+            sizemode='diameter',
+        ),
+        customdata=[
+            [cs, round(float(m), 1), dr]
+            for cs, m, dr in zip(agg_filtered['city_state'],
+                                  agg_filtered['miles'],
+                                  agg_filtered['date_range'])
+        ],
+        hovertemplate=('<b>%{customdata[0]}</b><br>'
+                       '%{customdata[1]:,.1f} mi<br>'
+                       '%{customdata[2]}<extra></extra>'),
+        hoverlabel=dict(bgcolor='rgba(26,26,26,0.95)',
+                        bordercolor='#444',
+                        font=dict(color='#eee')),
+    )
+
+
+def _build_scope_traces(scope: dict, agg: pd.DataFrame) -> list[dict]:
+    """Cities filtered by the scope envelope. World's envelope spans the
+    whole globe so the filter is a no-op — same code path as the regional
+    scopes, no special case.
+    """
+    env = scope['envelope']
+    m = ((agg['lon'] >= env['lon'][0]) & (agg['lon'] <= env['lon'][1]) &
+         (agg['lat'] >= env['lat'][0]) & (agg['lat'] <= env['lat'][1]))
+    return [_cities_trace(agg[m], size_mult=scope.get('point_size_mult', 1.0))]
+
+
+def _scope_bbox(scope: dict, agg: pd.DataFrame) -> dict:
+    """Bbox of the in-scope cities + per-scope padding. JS uses this to
+    compute the aspect-fit lon/lat range.
+    """
+    env = scope['envelope']
+    m = ((agg['lon'] >= env['lon'][0]) & (agg['lon'] <= env['lon'][1]) &
+         (agg['lat'] >= env['lat'][0]) & (agg['lat'] <= env['lat'][1]))
+    in_scope = agg[m]
+    if len(in_scope) == 0:
+        lon_min, lon_max = env['lon']
+        lat_min, lat_max = env['lat']
+    else:
+        lon_min = float(in_scope['lon'].min()) - scope['pad_lon']
+        lon_max = float(in_scope['lon'].max()) + scope['pad_lon']
+        lat_min = float(in_scope['lat'].min()) - scope['pad_lat']
+        lat_max = float(in_scope['lat'].max()) + scope['pad_lat']
+    return {
+        'lon_min': lon_min, 'lon_max': lon_max,
+        'lat_min': lat_min, 'lat_max': lat_max,
+        'lon_c': (lon_min + lon_max) / 2,
+        'lat_c': (lat_min + lat_max) / 2,
+        'lon_span': lon_max - lon_min,
+        'lat_span': lat_max - lat_min,
+    }
+
+
+def _scope_geo(scope_id: str, feature_override: dict | None = None) -> dict:
     """Build the full `layout.geo` config for a given toggle id.
 
-    Used both to seed the figure with the default scope and to swap to a new
-    scope on toggle click — same dict shape on the wire either way, which
-    keeps the JS reset trivial (replace the geo block wholesale).
+    `feature_override` (from --debug-borders) overrides show_coastlines /
+    show_countries / show_subunits for all scopes uniformly.
+
+    World scopes get explicit lon/lat range. Non-world scopes leave the
+    range unset on the wire and rely on JS to apply ranges that match the
+    plot div's aspect ratio. Plotly's geolayer SVG sizes itself by fitting
+    the *projected* lon/lat box into the div, so when the projected aspect
+    of the box equals the div aspect the geolayer fills the div edge-to-
+    edge — no L/R or T/B empty BG inside the div.
     """
     cfg = SCOPE_CONFIG[scope_id]
-    return dict(
+    feats = dict(SCOPE_FEATURES[scope_id])
+    if feature_override:
+        feats.update(feature_override)
+    subunit_width = feats.get('subunit_width', SUBUNIT_WIDTH)
+    geo = dict(
         scope=cfg['plotly_scope'],
         projection=dict(type='natural earth'),
         resolution=50,
         bgcolor=BG,
-        showcoastlines=True,
+        showcoastlines=feats['show_coastlines'],
         coastlinecolor=LINE_COLOR, coastlinewidth=COASTLINE_WIDTH,
-        showcountries=True,
+        showcountries=feats['show_countries'],
         countrycolor=LINE_COLOR,   countrywidth=BORDER_WIDTH,
-        showsubunits=True,
-        subunitcolor=LINE_COLOR,   subunitwidth=SUBUNIT_WIDTH,
-        showland=False, showocean=False, showlakes=False,
+        showsubunits=feats['show_subunits'],
+        subunitcolor=LINE_COLOR,   subunitwidth=subunit_width,
+        showland=True, landcolor=LAND_COLOR,
+        showocean=False, showlakes=False,
         showrivers=False, showframe=False,
-        lonaxis=dict(range=cfg['lon']),
-        lataxis=dict(range=cfg['lat']),
     )
+    # All scopes leave lon/lat range unset on the wire — JS writes them
+    # in via aspect-fit at render time and on resize.
+    return geo
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--daily',   default=DEFAULT_DAILY)
     p.add_argument('--out-dir', default=DEFAULT_OUT)
+    p.add_argument('--debug-borders', choices=sorted(DEBUG_BORDER_PRESETS),
+                   default=None,
+                   help='Override show_coastlines/countries/subunits across '
+                        'all scopes for visual artifact isolation. Presets '
+                        '1.0-1.4 — see DEBUG_BORDER_PRESETS.')
     args = p.parse_args()
+    feature_override = (DEBUG_BORDER_PRESETS[args.debug_borders]
+                        if args.debug_borders else None)
+    if feature_override:
+        print(f'[world-map] --debug-borders={args.debug_borders}: '
+              f'{feature_override}')
 
     df = pd.read_csv(args.daily, parse_dates=['date'])
     df = df.dropna(subset=['city_state'])
@@ -127,7 +338,13 @@ def main():
         lambda cs: label_color.get(label_for.get(cs)))
     agg['color'] = agg['color'].fillna('#888888')
 
-    coords = ensure_coords(agg['city_state'].tolist())
+    # Load any coordinate overrides from the snapshot. The "coordinates"
+    # section is a city_state -> (lat, lon) override applied on top of the
+    # Nominatim cache; lets us correct geocoding errors reproducibly from
+    # source instead of hand-editing data/city_coords.csv.
+    coord_overrides = _load_coord_overrides()
+    coords = ensure_coords(agg['city_state'].tolist(),
+                           overrides=coord_overrides)
     agg['lat'] = agg['city_state'].map(
         lambda cs: coords.get(cs, (None, None))[0])
     agg['lon'] = agg['city_state'].map(
@@ -147,28 +364,16 @@ def main():
     # Smaller cities render on top of larger ones so they don't get hidden.
     agg = agg.sort_values('miles', ascending=False)
 
-    fig = go.Figure(go.Scattergeo(
-        lat=agg['lat'], lon=agg['lon'],
-        mode='markers',
-        marker=dict(
-            size=agg['size'],
-            color=agg['color'],
-            opacity=MARKER_OPACITY,
-            line=dict(width=0.5, color=LINE_COLOR),
-            sizemode='diameter',
-        ),
-        customdata=np.stack([agg['city_state'],
-                             agg['miles'].round(1),
-                             agg['date_range']], axis=-1),
-        hovertemplate=('<b>%{customdata[0]}</b><br>'
-                       '%{customdata[1]:,.1f} mi<br>'
-                       '%{customdata[2]}<extra></extra>'),
-        hoverlabel=dict(bgcolor='rgba(26,26,26,0.95)',
-                        bordercolor='#444',
-                        font=dict(color='#eee')),
-    ))
+    scope_traces = {}    # sid -> list[trace dict]
+    scope_layouts = {}   # sid -> geo dict
+    scope_bboxes = {}    # sid -> bbox dict
+    for s in SCOPES:
+        scope_traces[s['id']]  = _build_scope_traces(s, agg)
+        scope_layouts[s['id']] = _scope_geo(s['id'], feature_override)
+        scope_bboxes[s['id']]  = _scope_bbox(s, agg)
 
-    fig.update_layout(geo=_scope_geo(DEFAULT_SCOPE))
+    fig = go.Figure(data=scope_traces[DEFAULT_SCOPE])
+    fig.update_layout(geo=scope_layouts[DEFAULT_SCOPE])
 
     apply_default_layout(fig)
     fig.update_layout(
@@ -188,8 +393,38 @@ def main():
     total_miles = agg['miles'].sum()
     print(f'[world-map] rendered {total_cities} cities, '
           f'{total_miles:,.0f} mi total')
+    for s in SCOPES:
+        if 'envelope' in s:
+            n = len([t for t in scope_traces[s['id']]
+                     if t.get('meta') == 'cities'][0]['lat'])
+            print(f'[world-map]   scope {s["id"]:14s}: {n} cities')
 
-    overlay_html = _build_scope_toggle()
+    overlay_html = _build_scope_toggle(scope_traces, scope_layouts, scope_bboxes)
+
+    # World map specifically wants its plot div to fill the iframe edge-to-
+    # edge — there's no axis chrome to reserve space for, and at non-world
+    # scopes the geolayer hugs the data so closely that any title bar
+    # eating top pixels is wasted real estate. Override the shared scaffold
+    # so the plot extends to top:0, and restyle the title as a floating
+    # inset box (mirroring the scope-toggle's chip styling) so it stays
+    # legible over whatever geography it sits on top of.
+    inset_css = """
+.plotly-graph-div, #plot-container, .js-plotly-plot {
+  top: 0 !important;
+}
+.rp-title-bar {
+  position: fixed !important;
+  top: 14px !important;
+  left: 20px !important;
+  right: auto !important;
+  height: auto !important;
+  background: rgba(26,26,26,0.92) !important;
+  border: 1px solid #444 !important;
+  border-radius: 6px !important;
+  padding: 8px 14px 6px !important;
+  z-index: 1000 !important;
+}
+"""
 
     out_path = os.path.join(args.out_dir, 'world_map.html')
     render_plot(
@@ -199,6 +434,7 @@ def main():
         title='World map',
         subtitle=f'{total_miles:,.0f} mi across {total_cities} cities',
         overlay_html=overlay_html,
+        extra_head_css=inset_css,
         plotly_config={
             'scrollZoom': False,
             'displayModeBar': False,
@@ -207,21 +443,24 @@ def main():
     print(f'wrote {out_path}')
 
 
-def _build_scope_toggle() -> str:
-    """Top-right toggle that swaps geo.scope between world / NA / Europe.
+def _build_scope_toggle(scope_traces: dict, scope_layouts: dict,
+                        scope_bboxes: dict) -> str:
+    """Top-right toggle that swaps geo.scope between world / NA / Europe / PNW.
 
     This toolbar is the **only** interaction the plot supports — drag-pan
     and scroll-zoom are disabled in the layout/config (see ``main``), so
     every visible state change goes through here.
 
-    Each click does a wholesale ``layout.geo`` replacement (via
-    Plotly.react) rather than a ``Plotly.relayout`` patch, because
-    relayout deep-merges and leaves stale center/scale/rotation/axis-range
-    values from the previous scope — which is what produced the "Europe
-    renders blank" symptom and the glitchy switching.
+    Every scope has its lonaxis/lataxis range computed in JS so the
+    natural-earth-projected aspect of (lon range × lat range) matches
+    the plot-div aspect ratio. Plotly's geolayer SVG sizes itself by
+    fitting that projected box into the div; matching aspects means the
+    geolayer rect equals the div rect (no internal letterbox). The same
+    recompute fires on window resize so the geolayer stays div-matched
+    as the user resizes. World follows the same path — it just happens
+    to need the lat-clamp + lon-expand fallback because its data is
+    enormously wider than tall.
     """
-    scope_geos = {sid: _scope_geo(sid) for sid, *_ in SCOPES}
-
     css = """
 <style>
 #scope-toggle {
@@ -246,38 +485,214 @@ def _build_scope_toggle() -> str:
 </style>
 """
     btn_html = '\n'.join(
-        f'  <button class="st-btn{" active" if sid == DEFAULT_SCOPE else ""}" '
-        f'data-scope="{sid}">{label}</button>'
-        for sid, label, *_ in SCOPES
+        f'  <button class="st-btn{" active" if s["id"] == DEFAULT_SCOPE else ""}" '
+        f'data-scope="{s["id"]}">{s["label"]}</button>'
+        for s in SCOPES
     )
 
-    payload = json.dumps(scope_geos, separators=(',', ':'))
+    lat_clamps = {s['id']: s.get('lat_clamp', [-85, 85]) for s in SCOPES}
+    payload = json.dumps({
+        'traces': scope_traces,
+        'layouts': scope_layouts,
+        'bboxes': scope_bboxes,
+        'latClamps': lat_clamps,
+        'defaultScope': DEFAULT_SCOPE,
+    }, separators=(',', ':'))
     js = f"""
 <script>
 (function () {{
-  var SCOPE_GEOS = {payload};
+  var DATA = {payload};
+  var SCOPE_TRACES  = DATA.traces;
+  var SCOPE_LAYOUTS = DATA.layouts;
+  var SCOPE_BBOXES  = DATA.bboxes;
+  var LAT_CLAMPS    = DATA.latClamps;
+  var currentScope  = DATA.defaultScope;
+
   function pdiv() {{ return document.querySelector('.plotly-graph-div'); }}
   var btns = document.querySelectorAll('#scope-toggle .st-btn');
 
-  function applyScope(scope) {{
-    var gd = pdiv();
-    if (!gd || !SCOPE_GEOS[scope]) return;
-    btns.forEach(function (b) {{
-      b.classList.toggle('active', b.getAttribute('data-scope') === scope);
-    }});
-    // Build a layout copy with the geo block fully replaced. Plotly.react
-    // diffs and re-renders without retaining any of the previous scope's
-    // projection state.
-    var layout = Object.assign({{}}, gd.layout);
-    layout.geo = SCOPE_GEOS[scope];
-    Plotly.react(gd, gd.data, layout);
+  // d3-geo natural-earth1 polynomials. f = dx/dlon at latitude phi (radians).
+  // The geolayer's projected x extent for a lon/lat box is:
+  //   X = lon_span_rad × f(phi at the latitude in the box closest to the
+  //                       equator — that's where meridians are widest).
+  // The projected y extent is y(lat_max) - y(lat_min) where y is the
+  // natural-earth lat polynomial. The geolayer's pixel aspect = X / Y.
+  function ne1F(latDeg) {{
+    var phi = latDeg * Math.PI / 180;
+    var p2 = phi * phi, p4 = p2 * p2, p10 = p4 * p4 * p2, p12 = p10 * p2;
+    return 0.870700 - 0.131979 * p2 - 0.013791 * p4
+         + 0.003971 * p10 - 0.001529 * p12;
+  }}
+  function ne1Y(latDeg) {{
+    var phi = latDeg * Math.PI / 180;
+    var p2 = phi * phi, p4 = p2 * p2, p6 = p4 * p2, p8 = p4 * p4, p10 = p8 * p2;
+    var g = 1.007226 + 0.015085 * p2 - 0.044475 * p6
+          + 0.028874 * p8 - 0.005916 * p10;
+    return phi * g;
+  }}
+  // d/dphi of ne1Y at latitude phi (radians). Used to invert ne1Y to
+  // first order when expanding the lat range to match div aspect.
+  function ne1DyDphi(latDeg) {{
+    var phi = latDeg * Math.PI / 180;
+    var p2 = phi * phi, p4 = p2 * p2, p6 = p4 * p2, p8 = p4 * p4, p10 = p8 * p2;
+    return 1.007226 + 0.045255 * p2 - 0.311325 * p6
+         + 0.259866 * p8 - 0.065076 * p10;
+  }}
+  function widestLat(lo, hi) {{
+    if (lo <= 0 && hi >= 0) return 0;
+    return Math.abs(lo) < Math.abs(hi) ? lo : hi;
   }}
 
-  btns.forEach(function (btn) {{
-    btn.addEventListener('click', function () {{
-      applyScope(btn.getAttribute('data-scope'));
+  // Compute lon/lat range whose natural-earth-projected aspect == div
+  // aspect, expanding from the cities' padded bbox so all data stays
+  // visible. Whichever dim has shorter projected extent gets expanded.
+  function aspectFitRanges(bbox, divAspect, latClamp) {{
+    var LAT_LO = latClamp[0], LAT_HI = latClamp[1];
+    var lonMin = bbox.lon_min, lonMax = bbox.lon_max;
+    var latMin = bbox.lat_min, latMax = bbox.lat_max;
+    var f = ne1F(widestLat(latMin, latMax));
+    var xRad = (lonMax - lonMin) * Math.PI / 180 * f;
+    var yRad = ne1Y(latMax) - ne1Y(latMin);
+    var dataAspect = xRad / yRad;
+    if (divAspect >= dataAspect) {{
+      // Div is wider than data — expand lon symmetrically around lon_c.
+      // Cap at 360° (full globe) so we never request more than a wraparound.
+      var newXRad = yRad * divAspect;
+      var newLonSpan = Math.min(360, newXRad / f * 180 / Math.PI);
+      var lonC = (lonMin + lonMax) / 2;
+      lonMin = lonC - newLonSpan / 2;
+      lonMax = lonC + newLonSpan / 2;
+    }} else {{
+      // Div is taller than data — expand lat symmetrically around lat_c.
+      // ne1Y is non-linear in phi, so the linear approximation
+      //   L ≈ newYRad × 180/π / dy/dphi(lat_c)
+      // is the seed; refine with a few Newton steps for the cases where
+      // the lat range is wide enough that dy/dphi varies meaningfully
+      // across it (e.g. NA spans ~50° of latitude).
+      // Cap newLatSpan to 170° (= range [-85, 85]) so Newton never
+      // evaluates the polynomial past phi=π/2 — past the pole the
+      // polynomial misbehaves and dy/dphi flips sign, making Newton
+      // diverge and producing a collapsed geolayer at narrow viewports.
+      var latC = (latMin + latMax) / 2;
+      var newYRad = xRad / divAspect;
+      var newLatSpan = (newYRad / ne1DyDphi(latC)) * 180 / Math.PI;
+      var maxSpan = LAT_HI - LAT_LO;
+      newLatSpan = Math.min(newLatSpan, maxSpan);
+      for (var iter = 0; iter < 5; iter++) {{
+        var lo = Math.max(LAT_LO, latC - newLatSpan / 2);
+        var hi = Math.min(LAT_HI, latC + newLatSpan / 2);
+        var actualY = ne1Y(hi) - ne1Y(lo);
+        var err = actualY - newYRad;
+        if (Math.abs(err) < 1e-7) break;
+        var deriv = (ne1DyDphi(hi) + ne1DyDphi(lo)) / 2 * Math.PI / 180;
+        if (deriv <= 0) break;  // safety
+        newLatSpan -= err / deriv;
+        newLatSpan = Math.min(newLatSpan, maxSpan);
+      }}
+      latMin = latC - newLatSpan / 2;
+      latMax = latC + newLatSpan / 2;
+      // Final clamp + slide to keep within latClamp without losing the
+      // requested span if possible.
+      if (latMax > LAT_HI) {{ latMin -= (latMax - LAT_HI); latMax = LAT_HI; }}
+      if (latMin < LAT_LO) {{ latMax += (LAT_LO - latMin); latMin = LAT_LO; }}
+      latMin = Math.max(LAT_LO, latMin);
+      latMax = Math.min(LAT_HI, latMax);
+
+      // Secondary lon expansion: when lat hit the [-85, 85] clamp before
+      // it could match div_aspect on its own (always true for world,
+      // which is enormously wider than tall), the geolayer's projected
+      // aspect is now smaller than div_aspect — i.e. the data is too
+      // narrow horizontally for the div. Expand lon to compensate. After
+      // the lat range changed, widestLat may have moved (e.g. a cross-
+      // equator range puts widest at 0), so recompute f.
+      var nowF = ne1F(widestLat(latMin, latMax));
+      var nowY = ne1Y(latMax) - ne1Y(latMin);
+      var nowX = (lonMax - lonMin) * Math.PI / 180 * nowF;
+      if (nowX / nowY < divAspect) {{
+        var targetX = nowY * divAspect;
+        var span = Math.min(360, targetX / nowF * 180 / Math.PI);
+        var lonC2 = (lonMin + lonMax) / 2;
+        lonMin = lonC2 - span / 2;
+        lonMax = lonC2 + span / 2;
+      }}
+    }}
+    return {{lon: [lonMin, lonMax], lat: [latMin, latMax]}};
+  }}
+
+  function divAspect(gd) {{
+    var r = gd.getBoundingClientRect();
+    return (r.width > 0 && r.height > 0) ? r.width / r.height : 1;
+  }}
+
+  function buildLayoutFor(scopeId, gd) {{
+    var geo = JSON.parse(JSON.stringify(SCOPE_LAYOUTS[scopeId]));
+    var bbox = SCOPE_BBOXES[scopeId];
+    if (bbox) {{
+      var ranges = aspectFitRanges(bbox, divAspect(gd), LAT_CLAMPS[scopeId]);
+      geo.lonaxis = {{range: ranges.lon}};
+      geo.lataxis = {{range: ranges.lat}};
+      // Re-center the projection on the data's lon_c. Plotly's regional
+      // scopes default to a fixed rotation (e.g. NA → -100°), and when
+      // the data isn't on that meridian the natural-earth meridians
+      // curve asymmetrically across the box, throwing the projected
+      // aspect off by a few percent. Centering rotation on lon_c makes
+      // the projected box symmetric so X_span = lon_span × f(widest_lat)
+      // holds exactly.
+      var lonC = (ranges.lon[0] + ranges.lon[1]) / 2;
+      geo.projection = Object.assign({{}}, geo.projection || {{}},
+                                     {{rotation: {{lon: lonC, lat: 0, roll: 0}}}});
+    }}
+    return Object.assign({{}}, gd.layout, {{geo: geo}});
+  }}
+
+  function applyScope(scopeId) {{
+    var gd = pdiv();
+    if (!gd || !SCOPE_TRACES[scopeId] || !SCOPE_LAYOUTS[scopeId]) return;
+    currentScope = scopeId;
+    btns.forEach(function (b) {{
+      b.classList.toggle('active', b.getAttribute('data-scope') === scopeId);
     }});
-  }});
+    var traces = JSON.parse(JSON.stringify(SCOPE_TRACES[scopeId]));
+    Plotly.react(gd, traces, buildLayoutFor(scopeId, gd));
+  }}
+
+  function refit() {{
+    var gd = pdiv();
+    if (!gd || !SCOPE_BBOXES[currentScope]) return;
+    var ranges = aspectFitRanges(SCOPE_BBOXES[currentScope], divAspect(gd),
+                                 LAT_CLAMPS[currentScope]);
+    var lonC = (ranges.lon[0] + ranges.lon[1]) / 2;
+    Plotly.relayout(gd, {{
+      'geo.lonaxis.range': ranges.lon,
+      'geo.lataxis.range': ranges.lat,
+      'geo.projection.rotation.lon': lonC,
+    }});
+  }}
+
+  function bind() {{
+    var gd = pdiv();
+    if (!gd) {{ setTimeout(bind, 50); return; }}
+    btns.forEach(function (btn) {{
+      btn.addEventListener('click', function () {{
+        applyScope(btn.getAttribute('data-scope'));
+      }});
+    }});
+    var resizeTimer = null;
+    window.addEventListener('resize', function () {{
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(refit, 100);
+    }});
+    // First-paint refit: the figure shipped with the default scope's
+    // static range (world). If default were ever a non-world scope this
+    // would seed the aspect-fit; harmless no-op for world.
+    if (SCOPE_BBOXES[currentScope]) refit();
+  }}
+
+  if (document.readyState === 'loading') {{
+    document.addEventListener('DOMContentLoaded', bind);
+  }} else {{
+    bind();
+  }}
 }})();
 </script>
 """
