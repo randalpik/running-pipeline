@@ -65,6 +65,7 @@ def long_run_hover(r):
     parts = [
         f"<b>{title}</b>",
         f"{r['miles']:.1f} mi @ {sec_to_mss(pace_sec)}/mi",
+        f"<b>Temp:</b> {r['temp_c']:.0f}°C",
     ]
     return "<br>".join(parts)
 

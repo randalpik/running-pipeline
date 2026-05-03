@@ -128,7 +128,7 @@ def render_plot(
     # has every HTML reference it via a relative <script src>. All six plots
     # write to output/ so they share a single ~3.5MB bundle (cached by the
     # browser on first iframe load), instead of inlining it six times.
-    config = {'responsive': True}
+    config = {'responsive': True, 'displayModeBar': False}
     if plotly_config:
         config.update(plotly_config)
     fig.write_html(

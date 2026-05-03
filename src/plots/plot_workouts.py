@@ -81,7 +81,8 @@ def workout_hover(r):
     p5k_disp = r.get('p5k_display_min', r['p5k_min'])
     p5k_line = (f"<b>5K-equiv:</b> {fmt_min(p5k_disp)}/mi   "
                 f"<b>CS 5K:</b> {fmt_min(r['p5k_cs_min'])}/mi")
-    parts = [f"<b>{title}</b>{xc_note}", body, p5k_line]
+    temp_line = f"<b>Temp:</b> {r['temp_c']:.0f}°C"
+    parts = [f"<b>{title}</b>{xc_note}", body, temp_line, p5k_line]
     return "<br>".join(parts)
 
 
@@ -95,6 +96,7 @@ def hill_cont_hover(r):
         f"<b>{title}</b>",
         f"{nreps} {loops_word}, {int(r['session_min'])} min total"
         + (f", {ft_gained} ft gained" if ft_gained else ''),
+        f"<b>Temp:</b> {r['temp_c']:.0f}°C",
         f"<b>Actual pace:</b> {sec_to_mss(r['actual_pace_s'])}/mi",
         f"<b>5K-equiv:</b> {fmt_min(r['p5k_min_elev_corr'])}/mi   "
         f"<b>CS 5K:</b> {fmt_min(r['p5k_cs_min'])}/mi",
@@ -118,7 +120,8 @@ def hill_rep_hover(r):
     elev = r.get('total_elev_ft')
     if pd.notna(elev):
         body += f", {int(round(float(elev)))} ft gained"
-    parts = [f"<b>{title}</b>", body]
+    temp_line = f"<b>Temp:</b> {r['temp_c']:.0f}°C"
+    parts = [f"<b>{title}</b>", body, temp_line]
     return "<br>".join(parts)
 
 

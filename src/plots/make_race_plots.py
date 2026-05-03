@@ -84,7 +84,7 @@ GROUPS = [
     ('400',      400),
     ('800',      800),
     ('Mile',     1609.344),
-    ('2 Mile',   3218.688),
+    ('3000m',    3000),
     ('5K',       5000),
     ('10K',      10000),
     ('HM',       21097.5),
@@ -101,8 +101,8 @@ TOLERANCE = 0.08  # 8% of target on either side
 SUBPLOT_DISPLAY = {
     '400':      lambda n: f'400m (n={n})',
     '800':      lambda n: f'800m (n={n})',
-    'Mile':     lambda n: f'1500m (including Mile, n={n})',
-    '2 Mile':   lambda n: f'3000m (including 2 Mile, n={n})',
+    'Mile':     lambda n: f'Mile (including 1500m, n={n})',
+    '3000m':   lambda n: f'3000m (including 2 Mile, n={n})',
     '5K':       lambda n: f'5K (n={n})',
     '10K':      lambda n: f'10K (n={n})',
     'HM':       lambda n: f'Half marathon (n={n})',
@@ -117,7 +117,7 @@ PANEL_TICK_SEC = {
     '400':       1,
     '800':       5,
     'Mile':     10,
-    '2 Mile':   60,
+    '3000m':   60,
     '5K':      120,
     '10K':      30,
     'HM':      300,
@@ -959,12 +959,14 @@ function buildTooltip(day, isSnap, pointHtml) {
     return y + '-' + m + '-' + dd + ' (' + DOW[dt.getUTCDay()] + ')';
   }
 
+  var trendLabel = new Date(day) >= new Date('2013-05-26').getTime() / 86400000 ? 'CS-derived pace' : 'Estimated pace';
+
   var html = '';
   html += '<div class="tt-date">' + dateLabel(day) + '</div>';
 
   // Section 1: trend info — CS-derived 5K pace at this date.
   html += '<div class="tt-section">';
-  html += '<div class="tt-row"><span>CS-derived pace</span><b>' + paceMSS(P.cs_pace[idx]) + '/mi</b></div>';
+  html += '<div class="tt-row"><span>' + trendLabel + '</span><b>' + paceMSS(P.cs_pace[idx]) + '/mi</b></div>';
   html += '</div>';
 
   // Section 2: race details. Smooth = nearest race within window.
@@ -1351,7 +1353,6 @@ function buildTooltip(day, isSnap, pointHtml, ctx) {
 
   // Section 1: per-panel CS prediction at the panel's anchor distance.
   html += '<div class="tt-section">';
-  html += '<div class="tt-section-title">' + panel.name + '</div>';
   html += '<div class="tt-row"><span>CS-predicted ' + distLabel(panel.anchor_m) + '</span><b>'
         + timeFmt(panel.cs_pred_sec[idx]) + '</b></div>';
   html += '</div>';

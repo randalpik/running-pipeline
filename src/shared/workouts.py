@@ -144,7 +144,7 @@ def project_workouts(cs, epoch):
     w = pd.read_csv(WORKOUTS_PATH, parse_dates=['date'])
     daily = pd.read_csv(DAILY_PATH, parse_dates=['date'])
     w = w.merge(daily[['date', 'workout_raw', 'conditions', 'quality_distance_m',
-                       'display_name', 'city_state']],
+                       'display_name', 'city_state', 'temp_c']],
                 on='date', how='left')
 
     # Tempo @ rep_dist>=1600 with no explicit Nx -> interval (catches 2024-05-04).
