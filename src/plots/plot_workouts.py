@@ -65,7 +65,7 @@ def _y_safe(arr):
 
 def workout_hover(r):
     cat = r['category']
-    title = CAT_LABEL.get(cat, cat)
+    title = f"<b>{CAT_LABEL.get(cat, cat)}</b>"
     title += _route_paren(r.get('display_name'), r.get('city_state'))
     xc_note = ' <i style="color:#9cf">[XC-corrected -6%]</i>' if r.get('xc_corrected') else ''
     rep_count = int(r['rep_count'])
@@ -82,18 +82,18 @@ def workout_hover(r):
     p5k_line = (f"<b>5K-equiv:</b> {fmt_min(p5k_disp)}/mi   "
                 f"<b>CS 5K:</b> {fmt_min(r['p5k_cs_min'])}/mi")
     temp_line = f"<b>Temp:</b> {r['temp_c']:.0f}°C"
-    parts = [f"<b>{title}</b>{xc_note}", body, temp_line, p5k_line]
+    parts = [f"{title}{xc_note}", body, temp_line, p5k_line]
     return "<br>".join(parts)
 
 
 def hill_cont_hover(r):
-    title = (f"Continuous hills"
+    title = (f"<b>Continuous hills</b>"
              f"{_route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}")
     nreps = int(r['nreps'])
     loops_word = 'loop' if nreps == 1 else 'loops'
     ft_gained = int(round(float(r.get('ft_gained') or 0)))
     parts = [
-        f"<b>{title}</b>",
+        title,
         f"{nreps} {loops_word}, {int(r['session_min'])} min total"
         + (f", {ft_gained} ft gained" if ft_gained else ''),
         f"<b>Temp:</b> {r['temp_c']:.0f}°C",
@@ -105,7 +105,7 @@ def hill_cont_hover(r):
 
 
 def hill_rep_hover(r):
-    title = (f"{CAT_LABEL['hill_rep']}"
+    title = (f"<b>{CAT_LABEL['hill_rep']}</b>"
              f"{_route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}")
     rep_count = int(r['rep_count'])
     reps_word = 'rep' if rep_count == 1 else 'reps'
@@ -121,7 +121,7 @@ def hill_rep_hover(r):
     if pd.notna(elev):
         body += f", {int(round(float(elev)))} ft gained"
     temp_line = f"<b>Temp:</b> {r['temp_c']:.0f}°C"
-    parts = [f"<b>{title}</b>", body, temp_line]
+    parts = [title, body, temp_line]
     return "<br>".join(parts)
 
 
