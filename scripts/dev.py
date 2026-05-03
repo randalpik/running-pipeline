@@ -33,6 +33,8 @@ import time
 from pathlib import Path
 
 from livereload import Server
+from livereload.handlers import LiveReloadHandler
+from tornado import ioloop
 
 REPO_ROOT  = Path(__file__).resolve().parent.parent
 PLOTS_DIR  = REPO_ROOT / "src" / "plots"
@@ -298,6 +300,10 @@ _jobs_lock = threading.Lock()
 _jobs_cond = threading.Condition(_jobs_lock)
 _pending = None  # None | _REBUILD_ALL | frozenset[Path]
 
+# Captured in main() before server.serve() so the worker thread can schedule
+# browser reloads onto the Tornado IOLoop running on the main thread.
+_ioloop = None
+
 
 def _merge(current, incoming):
     if current is None:
@@ -352,10 +358,19 @@ def _worker():
             while _pending is None:
                 _jobs_cond.wait()
             job, _pending = _pending, None
-        if job == _REBUILD_ALL:
-            _run_all()
-        else:
-            _run_subset(job)
+        try:
+            if job == _REBUILD_ALL:
+                _run_all()
+            else:
+                _run_subset(job)
+        finally:
+            with _jobs_cond:
+                drained = _pending is None
+            if drained and _ioloop is not None:
+                try:
+                    _ioloop.add_callback(LiveReloadHandler.reload_waiters)
+                except RuntimeError:
+                    pass  # IOLoop closed during shutdown
 
 
 # ----- Dependency map -------------------------------------------------------
@@ -410,36 +425,58 @@ def main():
         fn.name = label  # surfaces in livereload's "Running task: <name>" log
         return fn
 
+    # Suppress livereload's auto-reload for this watch: run the callback, then
+    # null out watcher.filepath so poll_tasks() early-returns at handlers.py:70
+    # without sending a reload. We drive reload manually from the rebuild
+    # worker once the queue drains, so the browser refreshes exactly once
+    # AFTER the new HTML is on disk — never against stale content, never
+    # throttled by livereload's 3-second global rate limit.
+    #
+    # `wrapped` is intentionally zero-arg: livereload inspects the callback
+    # signature (watcher.py:106) and passes the list of changed files to any
+    # callback that declares parameters. None of our callbacks use that list,
+    # and write_index() in particular takes zero args.
+    def _silent(fn):
+        def wrapped():
+            try:
+                return fn()
+            finally:
+                if server.watcher is not None:
+                    server.watcher.filepath = None
+        wrapped.name = getattr(fn, 'name',
+                               getattr(fn, '__name__', 'silent'))
+        return wrapped
+
     # Per-plot watches: editing src/plots/foo.py reruns foo.py only.
     for script in plot_scripts:
         rel = str(script.relative_to(REPO_ROOT))
-        server.watch(rel, _named(
-            f"plot:{script.stem}", lambda s=script: enqueue(frozenset({s}))))
+        server.watch(rel, _silent(_named(
+            f"plot:{script.stem}", lambda s=script: enqueue(frozenset({s})))))
 
     # Per-shared-module watches: rerun only the plots that import this module.
     # Watch each shared file directly (not the glob) so the per-file callback
     # carries the right dependent set.
     for shared_path, dependents in dep_map.items():
         rel = str(shared_path.relative_to(REPO_ROOT))
-        server.watch(rel, _named(
+        server.watch(rel, _silent(_named(
             f"shared:{shared_path.stem}",
-            lambda d=dependents: enqueue(d)))
+            lambda d=dependents: enqueue(d))))
 
     # Any other src/shared/*.py file (no known importers) falls back to
     # rebuild-all — safer than silently doing nothing.
     for p in untracked:
         rel = str(p.relative_to(REPO_ROOT))
-        server.watch(rel, _named(
+        server.watch(rel, _silent(_named(
             f"shared-untracked:{p.stem}",
-            lambda: enqueue(_REBUILD_ALL)))
+            lambda: enqueue(_REBUILD_ALL))))
 
     # These genuinely affect every plot. Watch the directory rather than a
     # `src/plotting/**/*` glob: pyinotify's add_watch uses non-recursive glob,
     # so `**` is treated as a literal directory name and the per-file inotify
     # watches for src/plotting/*.py are never created. A directory path with
     # rec=True (which pyinotify defaults to) avoids that bug.
-    server.watch("src/plotting", _named(
-        "plotting:*", lambda: enqueue(_REBUILD_ALL)))
+    server.watch("src/plotting", _silent(_named(
+        "plotting:*", lambda: enqueue(_REBUILD_ALL))))
 
     # data/*.csv changes rerun all plots — except plot-derived CSVs that some
     # plot scripts emit into data/ (training_quality_track.csv,
@@ -447,12 +484,17 @@ def main():
     # loop: rebuild writes the CSV → CSV watch fires → rebuild again.
     server.watch(
         "data/*.csv",
-        _named("data:*.csv", lambda: enqueue(_REBUILD_ALL)),
+        _silent(_named("data:*.csv", lambda: enqueue(_REBUILD_ALL))),
         ignore=lambda p: os.path.basename(p).startswith("training_quality_"),
     )
 
     # Index regenerates whenever a plot HTML appears or disappears.
-    server.watch("output/*.html", write_index)
+    server.watch("output/*.html", _silent(write_index))
+
+    # Capture the main-thread IOLoop so the rebuild worker can schedule
+    # reload_waiters onto it. Server.serve() will use the same singleton.
+    global _ioloop
+    _ioloop = ioloop.IOLoop.current()
 
     print(f"Serving {OUTPUT_DIR} at http://localhost:{PORT}/")
     print(f"Watching {len(plot_scripts)} plot scripts + "

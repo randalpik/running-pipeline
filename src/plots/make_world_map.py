@@ -43,7 +43,7 @@ BG = '#1a1a1a'
 # glance — important on zoomed-in regional scopes where the city points
 # alone don't carry the geographic context.
 LAND_COLOR = "#292929"
-LINE_COLOR = '#ffffff'
+LINE_COLOR = "#ffffff"
 COASTLINE_WIDTH = 1.2
 BORDER_WIDTH    = 0.5
 # Subunits (US states / Canadian provinces) ship in plotly's regional topojsons
