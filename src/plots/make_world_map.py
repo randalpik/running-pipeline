@@ -241,7 +241,7 @@ def _build_scope_toggle() -> str:
 }
 #scope-toggle .st-btn:hover { color: #fff; background: #333; }
 #scope-toggle .st-btn.active {
-  background: #4aa3ff; color: #fff; font-weight: 500;
+  background: #93f; color: #fff; font-weight: 500;
 }
 </style>
 """

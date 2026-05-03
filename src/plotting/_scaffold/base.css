@@ -18,6 +18,9 @@ html, body {
 :root {
   --rp-title-h: 60px;
 }
+input[type="checkbox"]:checked {
+  accent-color: #93f !important;
+}
 .rp-title-bar {
   position: absolute;
   top: 0; left: 0; right: 0;

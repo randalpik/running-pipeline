@@ -616,7 +616,7 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
 }
 #geo-toggle .gt-btn:hover { color: #fff; background: #333; }
 #geo-toggle .gt-btn.active {
-  background: #4aa3ff; color: #fff; font-weight: 500;
+  background: #93f; color: #fff; font-weight: 500;
 }
 
 #geo-legend {

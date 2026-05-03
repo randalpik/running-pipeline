@@ -123,7 +123,7 @@ def _shell_html(tabs):
   #tabbar .tab:hover {{ color: #eee; background: #1a1a1a; }}
   #tabbar .tab.active {{
     color: #fff;
-    border-bottom-color: #9cf;
+    border-bottom-color: #93f;
     background: #1a1a1a;
   }}
   #frame-wrap {{
