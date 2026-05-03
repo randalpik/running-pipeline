@@ -220,7 +220,7 @@ def workout_hover(r):
         body,
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
         f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
-        f"<b>Raw resid:</b> {r['raw_resid']:+.1f}s/mi   "
+        f"<b>Raw residual:</b> {r['raw_resid']:+.1f}s/mi   "
         f"<b>Corrected:</b> {r['resid']:+.1f}s/mi",
     ]
     return "<br>".join(p for p in parts if p)
@@ -234,8 +234,8 @@ def long_run_hover(r):
         f"<b>Pace:</b> {sec_to_mss(r['recovery_pace_sec_per_mi'])}/mi",
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
         f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
-        f"<b>Model offset:</b> {r['model_offset']:+.1f}s/mi   "
-        f"<b>Corrected residual:</b> {r['corrected']:+.1f}s/mi",
+        f"<b>Raw residual:</b> {r['raw_resid']:+.1f}s/mi   "
+        f"<b>Corrected:</b> {r['corrected']:+.1f}s/mi",
     ]
     return "<br>".join(p for p in parts if p)
 
@@ -251,7 +251,7 @@ def hill_hover(r):
         f"<b>Actual pace:</b> {sec_to_mss(r['actual_pace_s'])}/mi",
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
         f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
-        f"<b>Raw resid:</b> {r['raw_resid']:+.1f}s/mi   "
+        f"<b>Raw residual:</b> {r['raw_resid']:+.1f}s/mi   "
         f"<b>Corrected:</b> {r['resid']:+.1f}s/mi",
     ]
     return "<br>".join(p for p in parts if p)

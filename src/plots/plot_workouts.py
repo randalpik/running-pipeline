@@ -86,7 +86,7 @@ def workout_hover(r):
 
 
 def hill_cont_hover(r):
-    title = (f"{CAT_LABEL['hill_cont']}"
+    title = (f"Continuous hills"
              f"{_route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}")
     nreps = int(r['nreps'])
     loops_word = 'loop' if nreps == 1 else 'loops'
