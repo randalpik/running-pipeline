@@ -1,6 +1,6 @@
 """Snapshot file format: reader, writer, and converters from other formats.
 
-A snapshot concatenates six CSV tables into one file, separated by
+A snapshot concatenates seven CSV tables into one file, separated by
 `# section: NAME [key=value]*` marker lines. Each section below its marker
 is a well-formed CSV with a header row.
 
@@ -15,6 +15,14 @@ Sections:
                           where Nominatim's lookup is wrong; applied on
                           top of the city_coords.csv cache so the override
                           is reproducible from source
+  historical              city_state -> (min_hist, max_hist [, log_location])
+                          date bounds for cities Max ran in. Two roles:
+                          (a) surface remembered-but-unlogged cities on
+                          the world map (e.g. Sapporo, JP); (b) override
+                          city_state and (optionally) log_location on
+                          non-race daily rows whose dates fall in the
+                          range — replaces the legacy 2016-17
+                          infer_2016_2017_location code path.
 
 Missing sections return as empty DataFrames on read. Sections can appear in
 any order.
@@ -177,7 +185,7 @@ def _df_to_rows(df, columns):
 
 def write_snapshot(path, *, current_year, current_log_df,
                    changes_df, additions_df, locations_df, hills_df=None,
-                   coordinates_df=None):
+                   coordinates_df=None, historical_df=None):
     """Write a snapshot file at `path`."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     buf = io.StringIO()
@@ -226,6 +234,16 @@ def write_snapshot(path, *, current_year, current_log_df,
     coordinates_cols = ["city_state", "latitude", "longitude"]
     _write_section(buf, "coordinates", coordinates_cols,
                    _df_to_rows(coordinates_df, coordinates_cols))
+
+    # historical: city_state -> (min_hist, max_hist [, log_location]) for
+    # remembered-but-unlogged cities AND for date-range-driven overrides
+    # of non-race daily rows. Empty section keeps the on-disk shape stable.
+    # log_location is optional — when set, the daily-row override also
+    # writes it onto `location` so route-bin signal (e.g. 'nashville',
+    # 'education hill') survives for recovery-analysis groupings.
+    historical_cols = ["city_state", "min_hist", "max_hist", "log_location"]
+    _write_section(buf, "historical", historical_cols,
+                   _df_to_rows(historical_df, historical_cols))
 
     with open(path, "w") as f:
         f.write(buf.getvalue())
@@ -310,16 +328,17 @@ def current_log_df_from_markdown(md_path, year):
 
 def adjustments_dfs_from_markdown(md_path):
     """Parse a markdown adjustments dump into (changes, additions, locations,
-    hills, coordinates).
+    hills, coordinates, historical).
 
-    The hills and coordinates tables are optional for backward compatibility
-    with older dumps. When absent they're returned as empty DataFrames.
+    The hills, coordinates, and historical tables are optional for backward
+    compatibility with older dumps. When absent they're returned as empty
+    DataFrames.
     """
     with open(md_path) as f:
         md = f.read()
     tables = list(_split_md_tables(md))
-    if len(tables) < 3 or len(tables) > 5:
-        raise ValueError(f"expected 3-5 adjustment tables, got {len(tables)}")
+    if len(tables) < 3 or len(tables) > 6:
+        raise ValueError(f"expected 3-6 adjustment tables, got {len(tables)}")
 
     def _classify(t):
         hdr = "|".join((_unescape_md(h) or "").lower() for h in t[0])
@@ -331,6 +350,8 @@ def adjustments_dfs_from_markdown(md_path):
             return "locations"
         if "abbrev" in hdr:
             return "hills"
+        if "min_hist" in hdr or "max_hist" in hdr:
+            return "historical"
         if "latitude" in hdr or "longitude" in hdr:
             return "coordinates"
         return None
@@ -354,18 +375,21 @@ def adjustments_dfs_from_markdown(md_path):
     hills_df = _to_df(by_name["hills"]) if "hills" in by_name else pd.DataFrame()
     coords_df = (_to_df(by_name["coordinates"])
                  if "coordinates" in by_name else pd.DataFrame())
+    historical_df = (_to_df(by_name["historical"])
+                     if "historical" in by_name else pd.DataFrame())
     return (_to_df(by_name["changes"]),
             _to_df(by_name["additions"]),
             _to_df(by_name["locations"]),
             hills_df,
-            coords_df)
+            coords_df,
+            historical_df)
 
 
 def snapshot_from_markdown(log_md_path, log_year, adj_md_path, out_path):
     """High-level: markdown files → snapshot CSV at `out_path`."""
     log_df = current_log_df_from_markdown(log_md_path, log_year)
-    changes_df, additions_df, locations_df, hills_df, coordinates_df = \
-        adjustments_dfs_from_markdown(adj_md_path)
+    (changes_df, additions_df, locations_df, hills_df, coordinates_df,
+     historical_df) = adjustments_dfs_from_markdown(adj_md_path)
     size = write_snapshot(out_path,
                           current_year=log_year,
                           current_log_df=log_df,
@@ -373,11 +397,13 @@ def snapshot_from_markdown(log_md_path, log_year, adj_md_path, out_path):
                           additions_df=additions_df,
                           locations_df=locations_df,
                           hills_df=hills_df,
-                          coordinates_df=coordinates_df)
+                          coordinates_df=coordinates_df,
+                          historical_df=historical_df)
     print(f"[snapshot] wrote {out_path}  ({size} bytes)  "
           f"log={len(log_df)}, changes={len(changes_df)}, "
           f"additions={len(additions_df)}, locations={len(locations_df)}, "
-          f"hills={len(hills_df)}, coordinates={len(coordinates_df)}")
+          f"hills={len(hills_df)}, coordinates={len(coordinates_df)}, "
+          f"historical={len(historical_df)}")
 
 
 # ---------- xlsx → snapshot ----------
@@ -449,10 +475,10 @@ def current_log_df_from_xlsx(xlsx_path, year, sheet_name=None):
 
 def adjustments_dfs_from_xlsx(xlsx_path):
     """Parse the adjustments xlsx into (changes, additions, locations, hills,
-    coordinates) DataFrames.
+    coordinates, historical) DataFrames.
 
-    The hills and coordinates sheets are optional; absence yields an empty
-    DataFrame.
+    The hills, coordinates, and historical sheets are optional; absence
+    yields an empty DataFrame.
     """
     import openpyxl
     wb = openpyxl.load_workbook(xlsx_path, data_only=True)
@@ -470,13 +496,16 @@ def adjustments_dfs_from_xlsx(xlsx_path):
             rec = dict(zip(headers, r))
             if all(v in (None, "") for v in rec.values()):
                 continue
-            # Normalize date to ISO string for CSV consistency
-            if "date" in rec and rec["date"] not in (None, ""):
-                d = rec["date"]
-                if hasattr(d, "date") and not isinstance(d, date):
-                    rec["date"] = d.date().isoformat()
-                elif isinstance(d, date):
-                    rec["date"] = d.isoformat()
+            # Normalize date-like values to ISO string for CSV consistency.
+            # Applies to `date` (changes/additions) plus the historical
+            # date-bound columns.
+            for date_col in ("date", "min_hist", "max_hist"):
+                if date_col in rec and rec[date_col] not in (None, ""):
+                    d = rec[date_col]
+                    if hasattr(d, "date") and not isinstance(d, date):
+                        rec[date_col] = d.date().isoformat()
+                    elif isinstance(d, date):
+                        rec[date_col] = d.isoformat()
             data.append(rec)
         return pd.DataFrame(data, columns=expected_cols + [c for c in headers if c not in expected_cols])
 
@@ -487,14 +516,17 @@ def adjustments_dfs_from_xlsx(xlsx_path):
     hills = _sheet_to_df("hills", ["abbrev", "location"])
     coordinates = _sheet_to_df("coordinates",
                                ["city_state", "latitude", "longitude"])
-    return changes, additions, locations, hills, coordinates
+    historical = _sheet_to_df("historical",
+                              ["city_state", "min_hist", "max_hist",
+                               "log_location"])
+    return changes, additions, locations, hills, coordinates, historical
 
 
 def snapshot_from_xlsx(log_xlsx_path, log_year, adj_xlsx_path, out_path):
     """High-level: xlsx files → snapshot CSV at `out_path`."""
     log_df = current_log_df_from_xlsx(log_xlsx_path, log_year)
-    changes_df, additions_df, locations_df, hills_df, coordinates_df = \
-        adjustments_dfs_from_xlsx(adj_xlsx_path)
+    (changes_df, additions_df, locations_df, hills_df, coordinates_df,
+     historical_df) = adjustments_dfs_from_xlsx(adj_xlsx_path)
     size = write_snapshot(out_path,
                           current_year=log_year,
                           current_log_df=log_df,
@@ -502,11 +534,13 @@ def snapshot_from_xlsx(log_xlsx_path, log_year, adj_xlsx_path, out_path):
                           additions_df=additions_df,
                           locations_df=locations_df,
                           hills_df=hills_df,
-                          coordinates_df=coordinates_df)
+                          coordinates_df=coordinates_df,
+                          historical_df=historical_df)
     print(f"[snapshot] wrote {out_path}  ({size} bytes)  "
           f"log={len(log_df)}, changes={len(changes_df)}, "
           f"additions={len(additions_df)}, locations={len(locations_df)}, "
-          f"hills={len(hills_df)}, coordinates={len(coordinates_df)}")
+          f"hills={len(hills_df)}, coordinates={len(coordinates_df)}, "
+          f"historical={len(historical_df)}")
 
 
 # ---------- CLI ----------

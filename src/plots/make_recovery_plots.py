@@ -246,6 +246,9 @@ def main():
     print(f'Loading daily.csv from {args.daily}...')
     daily = pd.read_csv(args.daily, parse_dates=['date'])
     daily = daily.sort_values('date').reset_index(drop=True)
+    # Drop the pre-2016 race-addition stubs the world map uses; recovery
+    # plots stay anchored to the 2016+ logging era.
+    daily = daily[daily['date'] >= pd.Timestamp('2016-01-01')].reset_index(drop=True)
 
     print(f'Loading races.csv from {args.races}...')
     races = pd.read_csv(args.races, parse_dates=['date'])

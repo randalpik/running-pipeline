@@ -56,6 +56,8 @@ As of April 2026, zero-mile days are pruned and `is_rest` is dropped. Schema:
 
 `date, year, month, day_of_year, dow, miles, minutes, pace_sec_per_mi, temp_c, sleep_cycles, weather, conditions, wind, time_of_day, shoes, location, weight_lbs, surface, partners, workout_raw, run_type, recovery_pace_sec_per_mi, quality_distance_m, quality_pace_sec_per_mi, quality_segment_type, num_races, schema_year_era, source_file` + join cols `display_name, city_state, elev_per_mile, altitude, terrain_type`.
 
+Pre-2016 race additions also produce stub daily rows (`source_file=snapshot:additions`, mileage from `distance_m / 1609.344`) so cities Max only ever raced at — Maple Valley, Carnation 2008-2015 — surface on the world map. Plots that filter by date keep their 2016+ left bound; the world map is the only consumer that actually uses pre-2016 data.
+
 `races.csv` is the post-adjustment truth for race rows. `race_seq=1` rows back-propagate `city_state` and `surface` into the corresponding daily row.
 
 ## `build_dataset.py` pipeline order
@@ -69,10 +71,12 @@ load + combine
   → apply_autopop
   → surface refresh        (re-call surface_from_location after autopop)
   → join_location_metadata
+  → apply_historical       (city_state always; location only where blank)
   → race city_state/surface back-prop into daily race rows
+  → synthesize_daily_from_additions  (pre-2016 race-only daily stubs)
 ```
 
-Autopop runs **after** adjustments so event-normalization can match events that were set via the changes sheet. Adjustment-sourced surfaces are preserved during the surface refresh.
+Autopop runs **after** adjustments so event-normalization can match events that were set via the changes sheet. Adjustment-sourced surfaces are preserved during the surface refresh. The historical override fills `location` only where it's currently blank so freeze-time hill-loop synthesis (`powerline west`, `rollercoaster`, …) survives the catch-all entry. Synthesize runs last so its rows pick up the same canonical city_state/surface as `races.csv`.
 
 ## Race classification rules
 
@@ -107,7 +111,11 @@ Matchers: `event_contains`, `event_endswith`, `event_regex`. Targets: `infer_loc
 
 ## Snapshot bundle format
 
-Single CSV with `# section: NAME key=val` markers between five blocks: `current_log` (year=YYYY), `changes`, `additions`, `locations`, `hills`. Read with `snapshot.read_snapshot()`.
+Single CSV with `# section: NAME key=val` markers between seven blocks: `current_log` (year=YYYY), `changes`, `additions`, `locations`, `hills`, `coordinates`, `historical`. Read with `snapshot.read_snapshot()`.
+
+`historical` schema: `city_state, min_hist, max_hist, log_location` (last column optional). Two roles: (a) seed cities on the world map that have no daily rows (Sapporo, JP); (b) override `city_state` (always) and `location` (only when blank) on non-race daily rows whose dates fall in the range. Multiple rows per city express disjoint visit windows; entries are applied in row order with last-wins on overlapping ranges. This replaces the legacy date-range branch of `infer_2016_2017_location`.
+
+`coordinates` schema: `city_state, latitude, longitude` — overrides applied on top of the Nominatim cache so geocoding fixes are reproducible from source.
 
 `build_dataset` resolution order: `--snapshot` flag → `data/drive_snapshot.csv` → Drive auto-fetch (last resort). Flags: `--refresh-snapshot`, `--no-fetch`.
 

@@ -33,9 +33,15 @@ from snapshot import find_snapshot, read_snapshot  # type: ignore
 DEFAULT_DAILY = str(DATA_DIR / 'daily.csv')
 DEFAULT_OUT   = str(OUTPUT_DIR)
 
-# Marker sizing: diameter in px = log10(miles + 1) * SIZE_SCALE + SIZE_OFFSET
+# Marker sizing: diameter in px = log10(max(miles, SIZE_FLOOR_MILES) + 1)
+#   * SIZE_SCALE + SIZE_OFFSET. The floor is 3 miles — both for cities with
+#   miles=0 (historical-only entries with no recorded mileage) and for race-
+#   only cities whose total is dominated by sub-5K races. Rationale: any
+#   city Max actually visited had at least one ~3-mile easy run on the
+#   ground, even if it wasn't logged.
 SIZE_SCALE  = 8.0
 SIZE_OFFSET = 4.0
+SIZE_FLOOR_MILES = 3.0
 MARKER_OPACITY = 0.95
 
 BG = '#1a1a1a'
@@ -158,18 +164,17 @@ DEBUG_BORDER_PRESETS = {
 }
 
 
-def _load_coord_overrides() -> dict[str, tuple[float, float]]:
-    """Read the snapshot's ``coordinates`` section, if present.
-
-    Returns a ``{city_state: (lat, lon)}`` map for ensure_coords overrides.
-    Resolves the snapshot path via the same default chain as build_dataset
-    (``data/drive_snapshot.csv``); if no snapshot is found, returns an
-    empty dict so plots run fine in environments without one.
-    """
+def _load_snapshot_sections() -> dict:
+    """Load all sections from the default snapshot path. Returns {} if absent."""
     snapshot_path = find_snapshot([str(DATA_DIR / 'drive_snapshot.csv')])
     if not snapshot_path:
         return {}
     sections, _ = read_snapshot(snapshot_path)
+    return sections
+
+
+def _coord_overrides_from_sections(sections: dict) -> dict[str, tuple[float, float]]:
+    """Extract a ``{city_state: (lat, lon)}`` override map from snapshot sections."""
     coords_df = sections.get('coordinates')
     if coords_df is None or coords_df.empty:
         return {}
@@ -183,6 +188,34 @@ def _load_coord_overrides() -> dict[str, tuple[float, float]]:
             continue
         if isinstance(cs, str) and cs.strip():
             out[cs.strip()] = (lat, lon)
+    return out
+
+
+def _historical_bounds_from_sections(sections: dict) -> list[dict]:
+    """Extract historical city date-bounds from snapshot sections.
+
+    Returns a list of ``{city_state, min_hist, max_hist}`` with the dates
+    parsed to ``pd.Timestamp``. Rows missing either bound or with an
+    unparseable city_state are skipped silently.
+    """
+    hist_df = sections.get('historical')
+    if hist_df is None or hist_df.empty:
+        return []
+    out = []
+    for _, row in hist_df.iterrows():
+        cs = row.get('city_state')
+        if not isinstance(cs, str) or not cs.strip():
+            continue
+        try:
+            min_h = pd.Timestamp(row['min_hist'])
+            max_h = pd.Timestamp(row['max_hist'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if pd.isna(min_h) or pd.isna(max_h):
+            continue
+        out.append({'city_state': cs.strip(),
+                    'min_hist': min_h,
+                    'max_hist': max_h})
     return out
 
 
@@ -202,7 +235,16 @@ def _cities_trace(agg_filtered: pd.DataFrame, size_mult: float = 1.0) -> dict:
 
     ``size_mult`` scales every marker diameter — used by sparse scopes
     (Europe, Asia) where a 2× bump keeps low-mileage points visible.
+
+    Cities with miles==0 (historical-only entries from the snapshot's
+    ``historical`` section) hide the mileage line in the hover by emitting
+    an empty miles_html string; the template concatenates it directly so
+    no leftover blank line appears.
     """
+    miles_html = [
+        '' if float(m) == 0 else f'{float(m):,.1f} mi<br>'
+        for m in agg_filtered['miles']
+    ]
     return dict(
         type='scattergeo',
         meta='cities',
@@ -217,14 +259,13 @@ def _cities_trace(agg_filtered: pd.DataFrame, size_mult: float = 1.0) -> dict:
             sizemode='diameter',
         ),
         customdata=[
-            [cs, round(float(m), 1), dr]
-            for cs, m, dr in zip(agg_filtered['city_state'],
-                                  agg_filtered['miles'],
+            [cs, mh, dr]
+            for cs, mh, dr in zip(agg_filtered['city_state'],
+                                  miles_html,
                                   agg_filtered['date_range'])
         ],
         hovertemplate=('<b>%{customdata[0]}</b><br>'
-                       '%{customdata[1]:,.1f} mi<br>'
-                       '%{customdata[2]}<extra></extra>'),
+                       '%{customdata[1]}%{customdata[2]}<extra></extra>'),
         hoverlabel=dict(bgcolor='rgba(26,26,26,0.95)',
                         bordercolor='#444',
                         font=dict(color='#eee')),
@@ -330,10 +371,53 @@ def main():
              .agg(miles=('miles', 'sum'),
                   d_min=('date', 'min'),
                   d_max=('date', 'max')))
+
+    # Load snapshot once and pull both coordinate overrides and the
+    # historical bounds out of it. Historical rows extend a city's date
+    # range (or seed a new city with miles=0) so cities Max remembers
+    # running in but never logged appear on the map alongside ones with
+    # mileage.
+    sections = _load_snapshot_sections()
+    historical = _historical_bounds_from_sections(sections)
+    if historical:
+        existing = agg.set_index('city_state')
+        new_rows = []
+        for h in historical:
+            cs = h['city_state']
+            if cs in existing.index:
+                cur_min = existing.at[cs, 'd_min']
+                cur_max = existing.at[cs, 'd_max']
+                existing.at[cs, 'd_min'] = min(cur_min, h['min_hist'])
+                existing.at[cs, 'd_max'] = max(cur_max, h['max_hist'])
+            else:
+                new_rows.append({'city_state': cs, 'miles': 0.0,
+                                 'd_min': h['min_hist'],
+                                 'd_max': h['max_hist']})
+        agg = existing.reset_index()
+        if new_rows:
+            agg = pd.concat([agg, pd.DataFrame(new_rows)], ignore_index=True)
+        print(f'[world-map] merged {len(historical)} historical entries '
+              f'(extended-or-added to {len(agg)} cities)')
+
     agg['date_range'] = [fmt_date_range(a, b)
                          for a, b in zip(agg['d_min'], agg['d_max'])]
 
-    label_for, _, label_color, *_ = build_categories(df)
+    # Categorize colors with historical cities included so they pick up
+    # their state's color (e.g. Coulee City, WA → WA-other shade) instead
+    # of falling through to the global gray. Inject synthetic miles=0.01
+    # rows for historical-only cities — well below PEAK_YEAR_THRESHOLD
+    # (26.2) so they can't tip a state into qualifying — purely to slot
+    # them into the right state bucket inside build_categories.
+    if historical:
+        hist_synth = pd.DataFrame([
+            {'city_state': h['city_state'], 'miles': 0.01,
+             'date': h['min_hist']}
+            for h in historical
+        ])
+        df_for_cat = pd.concat([df, hist_synth], ignore_index=True)
+    else:
+        df_for_cat = df
+    label_for, _, label_color, *_ = build_categories(df_for_cat)
     agg['color'] = agg['city_state'].map(
         lambda cs: label_color.get(label_for.get(cs)))
     agg['color'] = agg['color'].fillna('#888888')
@@ -342,7 +426,7 @@ def main():
     # section is a city_state -> (lat, lon) override applied on top of the
     # Nominatim cache; lets us correct geocoding errors reproducibly from
     # source instead of hand-editing data/city_coords.csv.
-    coord_overrides = _load_coord_overrides()
+    coord_overrides = _coord_overrides_from_sections(sections)
     coords = ensure_coords(agg['city_state'].tolist(),
                            overrides=coord_overrides)
     agg['lat'] = agg['city_state'].map(
@@ -359,7 +443,8 @@ def main():
               .to_string(index=False))
     agg = agg.dropna(subset=['lat', 'lon']).copy()
 
-    agg['size'] = np.log10(agg['miles'] + 1) * SIZE_SCALE + SIZE_OFFSET
+    agg['size'] = (np.log10(np.maximum(agg['miles'], SIZE_FLOOR_MILES) + 1)
+                   * SIZE_SCALE + SIZE_OFFSET)
 
     # Smaller cities render on top of larger ones so they don't get hidden.
     agg = agg.sort_values('miles', ascending=False)

@@ -119,7 +119,7 @@ def load_hill_lookup(adj_xlsx_path):
     if adj_xlsx_path is None:
         return {}
     from snapshot import adjustments_dfs_from_xlsx
-    _, _, _, hills_df, _ = adjustments_dfs_from_xlsx(adj_xlsx_path)
+    _, _, _, hills_df, _, _ = adjustments_dfs_from_xlsx(adj_xlsx_path)
     return ingest_hills_from_df(hills_df)
 
 
@@ -201,17 +201,22 @@ def main():
         sys.exit(2)
     print(f"All annual totals match Lifetime Miles within 0.05 mi.")
 
-    # ---------- 2016-17 location synthesis summary ----------
+    # ---------- 2016-17 hill-loop synthesis summary ----------
+    # Only hill workouts have their location synthesized at freeze time
+    # (via infer_2016_2017_location). Non-hill 2016-17 rows leave with
+    # location=None — build_dataset.py fills them in via the snapshot's
+    # historical section.
     sub_1617 = df[df["year"].isin([2016, 2017])]
     if len(sub_1617):
         loc_filled = sub_1617["location"].notna().sum()
         loc_blank = len(sub_1617) - loc_filled
         print()
-        print("2016-17 location synthesis:")
-        print(f"  filled: {loc_filled}    blank (race rows): {loc_blank}")
+        print("2016-17 hill-loop synthesis:")
+        print(f"  filled: {loc_filled} (hill workouts only)    "
+              f"blank: {loc_blank} (filled at build via historical)")
         print("  by inferred location:")
         for loc, n in sub_1617["location"].value_counts(dropna=False).items():
-            label = "(none — race)" if loc is None or pd.isna(loc) else loc
+            label = "(none — non-hill)" if loc is None or pd.isna(loc) else loc
             print(f"    {label:<25s} {n:>5d}")
 
     print()

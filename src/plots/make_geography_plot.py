@@ -1003,6 +1003,10 @@ def main():
 
     df = pd.read_csv(args.daily)
     df['date'] = pd.to_datetime(df['date'])
+    # Daily.csv now includes pre-2016 stub rows synthesized from race
+    # additions (used by the world map). All other daily-driven plots —
+    # this one included — standardize on the 2016+ logging era.
+    df = df[df['date'] >= pd.Timestamp('2016-01-01')]
 
     (label_for, ordered_labels, label_color, label_total,
      group_for_label, group_total, group_size,

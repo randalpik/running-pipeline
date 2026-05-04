@@ -237,6 +237,7 @@ def main():
     changes_df = sections.get("changes", pd.DataFrame())
     additions_df = sections.get("additions", pd.DataFrame())
     locations_df = sections.get("locations", pd.DataFrame())
+    historical_df = sections.get("historical", pd.DataFrame())
 
     current_year = args.current_year
     if current_year is None:
@@ -339,6 +340,56 @@ def main():
     # with sheets that don't yet have all metadata columns.
     daily = _join_location_metadata(daily, locations_df)
 
+    # ---------- apply historical date-range overrides ----------
+    # Historical entries override city_state (and optionally `location`) on
+    # non-race daily rows whose dates fall inside [min_hist, max_hist].
+    # This replaces the legacy 2016-17 infer_2016_2017_location code path
+    # by moving the rules into the spreadsheet — multiple rows per city
+    # express disjoint visit windows (e.g. Nashville x3 in 2017). Entries
+    # are applied in row order; later entries override earlier ones for
+    # overlapping ranges, so put broad defaults first and specific
+    # exceptions after. Race rows are exempt — their city_state comes
+    # from races.csv via the back-prop below.
+    if len(historical_df):
+        daily_dt = pd.to_datetime(daily["date"])
+        is_non_race = daily["run_type"].fillna("") != "race"
+        n_cs = 0
+        n_ll = 0
+        n_entries = 0
+        for _, h in historical_df.iterrows():
+            cs = h.get("city_state")
+            if cs is None or (isinstance(cs, float) and pd.isna(cs)) \
+                    or not str(cs).strip():
+                continue
+            try:
+                min_h = pd.Timestamp(h["min_hist"])
+                max_h = pd.Timestamp(h["max_hist"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if pd.isna(min_h) or pd.isna(max_h):
+                continue
+            mask = ((daily_dt >= min_h) & (daily_dt <= max_h) & is_non_race)
+            if not mask.any():
+                continue
+            n_entries += 1
+            if "city_state" in daily.columns:
+                daily.loc[mask, "city_state"] = str(cs).strip()
+                n_cs += int(mask.sum())
+            ll = h.get("log_location")
+            if isinstance(ll, str) and ll.strip():
+                # Only fill location where it's currently blank — preserves
+                # precise route names set at freeze time (e.g. hill-loop
+                # synthesis -> 'powerline west'). Historical entries
+                # supply log_location as a default fill, not an override.
+                loc_blank = (daily["location"].isna()
+                             | (daily["location"].astype(str).str.strip() == ''))
+                fill_mask = mask & loc_blank
+                if fill_mask.any():
+                    daily.loc[fill_mask, "location"] = ll.strip()
+                    n_ll += int(fill_mask.sum())
+        print(f"[historical] applied {n_entries}/{len(historical_df)} entr(ies); "
+              f"city_state set on {n_cs}, location set on {n_ll} non-race row(s)")
+
     # ---------- back-propagate race city_state + surface to daily ----------
     # races.csv holds the post-adjustment ground truth for race-day location
     # and surface (sourced from additions/changes for 2016-17 races, from the
@@ -366,6 +417,64 @@ def main():
         n_sf = sf_filled.notna().sum()
         print(f"[backprop] race rows on daily: {n_before}; "
               f"city_state set: {n_cs}, surface set: {n_sf}")
+
+    # ---------- synthesize daily rows from race additions ----------
+    # Race additions cover dates that may pre-date 2016 (the start of
+    # historical_daily.csv). Without a daily row those races never reach
+    # daily-level views (e.g. the world map's city_state aggregation), so
+    # cities Max only ever raced at — Maple Valley, Carnation pre-2008 —
+    # silently drop off. Materialize a stub daily row for any race date
+    # that has no daily entry, sourced from the post-autopop race rows so
+    # city_state is already canonical.
+    if len(races):
+        existing_dates = set(pd.to_datetime(daily["date"]).dt.date.astype(str))
+        races_dt = races.copy()
+        races_dt["_d"] = pd.to_datetime(races_dt["date"]).dt.date.astype(str)
+        synth_rows = []
+        for date_str, grp in races_dt.groupby("_d"):
+            if date_str in existing_dates:
+                continue
+            primary = grp[grp["race_seq"] == 1]
+            if primary.empty:
+                primary = grp.head(1)
+            primary = primary.iloc[0]
+            total_dist_m = float(grp["distance_m"].sum())
+            total_time_sec = float(grp["time_sec"].sum())
+            miles = total_dist_m / 1609.344
+            minutes = total_time_sec / 60.0
+            pace_sec_per_mi = (total_time_sec / miles) if miles > 0 else None
+            d = pd.to_datetime(date_str).date()
+            row = {col: None for col in DAILY_COLUMNS}
+            row.update({
+                "date": d,
+                "year": d.year,
+                "month": d.month,
+                "day_of_year": d.timetuple().tm_yday,
+                "dow": d.weekday(),
+                "miles": round(miles, 4),
+                "minutes": round(minutes, 2),
+                "pace_sec_per_mi": pace_sec_per_mi,
+                "location": primary.get("location"),
+                "surface": primary.get("surface"),
+                "run_type": "race",
+                "num_races": int(len(grp)),
+                "schema_year_era": d.year,
+                "source_file": "snapshot:additions",
+            })
+            # Mirror the join columns added by _join_location_metadata so
+            # the synthesized rows align with daily's full schema.
+            for col in LOCATION_METADATA_COLS:
+                if col in daily.columns and col not in row:
+                    row[col] = None
+            if "city_state" in daily.columns:
+                row["city_state"] = primary.get("location")
+            synth_rows.append(row)
+        if synth_rows:
+            synth_df = pd.DataFrame(synth_rows, columns=daily.columns)
+            daily = pd.concat([daily, synth_df], ignore_index=True)
+            daily = daily.sort_values("date").reset_index(drop=True)
+            print(f"[synth] created {len(synth_rows)} daily row(s) from race "
+                  f"additions for dates not already in daily")
 
     # ---------- final daily metadata coverage ----------
     # Reported after backprop so the numbers reflect the daily.csv state

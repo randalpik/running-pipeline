@@ -35,12 +35,21 @@ must handle NaN.
 
 The 2016 and 2017 xlsx schemas don't have a location column, so the
 parser synthesizes one at freeze time via `infer_2016_2017_location`.
-Rule order: races stay None (city_state comes from adjustments); hill
-workouts use the loop abbrev from `workout_raw` against the hills tab
-(`hill_lookup`); a handful of date ranges map to specific cities
-(geneva, butte, kadoka, kansas city, nashville); everything else
-defaults to `education hill`. The hills tab lives in Max's Running
-Data xlsx and rides through the snapshot's `hills` section.
+As of 2026 the function does only **hill-loop synthesis**: hill
+workouts parse the loop abbrev from `workout_raw` against the hills
+tab (`hill_lookup`) to land precise route names (`powerline west`,
+`rollercoaster`, …) — load-bearing for recovery route betas. Non-hill
+2016-17 rows leave freeze with `location=None`.
+
+The date-range rules that used to live here (Geneva, Butte, Kadoka,
+Kansas City, Nashville windows; `education hill` default) were
+migrated to the snapshot's `historical` section in 2026. Each window
+is now a row with `city_state, min_hist, max_hist, log_location`, and
+`build_dataset.py` applies them after `_join_location_metadata`. The
+override fills `location` only where it's currently blank, so the
+hill-loop route names survive the broad Redmond catch-all. The hills
+tab still lives in Max's Running Data xlsx and rides through the
+snapshot's `hills` section.
 
 ## Effort era thesis (April 2026)
 

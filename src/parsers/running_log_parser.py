@@ -365,17 +365,18 @@ def split_2016_notes(notes_str):
 # ---------- 2016-17 location inference ----------
 #
 # The 2016 and 2017 schemas have no location column, so daily rows from
-# those years arrive at _derive_daily_row with location=None. These rules
-# synthesize a log_location that the downstream locations join (in
-# build_dataset.py) resolves to a city_state. Two purposes:
-#   1. Populate city_state for qualitative location charts.
-#   2. Create generic route bins ('nashville', 'education hill') so they
-#      can earn their own betas in the recovery analysis.
+# those years arrive at _derive_daily_row with location=None.
 #
-# Hill-loop abbreviations are sourced from the "hills" tab of Max's
-# Running Data xlsx (propagated through the snapshot's `hills` section).
-# The lookup is built by ingest_hills_from_df() and threaded into
-# ingest_2016 / ingest_year_standard at freeze time.
+# This module covers the *hill-loop* part of synthesis: parse the loop
+# abbreviation from workout_raw (e.g. '23hc-8x pwr1' -> 'pwr1') and look
+# it up in the hills sheet to get the canonical route name ('powerline
+# west'). That signal is load-bearing for recovery-analysis route betas.
+#
+# Date-range location rules (Nashville/Geneva trips, 'education hill'
+# default) used to live here too but were migrated to the snapshot's
+# `historical` section in 2026 — see build_dataset.py's apply-historical
+# step. Non-hill 2016-17 rows now arrive at daily.csv with location=None
+# and get filled in by the historical override at build time.
 
 # Loop name appears after `hc` or `hr` plus optional dash/slash modifiers
 # and an optional Nx repcount. Handles all 2016-17 shapes:
@@ -420,57 +421,20 @@ def ingest_hills_from_df(hills_df):
     return lookup
 
 
-def infer_2016_2017_location(dt, workout_raw, run_type, hill_lookup):
-    """Synthesize a log_location for a 2016 or 2017 daily row.
+def infer_2016_2017_location(workout_raw, run_type, hill_lookup):
+    """Synthesize a log_location for 2016-17 hill workouts.
 
-    Rules apply in priority order; first match wins:
-      1. Race        -> None (city_state comes from adjustments additions/changes)
-      2. Hill cont/rep -> hill_lookup[loop] (parsed from workout_raw); falls
-                          through to default if the loop is unknown
-      3. Date ranges:
-           2016-12-21..2016-12-24 -> nashville
-           2017-07-19..2017-07-22 -> geneva
-           2017-07-24..2017-07-26 -> sonchamp
-           2017-07-27             -> verbier
-           2017-07-28..2017-07-29 -> geneva
-           2017-08-15             -> butte
-           2017-08-16             -> kadoka
-           2017-08-17             -> kansas city
-           2017-08-18..2017-11-18 -> nashville
-           2017-11-28..2017-12-23 -> nashville
-      4. Default -> education hill
-
-    Returns the inferred log_location (lowercase) or None.
+    Returns the canonical route name (e.g. 'powerline west') for hill_cont
+    / hill_rep workouts when the loop abbreviation in workout_raw matches
+    the hills sheet; returns None otherwise. Non-hill 2016-17 rows are
+    expected to fall through to the historical-section override in
+    build_dataset.py for both city_state and location.
     """
-    if run_type == "race":
-        return None
     if run_type in ("hill_cont", "hill_rep"):
         loop = _extract_hill_loop(workout_raw)
         if loop and hill_lookup and loop in hill_lookup:
             return hill_lookup[loop]
-        # Fall through to default if loop unparseable / unknown
-    d = dt.date() if hasattr(dt, "date") and not isinstance(dt, date) else dt
-    if date(2016, 12, 21) <= d <= date(2016, 12, 24):
-        return "nashville"
-    if date(2017, 7, 19) <= d <= date(2017, 7, 22):
-        return "geneva"
-    if date(2017, 7, 24) <= d <= date(2017, 7, 26):
-        return "sonchamp"
-    if d == date(2017, 7, 27):
-        return "verbier"
-    if date(2017, 7, 28) <= d <= date(2017, 7, 29):
-        return "geneva"
-    if d == date(2017, 8, 15):
-        return "butte"
-    if d == date(2017, 8, 16):
-        return "kadoka"
-    if d == date(2017, 8, 17):
-        return "kansas city"
-    if date(2017, 8, 18) <= d <= date(2017, 11, 18):
-        return "nashville"
-    if date(2017, 11, 28) <= d <= date(2017, 12, 23):
-        return "nashville"
-    return "education hill"
+    return None
 
 
 # ---------- xlsx ingestion (freeze path only) ----------
@@ -482,8 +446,10 @@ def _derive_daily_row(dt, year, schema_key, source_file,
                       hill_lookup=None):
     """Assemble one daily row dict from already-normalized cell values.
 
-    `hill_lookup` is consulted only for 2016 and 2017 rows when `location`
-    is None — see infer_2016_2017_location for the rule chain.
+    `hill_lookup` is consulted only for 2016 and 2017 hill workouts when
+    `location` is None — see infer_2016_2017_location. Non-hill 2016-17
+    rows leave with location=None and get filled in at build time via the
+    snapshot's `historical` section.
 
     Note: callers prune zero-mile rows before invoking this helper (see
     ingest_2016 / ingest_year_standard / ingest_year_standard_csv), so
@@ -493,11 +459,12 @@ def _derive_daily_row(dt, year, schema_key, source_file,
     if rtype is None:
         rtype = "recovery"
 
-    # 2016-17 location synthesis: only acts when caller hasn't already set
+    # 2016-17 hill-loop synthesis: only acts when caller hasn't already set
     # one (the 2016/2017 xlsx schemas don't have a location column, so
-    # `location` arrives as None for these years).
+    # `location` arrives as None for these years). Non-hill rows leave
+    # location=None and get filled by build_dataset's historical override.
     if location is None and year in (2016, 2017):
-        location = infer_2016_2017_location(dt, workout, rtype, hill_lookup or {})
+        location = infer_2016_2017_location(workout, rtype, hill_lookup or {})
 
     pace_sec_per_mi = None
     if miles and miles > 0 and minutes:
