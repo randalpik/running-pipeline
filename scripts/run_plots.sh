@@ -64,6 +64,7 @@ quiet_step "make_recovery_plots"     python src/plots/make_recovery_plots.py "${
 quiet_step "make_race_plots"         python src/plots/make_race_plots.py
 quiet_step "make_geography_plot"     python src/plots/make_geography_plot.py
 quiet_step "make_world_map"          python src/plots/make_world_map.py
+quiet_step "dashboard"               python src/plots/dashboard.py
 
 echo
 echo "All plots written to output/."

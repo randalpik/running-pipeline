@@ -52,6 +52,7 @@ os.chdir(REPO_ROOT)
 # .html). If a slug's HTML doesn't exist yet, the tab is hidden until the
 # corresponding plot script runs.
 TABS = [
+    ("dashboard",              "Dashboard"),
     ("race_pace_all",          "Races"),
     ("race_pace_by_distance",  "Race Distances"),
     ("cs_timeline",            "Fitness"),
