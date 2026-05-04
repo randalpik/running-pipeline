@@ -30,7 +30,8 @@ from src.shared.workouts import (
     project_workouts, project_hill_continuous, project_hill_reps,
 )
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            sec_to_mss, fmt_min, CAT_COLORS, GRID, CS_LINE)
+                            sec_to_mss, fmt_min, CAT_COLORS, GRID, CS_LINE,
+                            yearly_x_axis_kwargs)
 
 
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -269,10 +270,11 @@ def main():
         hovermode=False,
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     groupclick='toggleitem', font=dict(size=11)),
-        xaxis=dict(title='Date', showgrid=True, gridcolor=GRID,
-                   tick0='2016-01-01', dtick='M12',
-                   range=[pd.Timestamp('2016-01-01'),
-                          pd.Timestamp(workouts['date'].max()) + pd.Timedelta(days=30)]),
+        xaxis=yearly_x_axis_kwargs(
+            pd.Timestamp('2016-01-01'),
+            pd.Timestamp(workouts['date'].max()) + pd.Timedelta(days=30),
+            title='Date',
+        ),
         yaxis=dict(title='5K-equivalent pace (min/mi)',
                    range=[y_max, y_min],
                    tickmode='array', tickvals=tickvals, ticktext=ticktext,

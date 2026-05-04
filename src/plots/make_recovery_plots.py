@@ -98,7 +98,8 @@ from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             sec_to_mss, FG,
                             CS_LINE, CS_LINE_WIDTH, TREND_LINE, TREND_WIDTH,
-                            GRID, gaussian_rolling_trend)
+                            GRID, gaussian_rolling_trend,
+                            yearly_x_axis_kwargs)
 from src.shared.paths import DEBUG_DIR
 from src.shared.cs_projection import load_cs_outputs
 
@@ -211,21 +212,6 @@ def signed_sec(s):
         return ''
     s = int(round(float(s)))
     return f'{"+" if s >= 0 else "−"}{abs(s)}'
-
-
-def thin_yearly_ticks(x_lo, x_hi, max_labels=11):
-    y_lo = int(pd.Timestamp(x_lo).year)
-    y_hi = int(pd.Timestamp(x_hi).year)
-    years = list(range(y_lo, y_hi + 1))
-    if not years:
-        return [], []
-    tickvals = [pd.Timestamp(f'{y}-01-01') for y in years]
-    if len(years) <= max_labels:
-        return tickvals, [str(y) for y in years]
-    step = -(-len(years) // max_labels)
-    txt = [str(y) if ((len(years) - 1 - i) % step == 0) else ''
-           for i, y in enumerate(years)]
-    return tickvals, txt
 
 
 # ---------- main ----------
@@ -622,7 +608,6 @@ def main():
     # ---------- axes ----------
     x_lo = rec['date'].min() - pd.Timedelta(days=30)
     x_hi = rec['date'].max() + pd.Timedelta(days=30)
-    tickvals_x, ticktext_x = thin_yearly_ticks(x_lo, x_hi)
 
     left_y_lo = max(180, np.floor(rec['recovery_pace_sec_per_mi'].quantile(0.001) / 30) * 30 - 30)
     left_y_hi = min(720, np.ceil(rec['recovery_pace_sec_per_mi'].quantile(0.999) / 30) * 30 + 30)
@@ -635,9 +620,7 @@ def main():
     right_ticks = list(range(int(right_y_lo), int(right_y_hi) + 1, 30))
 
     for col in (1, 2):
-        fig.update_xaxes(tickvals=tickvals_x, ticktext=ticktext_x,
-                          range=[x_lo, x_hi],
-                          gridcolor=GRID,
+        fig.update_xaxes(**yearly_x_axis_kwargs(x_lo, x_hi),
                           row=1, col=col)
 
     fig.update_yaxes(tickvals=left_ticks,

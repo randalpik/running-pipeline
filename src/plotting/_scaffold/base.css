@@ -57,9 +57,14 @@ input[type="checkbox"]:checked {
   height: auto !important;
 }
 
-/* ===== Cursor-following tooltip ===== */
+/* ===== Cursor-following tooltip =====
+   Width is pinned in JS each frame (cursor_tooltip.js sets style.width
+   from the natural offsetWidth after innerHTML changes) so the width
+   transition below actually fires on content changes. min/max-width
+   still constrain the natural-width measurement. */
 .rp-tooltip {
   position: fixed; top: 0; left: 0;
+  box-sizing: border-box;
   background: rgba(26,26,26,0.96);
   color: #eee;
   border: 1px solid #555;
@@ -69,10 +74,20 @@ input[type="checkbox"]:checked {
   border-radius: 4px;
   pointer-events: none;
   z-index: 9999;
+  /* Note: with box-sizing: border-box, max-width counts the 14px×2 padding
+     + 1px×2 border, so content area = max-width − 30. The pre-border-box
+     era of this file used max-width: 380 with content-box, giving 380px
+     of content area; 410 keeps that same content area now. */
   min-width: 200px;
-  max-width: 380px;
+  max-width: 410px;
+  /* Each line stays on one line; if it overflows the tooltip's max-width
+     it's clipped (overflow: hidden). Prevents reflow-induced text shift
+     when the box width animates between content sizes. */
+  white-space: nowrap;
   display: none;
+  overflow: hidden;
   box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  transition: width 100ms ease-out, height 100ms ease-out;
 }
 .rp-tooltip .tt-date {
   font-weight: 600; font-size: 14px;

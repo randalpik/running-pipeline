@@ -29,6 +29,19 @@
   var spike = document.querySelector('.rp-spike');
   if (!tt) return;
 
+  // Off-screen measurement clone. Width/height transitions on `tt` only
+  // fire when the inline pixel value changes — never when going through
+  // `auto`, since CSS doesn't interpolate auto↔px. So we measure the
+  // natural width/height on this hidden ghost (which always has
+  // width/height: auto) and pin those pixel values onto `tt`. The
+  // visible tooltip's width/height stay numeric the entire time, so
+  // `transition: width / height` actually animates.
+  var ghost = tt.cloneNode(false);
+  ghost.style.cssText =
+    'visibility:hidden;position:absolute;left:-9999px;top:0;' +
+    'transition:none;display:block;width:auto;height:auto;';
+  document.body.appendChild(ghost);
+
   var rafScheduled = false;
   var lastContent  = '';
   var pending = { show: false, x: 0, y: 0, html: '', spikeX: 0 };
@@ -42,10 +55,13 @@
       return;
     }
     if (pending.html !== lastContent) {
+      ghost.innerHTML = pending.html;
+      ttW = ghost.offsetWidth;
+      ttH = ghost.offsetHeight;
       tt.innerHTML = pending.html;
+      tt.style.width  = ttW + 'px';
+      tt.style.height = ttH + 'px';
       lastContent = pending.html;
-      ttW = tt.offsetWidth;
-      ttH = tt.offsetHeight;
     }
     var x = pending.x + 15;
     var y = pending.y + 10;

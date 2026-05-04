@@ -46,7 +46,8 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             sec_to_mss, sec_to_mss_full,
                             SURFACES, CS_LINE, CS_LINE_WIDTH, GRID,
                             pr_marker, is_pr_eligible,
-                            PR_LEGEND_NAME, PR_LEGEND_RANK)
+                            PR_LEGEND_NAME, PR_LEGEND_RANK,
+                            yearly_x_axis_kwargs)
 
 # Width of the distance-filter box (#bin-filter); also used to size margin.r.
 BIN_FILTER_WIDTH = 150
@@ -207,28 +208,6 @@ def time_ticks_at_interval(t_min, t_max, interval):
     n = int(round((tick_max - tick_min) / interval)) + 1
     ticks = [tick_min + i * interval for i in range(n)]
     return ticks, [sec_to_mss(t) for t in ticks]
-
-
-def thin_yearly_ticks(x_lo, x_hi, *, max_labels=6):
-    """Yearly gridlines (Jan 1 each year), but only label every Nth year if
-    there'd be more than max_labels. Empty-string labels still draw the
-    tick + gridline, just without text — keeping visual rhythm consistent
-    across panels with different x-spans."""
-    y_lo = int(pd.Timestamp(x_lo).year)
-    y_hi = int(pd.Timestamp(x_hi).year)
-    years = list(range(y_lo, y_hi + 1))
-    if not years:
-        return [], []
-    tickvals = [pd.Timestamp(f'{y}-01-01') for y in years]
-    n = len(years)
-    if n <= max_labels:
-        ticktext = [str(y) for y in years]
-    else:
-        step = -(-n // max_labels)  # ceil division
-        # Anchor labels to the LAST year (most recent), then walk back by `step`.
-        ticktext = [str(y) if ((n - 1 - i) % step == 0) else ''
-                    for i, y in enumerate(years)]
-    return tickvals, ticktext
 
 
 # ---------- visual encoding ----------
@@ -816,12 +795,9 @@ def build_per_panel_pr_js():
 """
 
 
-def yearly_x_axis(**kwargs):
+def yearly_x_axis(x_lo, x_hi, **kwargs):
     """Yearly gridline + label config for the x-axis (matches CS plot)."""
-    base = dict(showgrid=True, gridcolor=GRID,
-                dtick='M12', tickformat='%Y')
-    base.update(kwargs)
-    return base
+    return yearly_x_axis_kwargs(x_lo, x_hi, **kwargs)
 
 
 def reversed_pace_y_axis(**kwargs):
@@ -909,7 +885,7 @@ def main():
                     r=right_margin_for_anchored_box(BIN_FILTER_WIDTH, legend_min_px=200),
                     b=60),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02),
-        xaxis=yearly_x_axis(title='Date', range=[x_lo, x_hi]),
+        xaxis=yearly_x_axis(x_lo, x_hi, title='Date'),
         yaxis=reversed_pace_y_axis())
 
     out1 = os.path.join(args.out_dir, 'race_pace_all.html')
@@ -1268,11 +1244,8 @@ function buildTooltip(day, isSnap, pointHtml) {
             time_ticks_at_interval(y_lo_sub, y_hi_sub, PANEL_TICK_SEC[name])
             if name in PANEL_TICK_SEC
             else auto_time_ticks(y_lo_sub, y_hi_sub, target_count=7))
-        xticks, xlabels = thin_yearly_ticks(x_lo_sub, x_hi_sub, max_labels=5)
         fig2.update_xaxes(
-            range=[x_lo_sub, x_hi_sub],
-            tickmode='array', tickvals=xticks, ticktext=xlabels,
-            showgrid=True, gridcolor=GRID,
+            **yearly_x_axis_kwargs(x_lo_sub, x_hi_sub, max_labels=5),
             row=r, col=c)
         fig2.update_yaxes(
             range=[y_hi_sub, y_lo_sub],   # reversed: faster up

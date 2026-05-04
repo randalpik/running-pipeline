@@ -30,7 +30,8 @@ from src.shared.workouts import (
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box,
                             sec_to_mss, fmt_min, CAT_COLORS, GRID, CS_LINE,
-                            GAP_BREAK_DAYS, adaptive_gauss_smoother)
+                            GAP_BREAK_DAYS, adaptive_gauss_smoother,
+                            yearly_x_axis_kwargs)
 
 # Width of the route-betas box (#tq-routes); also used to size margin.r.
 ROUTES_BOX_WIDTH = 196
@@ -565,10 +566,11 @@ def main():
         hovermode=False,
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     groupclick='toggleitem', font=dict(size=11)),
-        xaxis=dict(title='Date', showgrid=True, gridcolor=GRID,
-                   tick0='2016-01-01', dtick='M12',
-                   range=[pd.Timestamp('2016-01-01'),
-                          combined['date'].max() + pd.Timedelta(days=30)]),
+        xaxis=yearly_x_axis_kwargs(
+            pd.Timestamp('2016-01-01'),
+            combined['date'].max() + pd.Timedelta(days=30),
+            title='Date',
+        ),
         yaxis=dict(title='Residual from CS (sec/mi)',
                    range=norm_axis_range,
                    tickmode='array',

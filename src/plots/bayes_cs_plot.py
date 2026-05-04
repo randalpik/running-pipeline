@@ -40,7 +40,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.cs_projection import load_cs_outputs, project_races_to_5k_pace
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            sec_to_mss, sec_to_mss_full, SURFACES, rgba, GRID)
+                            sec_to_mss, sec_to_mss_full, SURFACES, rgba, GRID,
+                            yearly_x_axis_kwargs)
 
 
 DEFAULT_IN_DIR = str(DATA_DIR)
@@ -208,10 +209,11 @@ def main():
         fig,
         margin=dict(t=20, l=70, r=200, b=60),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02, groupclick='toggleitem'),
-        xaxis=dict(title='Date', showgrid=True, gridcolor=GRID,
-                   dtick='M12', tickformat='%Y',
-                   range=[pd.Timestamp('2013-06-01'),
-                          summary_plot['date'].iloc[-1]]),
+        xaxis=yearly_x_axis_kwargs(
+            pd.Timestamp('2013-06-01'),
+            summary_plot['date'].iloc[-1],
+            title='Date',
+        ),
         yaxis=dict(title='Pace (min/mi)', range=[y_max, y_min],
                    tickmode='array', tickvals=ytick_vals, ticktext=ytick_txt,
                    showgrid=True, gridcolor=GRID))

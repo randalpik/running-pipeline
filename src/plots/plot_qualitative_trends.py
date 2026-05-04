@@ -37,7 +37,8 @@ from plotly.subplots import make_subplots
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            FG, FG_DIM, GRID)
+                            FG, FG_DIM, GRID,
+                            yearly_x_axis_kwargs)
 
 
 DEFAULT_DAILY = str(DATA_DIR / 'daily.csv')
@@ -357,22 +358,13 @@ def main():
         payload_hi[m['key']] = _round_arr(hi_raw)
         payload_ma[m['key']] = _round_arr(ma)
 
-    # Yearly gridlines.
-    year_ticks = pd.date_range(args.start, dates.max(), freq='YS')
-    fig.update_xaxes(
-        range=[args.start, str(dates.max().date())],
-        gridcolor=GRID, zerolinecolor=GRID,
-        tickmode='array',
-        tickvals=[d.strftime('%Y-%m-%d') for d in year_ticks],
-        ticktext=[d.strftime('%Y') for d in year_ticks],
-        tickfont=dict(color=FG_DIM, size=11),
-        showgrid=True,
-    )
+    # Yearly gridlines — shared helper, standard tick styling.
+    fig.update_xaxes(**yearly_x_axis_kwargs(args.start, str(dates.max().date())))
 
     apply_default_layout(
         fig,
         font=dict(color=FG, size=12),
-        margin=dict(t=24, l=70, r=40, b=48),
+        margin=dict(t=24, l=70, r=40, b=56),
         showlegend=False,
         hovermode=False,
     )

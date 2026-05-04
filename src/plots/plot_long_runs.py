@@ -23,7 +23,8 @@ from src.shared.workouts import load_cs, project_long_runs
 from src.shared.cs_projection import load_cs_outputs, cs_line_at_anchor
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box,
-                            sec_to_mss, GRID, CAT_COLORS, CS_LINE, rgba)
+                            sec_to_mss, GRID, CAT_COLORS, CS_LINE, rgba,
+                            yearly_x_axis_kwargs)
 
 # Width of the distance-gradient box (#lr-gradient); also used to size margin.r.
 # Holds a 160px gradient bar with 10px horizontal padding + 1px border per side.
@@ -140,10 +141,11 @@ def main():
         hovermode=False,
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     font=dict(size=11)),
-        xaxis=dict(title='Date', showgrid=True, gridcolor=GRID,
-                   tick0='2016-01-01', dtick='M12',
-                   range=[pd.Timestamp('2016-01-01'),
-                          pd.Timestamp(lr['date'].max()) + pd.Timedelta(days=30)]),
+        xaxis=yearly_x_axis_kwargs(
+            pd.Timestamp('2016-01-01'),
+            pd.Timestamp(lr['date'].max()) + pd.Timedelta(days=30),
+            title='Date',
+        ),
         yaxis=dict(title='Pace (min/mi)',
                    range=[y_max, y_min],
                    tickmode='array', tickvals=tickvals, ticktext=ticktext,
