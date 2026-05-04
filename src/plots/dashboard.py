@@ -55,6 +55,12 @@ PRE_2016_VERIFIED_MILES = 1419
 SHOE_GAP_DAYS = 180  # 6 months for the training-shoe mileage cutoff
 TRAINING_SHOE_RUN_THRESHOLD = 3  # consecutive recovery runs to qualify
 
+# Short-distance correction matching make_race_plots.py — track distances
+# below 800m get stretched because the CS+D' model under-predicts time
+# (peak speed limits and anaerobic capacity dominate, not sustained CS).
+BETA_SHORT     = 0.35
+D_THRESH_SHORT = 800.0
+
 OUT_HTML = OUTPUT_DIR / 'dashboard.html'
 SCAFFOLD_DIR = Path(__file__).resolve().parents[1] / 'plotting' / '_scaffold'
 
@@ -76,13 +82,19 @@ def is_streak_active(last_log_date, now_utc):
 
 
 def fmt_race_time(sec):
-    """Race time: M:SS.x for sub-1hr, H:MM:SS for 1hr+."""
+    """Race time: M:SS.x for sub-1hr (always shows tenths, even if .0),
+    H:MM:SS for 1hr+."""
     if sec is None or pd.isna(sec):
         return '—'
     sec = float(sec)
-    if sec < 3600:
-        return sec_to_mss_full(sec)
-    return sec_to_mss(sec)
+    if sec >= 3600:
+        return sec_to_mss(sec)
+    # Sub-1hr — always show tenths, including '.0' to designate precision.
+    tenths_total = int(round(sec * 10))
+    whole = tenths_total // 10
+    frac = tenths_total % 10
+    m, ss = divmod(whole, 60)
+    return f'{m}:{ss:02d}.{frac}'
 
 
 def fmt_pace_per_mi(sec_per_mi):
@@ -241,9 +253,13 @@ def _find_racing_shoe(races):
 def compute_prs(races):
     races = races.dropna(subset=['distance_m', 'time_sec', 'date']).copy()
     races = races[~races['surface'].isin(PR_EXCLUDED_SURFACES)]
+    # Time trials aren't real races — they're benchmark efforts solo or in
+    # training. Restrict PRs to genuine competition.
+    is_tt = races['event'].fillna('').astype(str).str.contains(
+        'time trial', case=False, regex=False)
+    races = races[~is_tt]
 
     # Snap each race to the closest FILTER_BINS distance (no tolerance cap).
-    bin_targets = {n: m for n, m in FILTER_BINS}
     def snap(d):
         return min(FILTER_BINS, key=lambda nt: abs(nt[1] - float(d)))[0]
     races['bin'] = races['distance_m'].map(snap)
@@ -271,16 +287,21 @@ def compute_prs(races):
 
 
 # ----- Race Predictions -----
-def _beta_long(d, beta_long, d_thresh):
-    if d > d_thresh and beta_long > 0:
-        return 1.0 + beta_long * np.log(d / d_thresh)
+def _beta_factor(d, beta_long, d_thresh_long, beta_short=BETA_SHORT,
+                  d_thresh_short=D_THRESH_SHORT):
+    """Same shape as cs_projection._beta_factor — long-distance fade for
+    d > d_thresh_long, short-distance stretch for d < d_thresh_short."""
+    if d > d_thresh_long and beta_long > 0:
+        return 1.0 + beta_long * np.log(d / d_thresh_long)
+    if d < d_thresh_short and beta_short > 0:
+        return 1.0 + beta_short * np.log(d_thresh_short / d)
     return 1.0
 
 
 def _time_at(d, dp, cs_mps, beta_long, d_thresh):
     if d <= dp or cs_mps <= 0:
         return float('nan')
-    return (d - dp) / cs_mps * _beta_long(d, beta_long, d_thresh)
+    return (d - dp) / cs_mps * _beta_factor(d, beta_long, d_thresh)
 
 
 def compute_race_predictions(daily_summary, beta_long, d_thresh):
@@ -288,13 +309,10 @@ def compute_race_predictions(daily_summary, beta_long, d_thresh):
     latest = daily_summary.iloc[-1]
     cs_mps_med = float(latest['cs_mps_med'])
     dp_med = float(latest['dp_med'])
-    cs_pace_med = float(latest['cs_pace_med'])
     cs_pace_lo95 = float(latest['cs_pace_lo95'])
     cs_pace_hi95 = float(latest['cs_pace_hi95'])
 
     # Back out cs_mps consistent with the cs_pace bounds, holding dp at dp_med.
-    # cs_pace [min/mi] = 1609.344 * (5000 - dp) / cs_mps / 5000 / 60
-    # → cs_mps = 1609.344 * (5000 - dp) / cs_pace / 5000 / 60
     def cs_mps_from_pace(pace_min):
         return 1609.344 * (5000.0 - dp_med) / pace_min / 5000.0 / 60.0
 
@@ -306,21 +324,38 @@ def compute_race_predictions(daily_summary, beta_long, d_thresh):
         t_med = _time_at(d, dp_med, cs_mps_med, beta_long, d_thresh)
         t_lo = _time_at(d, dp_med, cs_mps_hi95, beta_long, d_thresh)  # fastest
         t_hi = _time_at(d, dp_med, cs_mps_lo95, beta_long, d_thresh)  # slowest
-        # Symmetric half-width about the median.
         half = (t_hi - t_lo) / 2.0
         out.append({'distance': name, 'time_sec': t_med, 'half_sec': half})
     return out
 
 
 # ----- Workout Pace Predictions -----
-def compute_workout_predictions(daily_summary, lr_fit):
+def _bin_residuals(lr_in_aug):
+    """Return {'lr_lo': mean_raw_resid, 'lr_hi': mean_raw_resid} where the
+    mean is over long runs that are (a) on a qualifying route — i.e.
+    ``route != 'other'`` (have a route beta) — and (b) not flagged as
+    outliers by the iterative MAD prune.
+
+    This empirical mean captures the per-bin residual on routes Max
+    actually runs in each bin, including the route-mix skew (e.g. lr_lo
+    runs on belle meade/greenway pull lr_lo's mean down).
+    """
+    keep = lr_in_aug[(lr_in_aug['route'] != 'other')
+                     & (~lr_in_aug['is_outlier'])]
+    out = {}
+    for b in ('lr_lo', 'lr_hi'):
+        sub = keep[keep['bin'] == b]
+        out[b] = float(sub['raw_resid'].mean()) if len(sub) else 0.0
+    return out
+
+
+def compute_workout_predictions(daily_summary, lr_in_aug):
     latest = daily_summary.iloc[-1]
     cs_mps = float(latest['cs_mps_med'])
     dp = float(latest['dp_med'])
     p5k_cs_min = float(latest.get('p5k_implied_min',
                                    1609.344 * (5000 - dp) / cs_mps / 5000 / 60))
-    # 5K-equivalent CS pace in sec/mi.
-    p5k_cs_sec = p5k_cs_min * 60.0
+    p5k_cs_sec = p5k_cs_min * 60.0  # 5K-equivalent CS pace in sec/mi.
 
     # --- Intervals 6x1600m, 3:00 rest ---
     rep_dist = 1600.0
@@ -330,35 +365,33 @@ def compute_workout_predictions(daily_summary, lr_fit):
     decay = math.exp(-rest_per_mile / TAU)
     d_eff_int = rep_dist * (1 + (rep_count - 1) * decay)
     t_eff_int = (d_eff_int - dp) / cs_mps
-    pace_intervals = t_eff_int * 1609.344 / d_eff_int  # sec/mi
+    pace_intervals = t_eff_int * 1609.344 / d_eff_int
 
     # --- Fartlek 8000m continuous ---
     d_far = 8000.0
     t_far = (d_far - dp) / cs_mps
     pace_fartlek = t_far * 1609.344 / d_far
 
-    # --- Long runs: add bin_coef + intercept (sec/mi 5K-equiv residual) ---
-    intercept = lr_fit.intercept
-    bin_coef_lo = lr_fit.bin_coefs.get('lr_lo', 0.0)
-    bin_coef_hi = lr_fit.bin_coefs.get('lr_hi', 0.0)
+    # --- Long runs: empirical mean raw_resid filtered to qualifying-route,
+    #     non-pruned long runs in each bin. Treat that mean as the expected
+    #     5K-equivalent pace residual; project from CS to the workout distance.
+    bin_resid = _bin_residuals(lr_in_aug)
 
-    def project_long(miles, total_resid_sec_per_mi):
+    def project_long(miles, resid_sec_per_mi):
         d = miles * 1609.344
-        # Convert residualized 5K-equiv pace (sec/mi) to a residualized t_5k:
-        p5k_pred_sec = p5k_cs_sec + total_resid_sec_per_mi
+        p5k_pred_sec = p5k_cs_sec + resid_sec_per_mi
         t_5k_pred_sec = p5k_pred_sec * 5000.0 / 1609.344
         cs_mps_lr = (5000.0 - dp) / t_5k_pred_sec
         t_d = (d - dp) / cs_mps_lr
         return t_d * 1609.344 / d
 
-    pace_long_20 = project_long(20, intercept + bin_coef_lo)
-    pace_long_24 = project_long(24, intercept + bin_coef_hi)
+    pace_long_24 = project_long(24, bin_resid['lr_hi'])
 
     return {
         'intervals_6x1600': pace_intervals,
         'fartlek_8000':     pace_fartlek,
-        'long_20':          pace_long_20,
         'long_24':          pace_long_24,
+        '_debug':           bin_resid,
     }
 
 
@@ -368,14 +401,12 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str):
 
     # Build stats rows
     streak_value = (
-        f"<b>{stats['streak_len']} days</b>, since {fmt_friendly_date(stats['streak_start'])}"
-        if stats['streak_active'] else "<b>0 days</b>"
+        f"<b>{stats['streak_len']:,}</b> days, "
+        f"since {fmt_friendly_date(stats['streak_start'])}"
+        if stats['streak_active'] else "<b>0</b> days"
     )
-    miles_logged_html = f"<b>{stats['miles_logged']:,}</b>"
-    projected_html = (
-        f"<b>{stats['projected_miles']:,.0f}</b> miles "
-        f"<span class=\"dim\">({stats['projected_year']})</span>"
-    )
+    miles_logged_html = f"<b>{stats['miles_logged']:,}</b> miles"
+    projected_html = f"<b>{stats['projected_miles']:,.0f}</b> miles"
     past7_html = f"<b>{stats['past_7_miles']:.1f}</b> miles"
     if stats['training_shoe']:
         ts = (f"<b>{escape(stats['training_shoe'])}</b> "
@@ -389,9 +420,9 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str):
 
     stat_rows = [
         ('Streak:',                streak_value),
-        ('Miles logged:',          miles_logged_html),
-        (f"Miles projected for {stats['projected_year']}:", projected_html),
-        ('Miles in past 7 days:',  past7_html),
+        ('Lifetime logged:',       miles_logged_html),
+        (f"Projected for {stats['projected_year']}:", projected_html),
+        ('Past 7 days:',           past7_html),
         ('Current training shoe:', ts),
         ('Current racing shoe:',   rs),
     ]
@@ -401,7 +432,7 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str):
         for label, value in stat_rows
     )
 
-    # PRs table
+    # PRs table — Distance left, PR/Date right-aligned numeric cells, Event/Location left.
     pr_rows = []
     for r in prs:
         if r['time_sec'] is None:
@@ -415,15 +446,15 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str):
         pr_rows.append(
             f'<tr>'
             f'<td>{escape(r["distance"])}</td>'
-            f'<td><b>{fmt_race_time(r["time_sec"])}</b></td>'
-            f'<td>{fmt_friendly_date(r["date"])}</td>'
+            f'<td class="num"><b>{fmt_race_time(r["time_sec"])}</b></td>'
+            f'<td class="num">{fmt_friendly_date(r["date"])}</td>'
             f'<td>{evt}</td>'
             f'<td>{loc}</td>'
             f'</tr>'
         )
     prs_html = '\n'.join(pr_rows)
 
-    # Race Predictions table
+    # Race Predictions table — both numeric cols right-aligned.
     rp_rows = []
     for r in race_preds:
         if r['time_sec'] is None or pd.isna(r['time_sec']):
@@ -435,8 +466,8 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str):
         rp_rows.append(
             f'<tr>'
             f'<td>{escape(r["distance"])}</td>'
-            f'<td><b>{fmt_race_time(r["time_sec"])}</b></td>'
-            f'<td>{fmt_cri_halfwidth(r["half_sec"])}</td>'
+            f'<td class="num"><b>{fmt_race_time(r["time_sec"])}</b></td>'
+            f'<td class="num">{fmt_cri_halfwidth(r["half_sec"])}</td>'
             f'</tr>'
         )
     race_pred_html = '\n'.join(rp_rows)
@@ -445,7 +476,6 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str):
     wp_rows = [
         ('Intervals (6×1600m):', fmt_pace_per_mi(workout_preds['intervals_6x1600'])),
         ('Fartlek (8000m continuous):', fmt_pace_per_mi(workout_preds['fartlek_8000'])),
-        ('Long (20 miles):', fmt_pace_per_mi(workout_preds['long_20'])),
         ('Long (24 miles):', fmt_pace_per_mi(workout_preds['long_24'])),
     ]
     workout_html = ''.join(
@@ -464,17 +494,17 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str):
   flex-direction: column;
 }
 .dash-main {
-  flex: 1 0 auto;
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
-  gap: 32px;
-  padding: 28px 32px 16px;
+  justify-content: space-evenly;
+  gap: 36px 24px;
+  padding: 28px 12px;
   align-items: flex-start;
 }
 .dash-section {
-  flex: 1 1 320px;
-  min-width: 320px;
-  max-width: 560px;
+  /* shrink-to-content: each section is exactly as wide as its widest row */
+  flex: 0 0 auto;
 }
 .dash-section h2 {
   font-size: 15px;
@@ -484,10 +514,11 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str):
   padding-bottom: 6px;
   border-bottom: 1px solid #333;
   letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 .kv {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: max-content max-content;
   column-gap: 12px;
   row-gap: 6px;
   align-items: baseline;
@@ -501,6 +532,7 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str):
 .kv .stat-value {
   color: #ddd;
   font-size: 14px;
+  white-space: nowrap;
 }
 .kv .stat-value b {
   color: #fff;
@@ -513,7 +545,6 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str):
 }
 table.dash {
   border-collapse: collapse;
-  width: 100%;
   font-size: 13px;
   color: #ddd;
 }
@@ -525,9 +556,17 @@ table.dash th {
   border-bottom: 1px solid #333;
   white-space: nowrap;
 }
+table.dash th.num {
+  text-align: right;
+}
 table.dash td {
   padding: 5px 10px;
   vertical-align: baseline;
+  white-space: nowrap;
+}
+table.dash td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 table.dash td + td,
 table.dash th + th {
@@ -547,7 +586,7 @@ table.dash .dim {
   text-align: center;
   color: #888;
   font-size: 12px;
-  padding: 16px 12px 22px;
+  padding: 8px 12px 22px;
 }
 """
 
@@ -572,7 +611,8 @@ table.dash .dim {
       <h2>Personal Records</h2>
       <table class="dash">
         <thead><tr>
-          <th>Distance</th><th>PR</th><th>Date</th><th>Event</th><th>Location</th>
+          <th>Distance</th><th class="num">PR</th><th class="num">Date</th>
+          <th>Event</th><th>Location</th>
         </tr></thead>
         <tbody>
 {prs_html}
@@ -584,7 +624,9 @@ table.dash .dim {
       <h2>Race Predictions</h2>
       <table class="dash">
         <thead><tr>
-          <th>Distance</th><th>Predicted Time</th><th>95% CrI</th>
+          <th>Distance</th>
+          <th class="num">Prediction</th>
+          <th class="num">95% CrI</th>
         </tr></thead>
         <tbody>
 {race_pred_html}
@@ -632,16 +674,19 @@ def main():
 
     daily_summary, beta_long, d_thresh, _xc = load_cs_outputs(str(DATA_DIR))
 
-    # Long-run model fit (in-slice runs, not snow).
+    # Long-run model fit (in-slice runs, not snow). We need the augmented
+    # frame (with `route`, `bin`, `is_outlier`) to compute empirical bin
+    # residuals on qualifying routes — the model fit itself is only used
+    # here for its outlier flags.
     cs, epoch = load_cs()
     lr_all = project_long_runs(cs, epoch)
     lr_in = lr_all[lr_all['excluded_reason'].isna()].copy()
-    _, lr_fit, _qual_routes = fit_long_run_model(lr_in)
+    lr_in_aug, _lr_fit, _qual_routes = fit_long_run_model(lr_in)
 
     stats = compute_stats(daily, races, now_utc)
     prs = compute_prs(races)
     race_preds = compute_race_predictions(daily_summary, beta_long, d_thresh)
-    workout_preds = compute_workout_predictions(daily_summary, lr_fit)
+    workout_preds = compute_workout_predictions(daily_summary, lr_in_aug)
 
     snapshot_path = DATA_DIR / 'drive_snapshot.csv'
     mtime = dt.datetime.fromtimestamp(os.path.getmtime(snapshot_path))
