@@ -1,6 +1,6 @@
-import { jwtVerify } from "npm:jose@5.9.6";
-import { getStore } from "npm:@netlify/blobs@8.1.0";
-import type { Context } from "https://edge.netlify.com/";
+import { jwtVerify } from "https://esm.sh/jose@5.9.6";
+import { getStore } from "@netlify/blobs";
+import type { Context } from "@netlify/edge-functions";
 
 const SESSION_COOKIE = "__Host-session";
 const ALLOWLIST_TTL_MS = 30_000;
