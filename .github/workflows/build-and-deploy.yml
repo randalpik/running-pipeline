@@ -3,6 +3,10 @@ name: build-and-deploy
 on:
   workflow_dispatch:
     inputs:
+      historical:
+        description: "Re-freeze historical (regenerates historical_daily.csv)"
+        type: boolean
+        default: false
       fit:
         description: "Run the Bayesian CS fit (slow, ~5-20 min)"
         type: boolean
@@ -55,11 +59,10 @@ jobs:
 
       - name: Run pipeline
         run: |
-          if [ "${{ inputs.fit }}" = "true" ]; then
-            ./scripts/run_pipeline.sh --fit
-          else
-            ./scripts/run_pipeline.sh
-          fi
+          flags=()
+          [ "${{ inputs.historical }}" = "true" ] && flags+=(--historical)
+          [ "${{ inputs.fit }}" = "true" ] && flags+=(--fit)
+          ./scripts/run_pipeline.sh "${flags[@]}"
 
       - name: Generate plots
         run: ./scripts/run_plots.sh

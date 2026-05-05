@@ -70,6 +70,9 @@
         <h2>Pipeline</h2>
         <p>Trigger a manual rebuild on GitHub Actions. Plots will redeploy automatically.</p>
         <div class="row" style="border-top:0;padding:0">
+          <label><input type="checkbox" id="with-historical"> Re-freeze historical (regenerates historical_daily.csv)</label>
+        </div>
+        <div class="row" style="border-top:0;padding:0;margin-top:6px">
           <label><input type="checkbox" id="with-fit"> Run with refit (slow)</label>
         </div>
         <div class="row" style="border-top:0;padding:0;margin-top:8px">
@@ -197,7 +200,10 @@
       btn.disabled = true;
       status.textContent = "Dispatching…";
       try {
-        const r = await post("/api/admin/run-pipeline", { fit: $("with-fit").checked });
+        const r = await post("/api/admin/run-pipeline", {
+          fit: $("with-fit").checked,
+          historical: $("with-historical").checked,
+        });
         const data = await r.json();
         if (r.ok) {
           status.innerHTML = data.runUrl

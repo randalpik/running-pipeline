@@ -16,14 +16,17 @@ export default async (req: Request, _ctx: Context): Promise<Response> => {
   const token = process.env.GITHUB_DISPATCH_TOKEN;
   if (!repo || !token) return json({ error: "github_not_configured" }, 500);
 
-  let body: { fit?: boolean; ref?: string };
+  let body: { fit?: boolean; historical?: boolean; ref?: string };
   try {
     body = await req.json();
   } catch {
     body = {};
   }
   const ref = body.ref || "main";
-  const inputs = { fit: body.fit ? "true" : "false" };
+  const inputs = {
+    fit: body.fit ? "true" : "false",
+    historical: body.historical ? "true" : "false",
+  };
 
   const dispatchRes = await fetch(
     `https://api.github.com/repos/${repo}/actions/workflows/${WORKFLOW_FILE}/dispatches`,
@@ -51,7 +54,7 @@ export default async (req: Request, _ctx: Context): Promise<Response> => {
     at: nowIso(),
     actor: guard.email,
     action: "run_pipeline",
-    detail: { fit: !!body.fit, ref },
+    detail: { fit: !!body.fit, historical: !!body.historical, ref },
   });
 
   const runUrl = await pollForRunUrl(repo, token);
