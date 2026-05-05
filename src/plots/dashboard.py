@@ -643,7 +643,7 @@ table.dash .dim {
 
   </div>
   <div class="dash-footer">
-    Created by Max Randal. Last updated {escape(last_updated_str)}
+    Created by Max Randal. Last updated {escape(last_updated_str)}.
   </div>
 </div>
 {_TAB_KEY_FORWARDER_JS}

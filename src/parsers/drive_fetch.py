@@ -43,7 +43,7 @@ from src.shared.paths import DATA_DIR, OUTPUT_DIR
 
 
 # Known Drive IDs for Max's running log data
-FOLDER_ID = '0AEcLRNUY5jL_Uk9PVA'
+FOLDER_ID = '1b5yUJBkQA7FZfQX4STHBoFOnQBdlsQMv'
 ADJUSTMENTS_ID = '1EnfRO7iFG7KAO6QxrnI-wToRm1OOrCFQADC2W3zHN6w'
 
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
@@ -71,14 +71,25 @@ def _abort_with_reauth_instructions(reason: str) -> 'None':
 
 
 def get_drive_service():
-    """Authenticate and return a Drive API service object. Caches token between runs.
+    """Authenticate and return a Drive API service object.
+
+    Two auth paths:
+      - If GOOGLE_APPLICATION_CREDENTIALS is set (CI), use a service account.
+        The Drive folder + adjustments sheet must be shared with the SA's email.
+      - Otherwise, use the local user-OAuth flow with token caching.
 
     Aborts cleanly (no traceback) on token failures: expired refresh-token,
-    revoked grant, or unreadable cache file. The error message tells the
-    user how to re-authenticate.
+    revoked grant, or unreadable cache file.
     """
-    # Imports deferred so the rest of the pipeline doesn't require google-auth when unused
     from googleapiclient.discovery import build
+
+    if os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'):
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_file(
+            os.environ['GOOGLE_APPLICATION_CREDENTIALS'], scopes=SCOPES
+        )
+        return build('drive', 'v3', credentials=creds)
+
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
     from google.auth.exceptions import RefreshError
@@ -118,11 +129,13 @@ def download_file(service, file_id, dest_path):
     """
     from googleapiclient.http import MediaIoBaseDownload
 
-    meta = service.files().get(fileId=file_id, fields='mimeType,name').execute()
+    meta = service.files().get(
+        fileId=file_id, fields='mimeType,name', supportsAllDrives=True
+    ).execute()
     if meta['mimeType'] == NATIVE_SHEET_MIME:
         request = service.files().export_media(fileId=file_id, mimeType=XLSX_MIME)
     else:
-        request = service.files().get_media(fileId=file_id)
+        request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
 
     os.makedirs(os.path.dirname(dest_path) or '.', exist_ok=True)
     with io.FileIO(dest_path, 'wb') as fh:
@@ -139,16 +152,20 @@ def find_log_by_year(service, year, folder_id=FOLDER_ID):
     Tries 'Running Log YYYY' (the canonical name) first, then fuzzy match.
     Returns the file ID or raises FileNotFoundError.
     """
+    list_kwargs = dict(
+        fields='files(id, name, mimeType)',
+        pageSize=10,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    )
     exact_q = (f"name = 'Running Log {year}' and '{folder_id}' in parents "
                "and trashed = false")
-    results = service.files().list(q=exact_q, fields='files(id, name, mimeType)',
-                                   pageSize=10).execute()
+    results = service.files().list(q=exact_q, **list_kwargs).execute()
     files = results.get('files', [])
     if not files:
         fuzzy_q = (f"name contains 'Running Log {year}' and '{folder_id}' in parents "
                    "and trashed = false")
-        results = service.files().list(q=fuzzy_q, fields='files(id, name, mimeType)',
-                                       pageSize=10).execute()
+        results = service.files().list(q=fuzzy_q, **list_kwargs).execute()
         files = results.get('files', [])
     if not files:
         raise FileNotFoundError(f"No log file found for year {year} in folder {folder_id}")

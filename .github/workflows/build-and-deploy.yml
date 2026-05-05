@@ -1,0 +1,94 @@
+name: build-and-deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      fit:
+        description: "Run the Bayesian CS fit (slow, ~5-20 min)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-and-deploy
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-fit.txt
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ "${{ inputs.fit }}" = "true" ]; then
+            pip install -r requirements-fit.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      - name: Write Drive service-account credentials
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+        run: |
+          if [ -z "$GCP_SA_JSON" ]; then
+            echo "GCP_SA_JSON secret is empty; aborting." >&2
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$GCP_SA_JSON" > "$RUNNER_TEMP/sa.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> "$GITHUB_ENV"
+
+      - name: Run pipeline
+        run: |
+          if [ "${{ inputs.fit }}" = "true" ]; then
+            ./scripts/run_pipeline.sh --fit
+          else
+            ./scripts/run_pipeline.sh
+          fi
+
+      - name: Generate plots
+        run: ./scripts/run_plots.sh
+
+      - name: Stage site/dist
+        run: |
+          mkdir -p site/dist/plots
+          cp -R output/* site/dist/plots/
+          rm -rf site/dist/plots/debug
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install site deps
+        working-directory: site
+        run: npm ci
+
+      - name: Deploy to Netlify
+        working-directory: site
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: |
+          npx --yes netlify-cli@latest deploy \
+            --prod \
+            --dir=dist \
+            --site="$NETLIFY_SITE_ID" \
+            --auth="$NETLIFY_AUTH_TOKEN" \
+            --message="GHA build ${{ github.run_id }}"

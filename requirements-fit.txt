@@ -1,0 +1,4 @@
+-r requirements.txt
+pymc>=5.16,<6
+arviz>=0.20,<1
+xarray-einstats>=0.8,<1

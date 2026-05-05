@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Admin — Running Log</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; min-height: 100dvh;
+      background: #0e0e10; color: #e6e6e6;
+      font: 16px/1.5 system-ui, -apple-system, sans-serif;
+    }
+    main { max-width: 760px; margin: 40px auto; padding: 0 20px; }
+    h1 { margin: 0 0 24px; }
+    p { color: #a8a8ae; }
+    section { background: #17171a; border: 1px solid #2a2a2f; border-radius: 12px; padding: 20px 22px; margin-bottom: 20px; }
+    section h2 { margin-top: 0; font-size: 1.05rem; }
+    .empty { color: #777; font-style: italic; }
+    .row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid #2a2a2f; }
+    .row:first-of-type { border-top: 0; }
+    .email { flex: 1; font-family: ui-monospace, SFMono-Regular, monospace; font-size: .9rem; word-break: break-all; }
+    .when { color: #777; font-size: .8rem; }
+    .msg { color: #a8a8ae; font-size: .85rem; flex-basis: 100%; padding-left: 0; }
+    button {
+      background: #2a2a2f; color: #e6e6e6; border: 1px solid #3a3a40;
+      border-radius: 6px; padding: 6px 12px; font: inherit; font-size: .85rem; cursor: pointer;
+    }
+    button:hover { background: #34343a; }
+    button.primary { background: #3478f6; border-color: #3478f6; color: white; }
+    button.primary:hover { background: #2a68d6; }
+    button.danger { background: #b03434; border-color: #b03434; color: white; }
+    button.danger:hover { background: #962a2a; }
+    button:disabled { opacity: .5; cursor: progress; }
+    input[type="email"], input[type="text"] {
+      background: #0e0e10; color: #e6e6e6; border: 1px solid #2a2a2f;
+      border-radius: 6px; padding: 7px 10px; font: inherit; flex: 1;
+    }
+    .add-row { display: flex; gap: 8px; margin-top: 12px; }
+    .toast { color: #6be08a; font-size: .85rem; min-height: 1.2em; margin-top: 8px; }
+    .toast.err { color: #ff6b6b; }
+    nav a { color: #6aa6ff; text-decoration: none; font-size: .9rem; }
+    .pipeline-status { margin-top: 10px; font-size: .85rem; color: #a8a8ae; }
+    .pipeline-status a { color: #6aa6ff; }
+  </style>
+</head>
+<body>
+  <main>
+    <nav><a href="/">← Back</a></nav>
+    <h1>Admin</h1>
+    <p id="check">Checking access…</p>
+
+    <div id="panels" style="display:none">
+      <section>
+        <h2>Pending requests <span id="req-count" class="when"></span></h2>
+        <div id="requests"></div>
+      </section>
+
+      <section>
+        <h2>Allowlist</h2>
+        <div id="allowlist"></div>
+        <div class="add-row">
+          <input type="email" id="add-email" placeholder="email@example.com" autocomplete="off">
+          <button class="primary" id="add-btn">Add</button>
+        </div>
+        <div class="toast" id="al-toast"></div>
+      </section>
+
+      <section>
+        <h2>Pipeline</h2>
+        <p>Trigger a manual rebuild on GitHub Actions. Plots will redeploy automatically.</p>
+        <div class="row" style="border-top:0;padding:0">
+          <label><input type="checkbox" id="with-fit"> Run with refit (slow)</label>
+        </div>
+        <div class="row" style="border-top:0;padding:0;margin-top:8px">
+          <button class="primary" id="run-btn">Run pipeline</button>
+        </div>
+        <div class="pipeline-status" id="run-status"></div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const j = (b, init = {}) => fetch(b, { headers: { "Content-Type": "application/json" }, ...init });
+    const post = (url, body) => j(url, { method: "POST", body: JSON.stringify(body || {}) });
+
+    async function ensureAdmin() {
+      const r = await fetch("/api/auth/me");
+      if (!r.ok) { location.replace("/login.html?next=/admin.html"); return false; }
+      const me = await r.json();
+      if (!me.isAdmin) { location.replace("/"); return false; }
+      $("check").textContent = `Signed in as ${me.email}.`;
+      $("panels").style.display = "block";
+      return true;
+    }
+
+    function fmtDate(iso) {
+      try { return new Date(iso).toLocaleString(); } catch { return iso; }
+    }
+
+    async function loadRequests() {
+      const r = await fetch("/api/admin/requests");
+      const data = await r.json();
+      const entries = Object.entries(data.requests || {});
+      $("req-count").textContent = entries.length ? `(${entries.length})` : "";
+      const root = $("requests");
+      root.innerHTML = "";
+      if (!entries.length) {
+        root.innerHTML = '<div class="empty">No pending requests.</div>';
+        return;
+      }
+      for (const [email, req] of entries) {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.innerHTML = `
+          <span class="email">${email}</span>
+          <span class="when">${fmtDate(req.requestedAt)}</span>
+          <button class="primary" data-act="approve">Approve</button>
+          <button class="danger" data-act="deny">Deny</button>
+        `;
+        if (req.message) {
+          const msg = document.createElement("div");
+          msg.className = "msg";
+          msg.textContent = req.message;
+          row.appendChild(msg);
+        }
+        row.querySelector('[data-act="approve"]').addEventListener("click", async (e) => {
+          e.target.disabled = true;
+          await post("/api/admin/approve", { email });
+          await Promise.all([loadRequests(), loadAllowlist()]);
+        });
+        row.querySelector('[data-act="deny"]').addEventListener("click", async (e) => {
+          e.target.disabled = true;
+          await post("/api/admin/deny", { email });
+          await loadRequests();
+        });
+        root.appendChild(row);
+      }
+    }
+
+    async function loadAllowlist() {
+      const r = await fetch("/api/admin/allowlist");
+      const data = await r.json();
+      const root = $("allowlist");
+      root.innerHTML = "";
+      const list = data.allowlist || [];
+      if (!list.length) {
+        root.innerHTML = '<div class="empty">Allowlist is empty.</div>';
+        return;
+      }
+      for (const email of list) {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.innerHTML = `
+          <span class="email">${email}</span>
+          <button class="danger" data-act="remove">Remove</button>
+        `;
+        row.querySelector('[data-act="remove"]').addEventListener("click", async (e) => {
+          e.target.disabled = true;
+          await fetch("/api/admin/allowlist", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email }),
+          });
+          await loadAllowlist();
+        });
+        root.appendChild(row);
+      }
+    }
+
+    $("add-btn").addEventListener("click", async () => {
+      const input = $("add-email");
+      const email = input.value.trim();
+      const toast = $("al-toast");
+      toast.classList.remove("err");
+      if (!email) return;
+      const r = await fetch("/api/admin/allowlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (r.ok) {
+        input.value = "";
+        toast.textContent = "Added.";
+        await loadAllowlist();
+        setTimeout(() => (toast.textContent = ""), 1500);
+      } else {
+        toast.classList.add("err");
+        toast.textContent = "Failed.";
+      }
+    });
+
+    $("run-btn").addEventListener("click", async () => {
+      const btn = $("run-btn");
+      const status = $("run-status");
+      btn.disabled = true;
+      status.textContent = "Dispatching…";
+      try {
+        const r = await post("/api/admin/run-pipeline", { fit: $("with-fit").checked });
+        const data = await r.json();
+        if (r.ok) {
+          status.innerHTML = data.runUrl
+            ? `Dispatched. <a href="${data.runUrl}" target="_blank" rel="noopener">View run →</a>`
+            : "Dispatched.";
+        } else {
+          status.textContent = data.error || "Dispatch failed.";
+        }
+      } catch {
+        status.textContent = "Network error.";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    (async () => {
+      if (!(await ensureAdmin())) return;
+      await Promise.all([loadRequests(), loadAllowlist()]);
+    })();
+  </script>
+</body>
+</html>

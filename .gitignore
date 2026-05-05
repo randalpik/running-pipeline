@@ -2,3 +2,7 @@ __pycache__/
 
 data/
 output/
+
+# site build artifacts
+site/node_modules/
+site/dist/plots/
