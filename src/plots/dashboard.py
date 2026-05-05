@@ -396,7 +396,7 @@ def compute_workout_predictions(daily_summary, lr_in_aug):
 
 
 # ----- HTML rendering -----
-def render_html(stats, prs, race_preds, workout_preds, last_updated_str):
+def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_updated_iso):
     base_css = (SCAFFOLD_DIR / 'base.css').read_text()
 
     # Build stats rows
@@ -654,7 +654,7 @@ table.dash .dim {
 
   </div>
   <div class="dash-footer">
-    Created by Max Randal. Last updated {escape(last_updated_str)}.
+    Created by Max Randal. Last updated <time id="rp-last-updated" datetime="{escape(last_updated_iso)}">{escape(last_updated_str)}</time>.
     <div class="dash-signout">
       <button id="rp-signout" type="button">Sign out</button>
     </div>
@@ -663,17 +663,35 @@ table.dash .dim {
 <script>
 (function () {{
   var btn = document.getElementById('rp-signout');
-  if (!btn) return;
-  btn.addEventListener('click', function () {{
-    btn.disabled = true;
-    fetch('/api/auth/logout', {{ method: 'POST', credentials: 'same-origin' }})
-      .catch(function () {{}})
-      .then(function () {{
-        var top = window.top || window.parent || window;
-        try {{ top.location.replace('/login.html'); }}
-        catch (e) {{ window.location.replace('/login.html'); }}
+  if (btn) {{
+    btn.addEventListener('click', function () {{
+      btn.disabled = true;
+      fetch('/api/auth/logout', {{ method: 'POST', credentials: 'same-origin' }})
+        .catch(function () {{}})
+        .then(function () {{
+          var top = window.top || window.parent || window;
+          try {{ top.location.replace('/login.html'); }}
+          catch (e) {{ window.location.replace('/login.html'); }}
+        }});
+    }});
+  }}
+
+  // Hydrate the last-updated timestamp into the viewer's local time.
+  // The element's datetime attribute is the build-time UTC ISO string.
+  var t = document.getElementById('rp-last-updated');
+  if (t) {{
+    var iso = t.getAttribute('datetime');
+    var d = iso ? new Date(iso) : null;
+    if (d && !isNaN(d.getTime())) {{
+      var dateStr = d.toLocaleDateString(undefined, {{
+        day: 'numeric', month: 'short', year: 'numeric'
       }});
-  }});
+      var timeStr = d.toLocaleTimeString(undefined, {{
+        hour: 'numeric', minute: '2-digit'
+      }});
+      t.textContent = dateStr + ' at ' + timeStr;
+    }}
+  }}
 }})();
 </script>
 {_TAB_KEY_FORWARDER_JS}
@@ -719,10 +737,21 @@ def main():
     workout_preds = compute_workout_predictions(daily_summary, lr_in_aug)
 
     snapshot_path = DATA_DIR / 'drive_snapshot.csv'
-    mtime = dt.datetime.fromtimestamp(os.path.getmtime(snapshot_path))
-    last_updated = f'{mtime.day} {mtime.strftime("%b")} {mtime.year} at {mtime.strftime("%H:%M")}'
+    # Anchor the timestamp in UTC at build time. The dashboard JS hydrates
+    # it into the viewer's local time at render; the fallback string below
+    # is what users with JS disabled (or before hydration) see, so it's
+    # explicitly labeled UTC to avoid ambiguity.
+    mtime_utc = dt.datetime.fromtimestamp(
+        os.path.getmtime(snapshot_path), tz=dt.timezone.utc
+    )
+    last_updated_iso = mtime_utc.isoformat()
+    last_updated = (
+        f'{mtime_utc.day} {mtime_utc.strftime("%b")} {mtime_utc.year} '
+        f'at {mtime_utc.strftime("%H:%M")} UTC'
+    )
 
-    html = render_html(stats, prs, race_preds, workout_preds, last_updated)
+    html = render_html(stats, prs, race_preds, workout_preds,
+                       last_updated, last_updated_iso)
     OUT_HTML.write_text(html)
     print(f'Wrote {OUT_HTML}')
 

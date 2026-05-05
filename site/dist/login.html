@@ -14,7 +14,6 @@
     }
     .card {
       width: min(420px, calc(100vw - 32px));
-      min-height: 340px;
       box-sizing: border-box;
       background: #17171a; border: 1px solid #2a2a2f; border-radius: 12px;
       padding: 32px 28px; box-shadow: 0 8px 24px rgba(0,0,0,.4);
@@ -22,11 +21,12 @@
     }
     h1 { font-size: 1.35rem; margin: 0 0 8px; }
     p { color: #a8a8ae; margin: 0 0 20px; }
-    /* The Google Identity Services button renders inside an iframe Google
-       owns; the only reliable way to keep its visual edges from looking
-       mismatched on a dark card is to use a button theme that's solid all
-       the way to its rounded edges. filled_blue is the Google-standard
-       blue button — no light edges to worry about. */
+    /* type: "icon" (just the G logo) sidesteps Google's personalized
+       button variant — the white "Sign in as [user]" pill that GIS
+       force-renders for users with an active Google browser session,
+       which can't be themed. Icon button is ~44px and theme-able, and
+       the "Sign in with Google to continue." paragraph above it carries
+       the affordance text. */
     .gbtn { display: flex; justify-content: center; min-height: 44px; }
     .row { display: flex; gap: 8px; align-items: center; }
     label { display: block; font-size: .9rem; color: #a8a8ae; margin: 14px 0 6px; }
@@ -205,11 +205,10 @@
         auto_select: false,
       });
       window.google.accounts.id.renderButton(document.getElementById("gbtn"), {
-        theme: "filled_blue",
+        type: "icon",
+        theme: "filled_black",
         size: "large",
-        text: "signin_with",
-        shape: "pill",
-        width: 280,
+        shape: "circle",
       });
     }
     initGsi();
