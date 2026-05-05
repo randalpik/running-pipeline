@@ -230,20 +230,22 @@
     // (system font, regular weight) is inserted first, then an iframe
     // from accounts.google.com is inserted alongside it. The iframe
     // loads Roboto Medium internally and paints the final "bold" button.
-    // The placeholder is supposed to be removed once the iframe is
-    // ready, but in practice both coexist for a frame, producing a
-    // visible overlap/flicker.
+    // The placeholder is supposed to collapse to height 0 once the
+    // iframe is ready, but in practice both coexist for a frame,
+    // producing a visible overlap/flicker.
     //
     // GIS's actual structure inside .gbtn is:
     //   .gbtn > div.gsi-wrapper > [div.placeholder, div > iframe]
-    // — the placeholder isn't a direct child of .gbtn, it's a sibling
-    // of the iframe's wrapper div. We walk up from the iframe and at
-    // each level hide any sibling that doesn't contain an iframe.
+    // — the placeholder is a sibling of the iframe's wrapper div, not
+    // of the iframe itself. We start one level up from the iframe and
+    // walk to .gbtn, hiding any sibling that doesn't contain an iframe.
+    // We deliberately skip the iframe's own siblings: GIS positions a
+    // click-capture overlay there which is load-bearing for the popup.
     function hideGisInlinePlaceholder(wrapper) {
       const hide = () => {
         const iframe = wrapper.querySelector("iframe");
         if (!iframe) return;
-        let node = iframe;
+        let node = iframe.parentElement;
         while (node && node !== wrapper) {
           const parent = node.parentElement;
           if (!parent) break;
