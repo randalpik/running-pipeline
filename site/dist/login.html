@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Sign in — Running Log</title>
+  <title>Sign in — Max's Running Data</title>
   <style>
     :root { color-scheme: dark; }
     body {
@@ -14,11 +14,19 @@
     }
     .card {
       width: min(420px, calc(100vw - 32px));
+      min-height: 340px;
+      box-sizing: border-box;
       background: #17171a; border: 1px solid #2a2a2f; border-radius: 12px;
       padding: 32px 28px; box-shadow: 0 8px 24px rgba(0,0,0,.4);
+      display: flex; flex-direction: column;
     }
     h1 { font-size: 1.35rem; margin: 0 0 8px; }
     p { color: #a8a8ae; margin: 0 0 20px; }
+    /* The Google Identity Services button renders inside an iframe Google
+       owns; the only reliable way to keep its visual edges from looking
+       mismatched on a dark card is to use a button theme that's solid all
+       the way to its rounded edges. filled_blue is the Google-standard
+       blue button — no light edges to worry about. */
     .gbtn { display: flex; justify-content: center; min-height: 44px; }
     .row { display: flex; gap: 8px; align-items: center; }
     label { display: block; font-size: .9rem; color: #a8a8ae; margin: 14px 0 6px; }
@@ -37,6 +45,16 @@
     button.primary:disabled { opacity: .6; cursor: progress; }
     .hidden { display: none !important; }
     .muted { color: #777; font-size: .85rem; }
+    .email-text { color: #e6e6e6; font-weight: 600; }
+    .back-link {
+      align-self: flex-start;
+      font-size: .85rem; color: #6aa6ff;
+      text-decoration: none;
+      background: none; border: 0; padding: 0;
+      cursor: pointer; font-family: inherit;
+      margin-bottom: 12px;
+    }
+    .back-link:hover { text-decoration: underline; }
     .error { color: #ff6b6b; font-size: .9rem; margin-top: 12px; min-height: 1.2em; }
     .success {
       color: #6be08a;
@@ -49,15 +67,16 @@
 <body>
   <main class="card">
     <section id="signin">
-      <h1>Running Log</h1>
+      <h1>Max's Running Data</h1>
       <p>Sign in with Google to continue.</p>
       <div class="gbtn" id="gbtn"></div>
       <div class="error" id="signin-err" role="alert"></div>
     </section>
 
     <section id="request" class="hidden">
+      <button type="button" class="back-link" id="req-back">← Use a different account</button>
       <h1>Request access</h1>
-      <p>Hi <span id="req-name">there</span> — your account <code id="req-email"></code> isn't on the access list. Submit a request and Max will review it.</p>
+      <p>Hi <span id="req-name">there</span>, your account <strong id="req-email" class="email-text"></strong> isn't on the access list. Submit a request and Max will review it.</p>
       <label for="req-message">Message (optional)</label>
       <textarea id="req-message" rows="3" placeholder="Who you are, how you know Max, etc."></textarea>
       <button class="primary" id="req-submit">Submit request</button>
@@ -111,6 +130,16 @@
         document.getElementById("signin-err").textContent = "Network error. Try again.";
       }
     }
+
+    document.getElementById("req-back").addEventListener("click", () => {
+      pendingIdToken = null;
+      document.getElementById("req-message").value = "";
+      document.getElementById("req-err").textContent = "";
+      // Disable Google's auto-select so the user gets the account picker
+      // again instead of being silently re-signed-in to the same account.
+      try { window.google?.accounts?.id?.disableAutoSelect?.(); } catch {}
+      show("signin");
+    });
 
     document.getElementById("req-submit").addEventListener("click", async () => {
       const btn = document.getElementById("req-submit");
@@ -176,7 +205,7 @@
         auto_select: false,
       });
       window.google.accounts.id.renderButton(document.getElementById("gbtn"), {
-        theme: "filled_black",
+        theme: "filled_blue",
         size: "large",
         text: "signin_with",
         shape: "pill",

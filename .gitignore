@@ -1,6 +1,11 @@
 __pycache__/
 
-data/
+# data/ is mostly pipeline output (daily.csv, races.csv, etc.) regenerated
+# in CI. The exception is city_coords.csv — a Nominatim geocode cache that
+# accumulates across runs and isn't produced by any pipeline step. Without
+# committing it, CI re-geocodes ~100 cities at 1.1s each (Nominatim ToS).
+data/*
+!data/city_coords.csv
 output/
 
 # site/dist/ is mostly build output (plot HTMLs, the shell, plotly.min.js).
