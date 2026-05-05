@@ -31,12 +31,18 @@
        suppress GIS's "Continue as [Name]" personalized button (per
        https://developers.google.com/identity/gsi/web/guides/personalized-button).
        Height matches size:large so the placeholder box is identical to
-       the iframe — no layout shift when GIS mounts asynchronously. */
+       the iframe — no layout shift when GIS mounts asynchronously.
+       visibility:hidden hides GIS's two-step paint: it first inserts an
+       inline DOM placeholder, then swaps in an iframe from
+       accounts.google.com (slower when a Google session exists, since the
+       iframe does a session check). The script reveals the wrapper once
+       the iframe load event fires, so users only see the final state. */
     .gbtn {
       display: flex; justify-content: center; align-items: center;
       align-self: center;
       width: 199px; height: 44px;
       color-scheme: light;
+      visibility: hidden;
     }
     label { display: block; font-size: .9rem; color: #a8a8ae; margin: 14px 0 6px; }
     textarea, input[type="text"] {
@@ -214,7 +220,8 @@
       // width<200 suppresses the personalized "Continue as [Name]" button
       // (https://developers.google.com/identity/gsi/web/guides/personalized-button).
       // GIS has no JS flag to disable personalization; width is the lever.
-      window.google.accounts.id.renderButton(document.getElementById("gbtn"), {
+      const gbtn = document.getElementById("gbtn");
+      window.google.accounts.id.renderButton(gbtn, {
         type: "standard",
         theme: "filled_black",
         size: "large",
@@ -222,6 +229,25 @@
         shape: "pill",
         width: 199,
       });
+      revealOnIframeLoad(gbtn);
+    }
+
+    // Watch for the GIS iframe to be inserted and reveal the wrapper once
+    // it loads. Falls back to a timeout so the button still appears if the
+    // load event is missed (network failure, browser quirk, etc.).
+    function revealOnIframeLoad(wrapper) {
+      const reveal = () => { wrapper.style.visibility = "visible"; };
+      const fallback = setTimeout(reveal, 2000);
+      const obs = new MutationObserver(() => {
+        const iframe = wrapper.querySelector("iframe");
+        if (!iframe) return;
+        obs.disconnect();
+        iframe.addEventListener("load", () => {
+          clearTimeout(fallback);
+          reveal();
+        }, { once: true });
+      });
+      obs.observe(wrapper, { childList: true, subtree: true });
     }
     initGsi();
   </script>
