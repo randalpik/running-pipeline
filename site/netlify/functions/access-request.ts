@@ -65,13 +65,13 @@ async function notifyAdmin(
   const html = `
 <p><strong>${escapeHtml(displayName)}</strong> &lt;${escapeHtml(requesterEmail)}&gt; requested access.</p>
 ${messageBlockHtml}
-<p><a href="https://running.maxrandalmusic.com/admin.html">Review on the admin page →</a></p>
+<p><a href="https://running.maxrandalmusic.com/?tab=admin">Review on the admin page →</a></p>
 `.trim();
 
   const text = `${displayName} <${requesterEmail}> requested access.
 
 ${messageBlockText}
-Review: https://running.maxrandalmusic.com/admin.html
+Review: https://running.maxrandalmusic.com/?tab=admin
 `;
 
   const result = await sendEmail({

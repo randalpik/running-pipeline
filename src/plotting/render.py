@@ -165,6 +165,10 @@ def render_plot(
     html = html.replace('</head>', head_inject + '</head>', 1)
     if body_pre_close:
         html = html.replace('</body>', body_pre_close + '\n</body>', 1)
+    # Plotly's write_html omits the doctype, which puts the iframe into
+    # quirks mode. Prepend it so the page renders in standards mode.
+    if not html.lstrip().lower().startswith('<!doctype'):
+        html = '<!doctype html>\n' + html
     out_path.write_text(html)
     return out_path
 

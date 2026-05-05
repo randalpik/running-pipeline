@@ -41,7 +41,7 @@ TABS = [
 def _empty_shell() -> str:
     return (
         '<!doctype html>\n<html><head><meta charset="utf-8">'
-        '<title>plots</title>'
+        "<title>Max's Running Data</title>"
         '<style>body{background:#1a1a1a;color:#eee;'
         'font-family:system-ui,sans-serif;padding:2rem}</style>'
         '</head><body>'
@@ -81,7 +81,7 @@ def render_shell(tabs, include_admin: bool = False) -> str:
     return f'''<!doctype html>
 <html><head>
 <meta charset="utf-8">
-<title>running-pipeline plots</title>
+<title>Max's Running Data</title>
 <style>
   html, body {{
     margin: 0; padding: 0; height: 100%;
@@ -199,7 +199,7 @@ def render_shell(tabs, include_admin: bool = False) -> str:
     }}
     document.title = (function () {{
       var b = bar.querySelector('button.tab.active');
-      return b ? (b.textContent.trim() + ' — plots') : 'plots';
+      return b ? (b.textContent.trim() + " - Max's Running Data") : "Max's Running Data";
     }})();
   }}
 
@@ -244,7 +244,15 @@ _ADMIN_REVEAL_JS = '''
   fetch('/api/auth/me', { credentials: 'same-origin' })
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (me) {
-      if (me && me.isAdmin) bar.classList.add('show-admin');
+      if (!me || !me.isAdmin) return;
+      bar.classList.add('show-admin');
+      // The admin tab is hidden until this probe resolves, so an initial
+      // ?tab=admin URL is filtered out by pickInitial's visibility check.
+      // Re-activate now that the tab exists.
+      var params = new URLSearchParams(window.location.search);
+      if (params.get('tab') === 'admin' && frame.dataset.slug !== 'admin') {
+        activate('admin');
+      }
     })
     .catch(function () {});
 '''

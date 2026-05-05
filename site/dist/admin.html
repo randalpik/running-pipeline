@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Admin — Running Log</title>
+  <title>Admin - Max's Running Data</title>
   <style>
     :root { color-scheme: dark; }
     body {
@@ -22,6 +22,15 @@
     .email { flex: 1; font-family: ui-monospace, SFMono-Regular, monospace; font-size: .9rem; word-break: break-all; }
     .when { color: #777; font-size: .8rem; }
     .msg { color: #a8a8ae; font-size: .85rem; flex-basis: 100%; padding-left: 0; }
+    .req-table { display: grid; grid-template-columns: max-content max-content 1fr max-content; gap: 8px 14px; align-items: center; overflow-x: auto; }
+    .req-table .req-head { color: #777; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; padding-bottom: 4px; border-bottom: 1px solid #2a2a2f; }
+    .req-table .req-cell { padding: 8px 0; border-bottom: 1px solid #2a2a2f; }
+    .req-table .req-row:last-child .req-cell { border-bottom: 0; }
+    .req-table .req-email { font-family: ui-monospace, SFMono-Regular, monospace; font-size: .9rem; white-space: nowrap; }
+    .req-table .req-when { color: #777; font-size: .8rem; white-space: nowrap; }
+    .req-table .req-msg { color: #a8a8ae; font-size: .85rem; }
+    .req-table .req-msg.empty-msg { color: #555; font-style: italic; }
+    .req-table .req-actions { display: flex; gap: 6px; justify-content: flex-end; }
     button {
       background: #2a2a2f; color: #e6e6e6; border: 1px solid #3a3a40;
       border-radius: 6px; padding: 6px 12px; font: inherit; font-size: .85rem; cursor: pointer;
@@ -46,26 +55,10 @@
 </head>
 <body>
   <main>
-    <nav><a href="/">← Back</a></nav>
     <h1>Admin</h1>
     <p id="check">Checking access…</p>
 
     <div id="panels" style="display:none">
-      <section>
-        <h2>Pending requests <span id="req-count" class="when"></span></h2>
-        <div id="requests"></div>
-      </section>
-
-      <section>
-        <h2>Allowlist</h2>
-        <div id="allowlist"></div>
-        <div class="add-row">
-          <input type="email" id="add-email" placeholder="email@example.com" autocomplete="off">
-          <button class="primary" id="add-btn">Add</button>
-        </div>
-        <div class="toast" id="al-toast"></div>
-      </section>
-
       <section>
         <h2>Pipeline</h2>
         <p>Trigger a manual rebuild on GitHub Actions. Plots will redeploy automatically.</p>
@@ -79,6 +72,21 @@
           <button class="primary" id="run-btn">Run pipeline</button>
         </div>
         <div class="pipeline-status" id="run-status"></div>
+      </section>
+
+      <section>
+        <h2>Pending requests <span id="req-count" class="when"></span></h2>
+        <div id="requests"></div>
+      </section>
+
+      <section>
+        <h2>Allowlist</h2>
+        <div id="allowlist"></div>
+        <div class="add-row">
+          <input type="email" id="add-email" placeholder="email@example.com" autocomplete="off">
+          <button class="primary" id="add-btn">Add</button>
+        </div>
+        <div class="toast" id="al-toast"></div>
       </section>
     </div>
   </main>
@@ -98,8 +106,18 @@
       return true;
     }
 
+    const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    function pad2(n) { return n < 10 ? "0" + n : "" + n; }
     function fmtDate(iso) {
-      try { return new Date(iso).toLocaleString(); } catch { return iso; }
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()} at ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => (
+        { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+      ));
     }
 
     async function loadRequests() {
@@ -113,21 +131,30 @@
         root.innerHTML = '<div class="empty">No pending requests.</div>';
         return;
       }
+      const table = document.createElement("div");
+      table.className = "req-table";
+      table.innerHTML = `
+        <div class="req-head">Email</div>
+        <div class="req-head">Requested</div>
+        <div class="req-head">Message</div>
+        <div class="req-head" style="text-align:right">Actions</div>
+      `;
       for (const [email, req] of entries) {
+        const msg = req.message
+          ? `<div class="req-cell req-msg">${escapeHtml(req.message)}</div>`
+          : `<div class="req-cell req-msg empty-msg">—</div>`;
         const row = document.createElement("div");
-        row.className = "row";
+        row.className = "req-row";
+        row.style.display = "contents";
         row.innerHTML = `
-          <span class="email">${email}</span>
-          <span class="when">${fmtDate(req.requestedAt)}</span>
-          <button class="primary" data-act="approve">Approve</button>
-          <button class="danger" data-act="deny">Deny</button>
+          <div class="req-cell req-email">${escapeHtml(email)}</div>
+          <div class="req-cell req-when">${escapeHtml(fmtDate(req.requestedAt))}</div>
+          ${msg}
+          <div class="req-cell req-actions">
+            <button class="primary" data-act="approve">Approve</button>
+            <button class="danger" data-act="deny">Deny</button>
+          </div>
         `;
-        if (req.message) {
-          const msg = document.createElement("div");
-          msg.className = "msg";
-          msg.textContent = req.message;
-          row.appendChild(msg);
-        }
         row.querySelector('[data-act="approve"]').addEventListener("click", async (e) => {
           e.target.disabled = true;
           await post("/api/admin/approve", { email });
@@ -138,8 +165,9 @@
           await post("/api/admin/deny", { email });
           await loadRequests();
         });
-        root.appendChild(row);
+        table.appendChild(row);
       }
+      root.appendChild(table);
     }
 
     async function loadAllowlist() {
