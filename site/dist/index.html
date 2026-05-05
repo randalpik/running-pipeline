@@ -39,7 +39,6 @@
     <div id="links" class="hidden">
       <p><a href="/plots/">Open plots →</a></p>
       <div class="row">
-        <a id="admin-link" class="hidden" href="/admin.html">Admin</a>
         <button id="logout">Sign out</button>
       </div>
     </div>
@@ -60,7 +59,6 @@
         const me = await r.json();
         document.getElementById("greeting").textContent = `Signed in as ${me.email}.`;
         document.getElementById("links").classList.remove("hidden");
-        if (me.isAdmin) document.getElementById("admin-link").classList.remove("hidden");
       } catch {
         document.getElementById("greeting").textContent = "Could not contact server.";
       }
