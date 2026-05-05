@@ -27,13 +27,15 @@
        UA chrome paints white artifacts around the button. Forcing
        color-scheme: light on this wrapper only makes the iframe render
        cleanly; theme: "filled_black" below still keeps the button dark.
-       Width/height match renderButton({width: 280}) at size:large so the
-       placeholder box is identical to the iframe — no layout shift when
-       GIS mounts asynchronously. */
+       Width matches renderButton({width: 199}) — width must be <200 to
+       suppress GIS's "Continue as [Name]" personalized button (per
+       https://developers.google.com/identity/gsi/web/guides/personalized-button).
+       Height matches size:large so the placeholder box is identical to
+       the iframe — no layout shift when GIS mounts asynchronously. */
     .gbtn {
       display: flex; justify-content: center; align-items: center;
       align-self: center;
-      width: 280px; height: 44px;
+      width: 199px; height: 44px;
       color-scheme: light;
     }
     label { display: block; font-size: .9rem; color: #a8a8ae; margin: 14px 0 6px; }
@@ -203,27 +205,22 @@
         };
         tick();
       });
-      // FedCM and ITP-aware auto-select are what cause the rendered
-      // button to switch from the generic "Sign in with Google" to a
-      // taller personalized "Continue as [Name]" variant a few hundred
-      // ms after mount. Disabling both holds the button to its generic
-      // state, which keeps the card height stable.
       window.google.accounts.id.initialize({
         client_id: clientId,
         callback: handleCredential,
         ux_mode: "popup",
         auto_select: false,
-        use_fedcm_for_button: false,
-        itp_support: false,
       });
-      window.google.accounts.id.disableAutoSelect();
+      // width<200 suppresses the personalized "Continue as [Name]" button
+      // (https://developers.google.com/identity/gsi/web/guides/personalized-button).
+      // GIS has no JS flag to disable personalization; width is the lever.
       window.google.accounts.id.renderButton(document.getElementById("gbtn"), {
         type: "standard",
         theme: "filled_black",
         size: "large",
         text: "signin_with",
         shape: "pill",
-        width: 280,
+        width: 199,
       });
     }
     initGsi();
