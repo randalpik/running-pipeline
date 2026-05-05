@@ -40,6 +40,35 @@ _TAB_KEY_FORWARDER_JS = """
 </script>
 """
 
+# Iframe-side ready signal: postMessage the host shell once Plotly's first
+# layout pass finishes, so it can hide the loading spinner. The iframe `load`
+# event fires hundreds of ms before this on the heavy plots, so we listen for
+# `plotly_afterplot` instead. Idempotent — the shell ignores duplicates.
+_PLOT_READY_FORWARDER_JS = """
+<script>
+(function () {
+  if (window.parent === window) return;
+  function bind() {
+    var gd = document.querySelector('.plotly-graph-div');
+    if (!gd || typeof gd.on !== 'function') { setTimeout(bind, 50); return; }
+    var sent = false;
+    function notify() {
+      if (sent) return;
+      sent = true;
+      try { window.parent.postMessage({ type: 'rp-plot-ready' }, '*'); }
+      catch (err) {}
+    }
+    gd.on('plotly_afterplot', notify);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bind);
+  } else {
+    bind();
+  }
+})();
+</script>
+"""
+
 
 @dataclass
 class CursorTooltip:
@@ -144,6 +173,7 @@ def render_plot(
 
     body_pre_close_parts = [
         _TAB_KEY_FORWARDER_JS,
+        _PLOT_READY_FORWARDER_JS,
         f'<script>\n{_OVERLAY_ANCHOR_JS}\n</script>',
     ]
     if title is not None:

@@ -124,11 +124,37 @@ def render_shell(tabs, include_admin: bool = False) -> str:
     position: absolute; left: 0; right: 0;
     top: 36px; bottom: 0;
   }}
-  #plot-frame {{
+  /* Stacked iframe pool. Each visited tab gets its own iframe, kept alive
+     for the page's lifetime — revisits are paint-only, no fetch or layout.
+     Hide via visibility (not display:none); a Plotly figure laid out inside
+     a zero-size container renders broken and never auto-recovers. */
+  #frame-wrap iframe {{
+    position: absolute; inset: 0;
     width: 100%; height: 100%;
-    border: 0; display: block;
-    background: #1a1a1a;
+    border: 0; background: #1a1a1a;
+    visibility: hidden; pointer-events: none;
+    z-index: 0;
   }}
+  #frame-wrap iframe.active {{
+    visibility: visible; pointer-events: auto;
+    z-index: 1;
+  }}
+  #spinner {{
+    position: absolute; inset: 0; z-index: 2;
+    display: none; align-items: center; justify-content: center;
+    background: #1a1a1a;
+    pointer-events: none;
+  }}
+  #spinner.show {{ display: flex; }}
+  #spinner::after {{
+    content: '';
+    width: 32px; height: 32px;
+    border: 3px solid #333;
+    border-top-color: #93f;
+    border-radius: 50%;
+    animation: rp-spin 0.8s linear infinite;
+  }}
+  @keyframes rp-spin {{ to {{ transform: rotate(360deg); }} }}
 </style>
 </head>
 <body>
@@ -137,18 +163,24 @@ def render_shell(tabs, include_admin: bool = False) -> str:
 {buttons}
   </div>
   <div id="frame-wrap">
-    <iframe id="plot-frame" name="plot-frame" src="about:blank"></iframe>
+    <div id="spinner"></div>
   </div>
 <script>
 (function () {{
   var DEFAULT = {default_slug!r};
   var STORE_KEY = 'rp-active-tab';
+  var POLL_INTERVAL_MS = 50;
+  var POLL_TIMEOUT_MS = 5000;
+
   var bar = document.getElementById('tabbar');
-  var frame = document.getElementById('plot-frame');
+  var wrap = document.getElementById('frame-wrap');
+  var spinner = document.getElementById('spinner');
   var buttons = bar.querySelectorAll('button.tab');
   var slugs = Array.prototype.map.call(buttons, function (b) {{
     return b.dataset.slug;
   }});
+  var pool = new Map();   // slug -> {{ slug, iframe, ready }}
+  var activeSlug = null;
 
   function btnFor(slug) {{
     return bar.querySelector('button.tab[data-slug="' + slug + '"]');
@@ -172,8 +204,71 @@ def render_shell(tabs, include_admin: bool = False) -> str:
 
   function srcFor(slug, btn) {{
     var href = btn && btn.dataset && btn.dataset.href;
-    if (href) return href + (href.indexOf('?') >= 0 ? '&' : '?') + 'v=' + Date.now();
-    return slug + '.html?v=' + Date.now();
+    if (href) return href;
+    return slug + '.html';
+  }}
+
+  function setSpinner(show) {{
+    spinner.classList.toggle('show', show);
+  }}
+
+  function markReady(entry) {{
+    if (entry.ready) return;
+    entry.ready = true;
+    if (entry.slug === activeSlug) setSpinner(false);
+  }}
+
+  // Poll the iframe doc for Plotly's rendered SVG. Plot HTMLs also
+  // postMessage 'rp-plot-ready' once `plotly_afterplot` fires (see
+  // src/plotting/render.py); polling is the fallback for HTMLs that
+  // predate the postMessage hook. Whichever fires first wins.
+  function pollReady(entry) {{
+    var start = Date.now();
+    var timer = setInterval(function () {{
+      if (entry.ready) {{ clearInterval(timer); return; }}
+      if (Date.now() - start > POLL_TIMEOUT_MS) {{
+        clearInterval(timer);
+        markReady(entry);
+        return;
+      }}
+      var doc;
+      try {{ doc = entry.iframe.contentDocument; }}
+      catch (e) {{ clearInterval(timer); markReady(entry); return; }}
+      if (!doc) return;
+      if (doc.querySelector('.plotly-graph-div .main-svg')) {{
+        clearInterval(timer);
+        markReady(entry);
+      }}
+    }}, POLL_INTERVAL_MS);
+  }}
+
+  function getOrCreate(slug, btn) {{
+    var entry = pool.get(slug);
+    if (entry) return entry;
+    var iframe = document.createElement('iframe');
+    iframe.setAttribute('name', 'plot-frame-' + slug);
+    iframe.dataset.slug = slug;
+    iframe.src = srcFor(slug, btn);
+    wrap.appendChild(iframe);
+    entry = {{ slug: slug, iframe: iframe, ready: false }};
+    pool.set(slug, entry);
+    iframe.addEventListener('load', function () {{
+      // Non-plot pages (admin) have no .plotly-graph-div — mark ready
+      // immediately so the spinner clears without waiting on the timeout.
+      var doc;
+      try {{ doc = entry.iframe.contentDocument; }}
+      catch (e) {{ markReady(entry); return; }}
+      if (!doc || !doc.querySelector('.plotly-graph-div')) {{
+        markReady(entry);
+        return;
+      }}
+      if (doc.querySelector('.plotly-graph-div .main-svg')) {{
+        markReady(entry);
+      }} else {{
+        pollReady(entry);
+      }}
+    }});
+    return entry;
   }}
 
   function activate(slug, opts) {{
@@ -183,14 +278,12 @@ def render_shell(tabs, include_admin: bool = False) -> str:
     Array.prototype.forEach.call(buttons, function (b) {{
       b.classList.toggle('active', b.dataset.slug === slug);
     }});
-    if (frame.dataset.slug !== slug) {{
-      // Cache-bust on every src assignment. Without this, the parent
-      // reload triggered by livereload would re-set frame.src to the
-      // same string the iframe already had, and the browser treats a
-      // same-URL src assignment as a no-op (no new fetch).
-      frame.src = srcFor(slug, btn);
-      frame.dataset.slug = slug;
-    }}
+    var entry = getOrCreate(slug, btn);
+    pool.forEach(function (e) {{
+      e.iframe.classList.toggle('active', e.slug === slug);
+    }});
+    activeSlug = slug;
+    setSpinner(!entry.ready);
     try {{ localStorage.setItem(STORE_KEY, slug); }} catch (e) {{}}
     if (!opts.skipUrl) {{
       var url = new URL(window.location.href);
@@ -209,7 +302,7 @@ def render_shell(tabs, include_admin: bool = False) -> str:
 
   function cycle(direction) {{
     var visible = slugs.filter(visBySlug);
-    var idx = visible.indexOf(frame.dataset.slug);
+    var idx = visible.indexOf(activeSlug);
     if (idx < 0) return;
     var next = idx + direction;
     if (next < 0) next = visible.length - 1;
@@ -228,9 +321,18 @@ def render_shell(tabs, include_admin: bool = False) -> str:
 
   window.addEventListener('message', function (e) {{
     var d = e.data;
-    if (!d || d.type !== 'rp-tab-key') return;
-    if (d.key === 'ArrowLeft')  cycle(-1);
-    if (d.key === 'ArrowRight') cycle(1);
+    if (!d) return;
+    if (d.type === 'rp-tab-key') {{
+      if (d.key === 'ArrowLeft')  cycle(-1);
+      if (d.key === 'ArrowRight') cycle(1);
+      return;
+    }}
+    if (d.type === 'rp-plot-ready') {{
+      pool.forEach(function (entry) {{
+        if (entry.iframe.contentWindow === e.source) markReady(entry);
+      }});
+      return;
+    }}
   }});
 {admin_js}
   activate(pickInitial(), {{ skipUrl: false }});
@@ -250,7 +352,7 @@ _ADMIN_REVEAL_JS = '''
       // ?tab=admin URL is filtered out by pickInitial's visibility check.
       // Re-activate now that the tab exists.
       var params = new URLSearchParams(window.location.search);
-      if (params.get('tab') === 'admin' && frame.dataset.slug !== 'admin') {
+      if (params.get('tab') === 'admin' && activeSlug !== 'admin') {
         activate('admin');
       }
     })
