@@ -205,24 +205,18 @@
         };
         tick();
       });
-      // use_fedcm_for_button: true moves session detection out of the
-      // button iframe and into the browser's native FedCM API. Without
-      // this, GIS detects a Google session via in-iframe probes and
-      // re-renders the button (visible as a regular→bold text flicker)
-      // even when width<200 suppresses the personalized variant. FedCM
-      // is the modern path on Chrome desktop M125+ / Android M128+;
-      // browsers without FedCM fall back to the legacy iframe path.
       window.google.accounts.id.initialize({
         client_id: clientId,
         callback: handleCredential,
         ux_mode: "popup",
         auto_select: false,
-        use_fedcm_for_button: true,
       });
       // width<200 suppresses the personalized "Continue as [Name]" button
       // (https://developers.google.com/identity/gsi/web/guides/personalized-button).
       // GIS has no JS flag to disable personalization; width is the lever.
-      window.google.accounts.id.renderButton(document.getElementById("gbtn"), {
+      const gbtn = document.getElementById("gbtn");
+      hideGisInlinePlaceholder(gbtn);
+      window.google.accounts.id.renderButton(gbtn, {
         type: "standard",
         theme: "filled_black",
         size: "large",
@@ -230,6 +224,27 @@
         shape: "pill",
         width: 199,
       });
+    }
+
+    // GIS renders the button in two steps: an inline DOM placeholder
+    // (system font, regular weight) is inserted first, then an iframe
+    // from accounts.google.com is inserted alongside it. The iframe
+    // loads Roboto Medium internally and paints the final "bold" button.
+    // The placeholder is supposed to be removed once the iframe is
+    // ready, but in practice both coexist for a frame, producing a
+    // visible overlap/flicker. We hide any direct child of the wrapper
+    // that isn't (and doesn't contain) the iframe — i.e., the
+    // placeholder — so only the iframe is ever visible.
+    function hideGisInlinePlaceholder(wrapper) {
+      const hide = () => {
+        for (const child of wrapper.children) {
+          if (child.tagName !== "IFRAME" && !child.querySelector("iframe")) {
+            child.style.display = "none";
+          }
+        }
+      };
+      hide();
+      new MutationObserver(hide).observe(wrapper, { childList: true });
     }
     initGsi();
   </script>
