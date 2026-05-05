@@ -588,6 +588,17 @@ table.dash .dim {
   font-size: 12px;
   padding: 8px 12px 22px;
 }
+.dash-signout {
+  margin-top: 16px;
+}
+.dash-signout button {
+  background: #2a2a2f; color: #aaa;
+  border: 1px solid #3a3a3a; border-radius: 6px;
+  padding: 5px 14px; font: inherit; font-size: 12px;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.dash-signout button:hover { color: #eee; background: #34343a; }
 """
 
     head_css = base_css + '\n' + page_css
@@ -644,8 +655,27 @@ table.dash .dim {
   </div>
   <div class="dash-footer">
     Created by Max Randal. Last updated {escape(last_updated_str)}.
+    <div class="dash-signout">
+      <button id="rp-signout" type="button">Sign out</button>
+    </div>
   </div>
 </div>
+<script>
+(function () {{
+  var btn = document.getElementById('rp-signout');
+  if (!btn) return;
+  btn.addEventListener('click', function () {{
+    btn.disabled = true;
+    fetch('/api/auth/logout', {{ method: 'POST', credentials: 'same-origin' }})
+      .catch(function () {{}})
+      .then(function () {{
+        var top = window.top || window.parent || window;
+        try {{ top.location.replace('/login.html'); }}
+        catch (e) {{ window.location.replace('/login.html'); }}
+      }});
+  }});
+}})();
+</script>
 {_TAB_KEY_FORWARDER_JS}
 """
 

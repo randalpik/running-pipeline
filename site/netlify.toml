@@ -11,6 +11,12 @@
   path = "/plots/*"
 
 [[redirects]]
+  from = "/"
+  to = "/plots/"
+  status = 302
+  force = true
+
+[[redirects]]
   from = "/api/auth/config"
   to = "/.netlify/functions/auth-config"
   status = 200
