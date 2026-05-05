@@ -24,7 +24,7 @@ Google Drive (Running Log xlsx, Lifetime Miles, Routes, Max's Running Data)
             plot scripts
                 │
                 ▼
-        output/plots/*.html
+        output/*.html
 ```
 
 `daily.csv` is running-only as of April 2026 (zero-mile days pruned). `races.csv` back-propagates `city_state` and `surface` into the corresponding daily race rows for `race_seq=1`.
@@ -110,3 +110,34 @@ Merged into `merged_races.csv` (161 rows, distance-snapped to standard distances
 | Max's Running Routes | `1tWPI9j8JCJidrOyu8Gw5lJ4aS-8__51gompGjArzUWU` |
 | Max's Running Data | `1EnfRO7iFG7KAO6QxrnI-wToRm1OOrCFQADC2W3zHN6w` |
 | Running Data folder | `1b5yUJBkQA7FZfQX4STHBoFOnQBdlsQMv` |
+
+## Hosting layer
+
+The site at **running.maxrandalmusic.com** lives in `site/`, deployed to Netlify by the `build-and-deploy.yml` GitHub Actions workflow. The pipeline runs in CI on `workflow_dispatch` (manual trigger from the admin UI), generates plots into `output/`, and the deploy step copies `output/*` directly into `site/dist/` (root, no subdirectory).
+
+### URL layout — flat at root
+
+Plot HTMLs and the tabbed shell sit at the root of the deployed site, NOT under a `/plots/` namespace. Examples:
+
+```
+running.maxrandalmusic.com/                  — tabbed shell (output/index.html)
+running.maxrandalmusic.com/dashboard.html    — Dashboard tab content
+running.maxrandalmusic.com/world_map.html    — World Map tab content
+running.maxrandalmusic.com/admin.html        — admin UI (loaded into iframe by the shell's Admin tab)
+running.maxrandalmusic.com/login.html        — login + access-request page
+running.maxrandalmusic.com/api/*             — Netlify Functions (auth, admin endpoints)
+```
+
+### Auth gate is allow-list-of-public-paths
+
+The Edge Function `site/netlify/edge-functions/gate.ts` fires on **every path** (`/**`) and is the source of truth for the auth model:
+
+- The gate's `EXEMPT_PATHS` set + `EXEMPT_PREFIXES` list name the **public** routes (login.html, plotly.min.js, /api/, /.netlify/, etc.).
+- Every other path requires a valid session JWT cookie whose email is on the allowlist (or is `ADMIN_EMAIL`).
+- Unauthorized requests get a 302 to `/login.html` (with a `?next=` round-trip back to the original URL after sign-in).
+
+This is deliberately **safer-by-default**: a new file or route added anywhere in the deployed site is gated unless someone explicitly adds it to the exempt list. Forgetting to exempt a public page just means it gets login-walled until fixed; forgetting to gate a private page would leak data, and this design prevents that failure mode.
+
+### Admin gating
+
+Admin endpoints (`/api/admin/*`) verify both the session cookie and that the email matches `ADMIN_EMAIL` server-side via `requireAdmin` in `site/netlify/functions/_shared/admin-guard.ts`. The admin tab in the tabbed shell is hidden via CSS by default and unhidden client-side only when `/api/auth/me` returns `isAdmin: true`. Visibility is purely cosmetic — security is at the API layer, not the UI.

@@ -3,6 +3,10 @@ __pycache__/
 data/
 output/
 
-# site build artifacts
+# site/dist/ is mostly build output (plot HTMLs, the shell, plotly.min.js).
+# The pipeline regenerates these in CI on every deploy. Only the auth
+# pages are committed source.
 site/node_modules/
-site/dist/plots/
+site/dist/*
+!site/dist/login.html
+!site/dist/admin.html

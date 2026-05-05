@@ -69,9 +69,9 @@ jobs:
 
       - name: Stage site/dist
         run: |
-          mkdir -p site/dist/plots
-          cp -R output/* site/dist/plots/
-          rm -rf site/dist/plots/debug
+          mkdir -p site/dist
+          cp -R output/* site/dist/
+          rm -rf site/dist/debug
 
       - uses: actions/setup-node@v4
         with:

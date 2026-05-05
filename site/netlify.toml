@@ -6,15 +6,10 @@
 [functions]
   node_bundler = "esbuild"
 
-[[edge_functions]]
-  function = "gate"
-  path = "/plots/*"
-
-[[redirects]]
-  from = "/"
-  to = "/plots/"
-  status = 302
-  force = true
+# Edge function "gate" auths the site. Its path config lives in
+# netlify/edge-functions/gate.ts (gates everything by default; an EXEMPT
+# list there names the public paths). Don't add path config for it here —
+# keep the source of truth in code.
 
 [[redirects]]
   from = "/api/auth/config"
@@ -63,7 +58,7 @@
     Cache-Control = "no-store"
 
 [[headers]]
-  for = "/plots/plotly.min.js"
+  for = "/plotly.min.js"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
 

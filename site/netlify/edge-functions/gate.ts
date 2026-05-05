@@ -1,10 +1,33 @@
+// Auth gate for the entire site.
+//
+// Model: gate-everything-by-default. The function fires on /** (all paths).
+// Anything not on the EXEMPT list below requires a valid session cookie
+// whose email is on the allowlist (or matches ADMIN_EMAIL).
+//
+// To make a new path PUBLIC, add it to EXEMPT_PATHS or EXEMPT_PREFIXES below.
+// Forgetting to do so is the safe failure mode (the path stays gated).
+// Forgetting to gate something would be the unsafe failure mode and is
+// what this allow-list-of-public-paths design avoids.
+
 import { jwtVerify } from "https://esm.sh/jose@5.9.6";
 import { getStore } from "@netlify/blobs";
 import type { Context } from "@netlify/edge-functions";
 
 const SESSION_COOKIE = "__Host-session";
 const ALLOWLIST_TTL_MS = 30_000;
-const STATIC_EXEMPT = new Set<string>(["/plots/plotly.min.js"]);
+
+// Paths that bypass the gate entirely. These are publicly served.
+const EXEMPT_PATHS = new Set<string>([
+  "/login.html",
+  "/plotly.min.js",
+  "/favicon.ico",
+  "/robots.txt",
+]);
+// Path prefixes that bypass the gate (Netlify internals + our API surface).
+// /api/** is exempt because each /api/* function does its own auth check
+// (auth-config and auth-exchange are public; everything else verifies a
+// session or admin status server-side).
+const EXEMPT_PREFIXES = ["/api/", "/.netlify/"];
 
 let allowlistCache: { value: Set<string>; expires: number } | null = null;
 
@@ -38,9 +61,17 @@ async function verifySession(token: string, secretStr: string): Promise<{ email:
   }
 }
 
+function isExempt(pathname: string): boolean {
+  if (EXEMPT_PATHS.has(pathname)) return true;
+  for (const p of EXEMPT_PREFIXES) {
+    if (pathname.startsWith(p)) return true;
+  }
+  return false;
+}
+
 export default async (req: Request, _ctx: Context): Promise<Response | void> => {
   const url = new URL(req.url);
-  if (STATIC_EXEMPT.has(url.pathname)) return;
+  if (isExempt(url.pathname)) return;
 
   const secretStr = Deno.env.get("SESSION_JWT_SECRET");
   if (!secretStr) return new Response("Misconfigured", { status: 500 });
@@ -61,9 +92,13 @@ export default async (req: Request, _ctx: Context): Promise<Response | void> => 
 
   if (allowed) return;
 
+  // For root, omit `next` — the default post-login destination is /.
+  if (url.pathname === "/") {
+    return Response.redirect(new URL("/login.html", url.origin).toString(), 302);
+  }
   const next = url.pathname + url.search;
   const loginUrl = `/login.html?next=${encodeURIComponent(next)}`;
   return Response.redirect(new URL(loginUrl, url.origin).toString(), 302);
 };
 
-export const config = { path: "/plots/*" };
+export const config = { path: ["/", "/*", "/**"] };

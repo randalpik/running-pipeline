@@ -132,3 +132,11 @@ Shared utilities live in `src/plotting/` and should be imported by every plot sc
 - A standard plotly layout helper.
 
 **Plotly numeric-array gotcha:** numeric arrays in figure JSON serialize as `{dtype, bdata, _inputArray}`. `_inputArray` is a `Float64Array`, so `Array.isArray(...)` returns false. Use length checks. PR recompute via the `plotly_restyle` listener; skip when `indices == [prIdx]`.
+
+## Hosting / auth model
+
+The site at `running.maxrandalmusic.com` is **gated by default**. The Edge Function at `site/netlify/edge-functions/gate.ts` fires on every path (`/**`); only paths in its `EXEMPT_PATHS` set or `EXEMPT_PREFIXES` list bypass the gate. Plot HTMLs, the shell, and the admin page all live at the **root** of `site/dist/` — there is no `/plots/` namespace. Visitors hit `running.maxrandalmusic.com` and the gate either lets them through (if their session cookie is valid and their email is on the allowlist) or 302s them to `/login.html`.
+
+**When adding a new file or route, the safe failure mode is "stays gated."** Adding a new HTML to `site/dist/`, a new plot script, or a new function endpoint requires no extra step to be auth-protected — that's the default. **To make something public, you must add it to the gate's exempt list.** Forgetting to gate something is what this design prevents; forgetting to exempt something just means a public page becomes login-walled until you fix it.
+
+The exempt list (in `gate.ts`) currently covers: `/login.html`, `/plotly.min.js`, `/favicon.ico`, `/robots.txt`, plus the prefixes `/api/` and `/.netlify/` (each `/api/*` function does its own auth check; `auth-config` and `auth-exchange` are intentionally public, the rest verify a session or admin status server-side).
