@@ -646,6 +646,7 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
 #geo-legend .legend-block { margin-bottom: 4px; }
 #geo-legend .legend-title {
   display: flex; align-items: baseline; gap: 6px;
+  font-weight: 600;
   cursor: pointer; padding: 2px 0;
   user-select: none;
   white-space: nowrap;
@@ -677,8 +678,7 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
 }
 #geo-legend .legend-name { color: #ddd; }
 #geo-legend .legend-life {
-  color: #888; font-size: 11px; margin-left: auto;
-  padding-left: 8px;
+  color: #888; font-size: 11px; margin-left: 2px;
 }
 #geo-legend .legend-item.hidden .legend-box { opacity: 0.18; }
 #geo-legend .legend-item.hidden .legend-name {
@@ -743,7 +743,6 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
 }
 #geo-tooltip .hov-grouptotal {
   color: #999; font-weight: 400; font-size: 11px;
-  margin-left: auto; padding-left: 8px;
 }
 #geo-tooltip .hov-item {
   display: flex; align-items: center; gap: 6px;
@@ -770,9 +769,7 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
   border-radius: 1px; flex-shrink: 0;
 }
 #geo-tooltip .hov-name { color: #ddd; }
-#geo-tooltip .hov-val {
-  color: #ddd; margin-left: auto; padding-left: 8px;
-}
+#geo-tooltip .hov-val { color: #ddd; }
 #geo-tooltip .hov-val b { color: #fff; }
 #geo-tooltip .hov-subs { padding-left: 28px; }
 #geo-tooltip .hov-subcity {
