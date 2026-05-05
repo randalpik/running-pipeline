@@ -232,19 +232,32 @@
     // loads Roboto Medium internally and paints the final "bold" button.
     // The placeholder is supposed to be removed once the iframe is
     // ready, but in practice both coexist for a frame, producing a
-    // visible overlap/flicker. We hide any direct child of the wrapper
-    // that isn't (and doesn't contain) the iframe — i.e., the
-    // placeholder — so only the iframe is ever visible.
+    // visible overlap/flicker.
+    //
+    // GIS's actual structure inside .gbtn is:
+    //   .gbtn > div.gsi-wrapper > [div.placeholder, div > iframe]
+    // — the placeholder isn't a direct child of .gbtn, it's a sibling
+    // of the iframe's wrapper div. We walk up from the iframe and at
+    // each level hide any sibling that doesn't contain an iframe.
     function hideGisInlinePlaceholder(wrapper) {
       const hide = () => {
-        for (const child of wrapper.children) {
-          if (child.tagName !== "IFRAME" && !child.querySelector("iframe")) {
-            child.style.display = "none";
+        const iframe = wrapper.querySelector("iframe");
+        if (!iframe) return;
+        let node = iframe;
+        while (node && node !== wrapper) {
+          const parent = node.parentElement;
+          if (!parent) break;
+          for (const sibling of parent.children) {
+            if (sibling === node) continue;
+            if (sibling.tagName !== "IFRAME" && !sibling.querySelector("iframe")) {
+              sibling.style.display = "none";
+            }
           }
+          node = parent;
         }
       };
       hide();
-      new MutationObserver(hide).observe(wrapper, { childList: true });
+      new MutationObserver(hide).observe(wrapper, { childList: true, subtree: true });
     }
     initGsi();
   </script>
