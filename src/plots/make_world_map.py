@@ -102,11 +102,14 @@ SCOPES = [
     # Europe + Asia are sparse maps (low-mileage cities only, since Max lives
     # in NA). Doubling point sizes makes them visible at a glance — the
     # log-scale sizing on its own gets too small to spot in these scopes.
-    {'id': 'europe', 'label': 'Europe', 'plotly_scope': 'europe',
+    # Europe and Asia use scope='world' with JS aspect-fit cropping (same
+    # pattern as PNW). Plotly's per-continent scopes clip Russia at the
+    # boundary, leaving it as empty white space on both views.
+    {'id': 'europe', 'label': 'Europe', 'plotly_scope': 'world',
      'envelope': {'lon': [-30, 60], 'lat': [30, 75]},
      'pad_lat': 1.5, 'pad_lon': 3,
      'point_size_mult': 1.6},
-    {'id': 'asia', 'label': 'Asia', 'plotly_scope': 'asia',
+    {'id': 'asia', 'label': 'Asia', 'plotly_scope': 'world',
      'envelope': {'lon': [60, 180], 'lat': [-10, 75]},
      'pad_lat': 1.5, 'pad_lon': 3,
      'point_size_mult': 1.6},

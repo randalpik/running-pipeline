@@ -599,6 +599,7 @@ table.dash .dim {
   transition: color 0.12s, background 0.12s;
 }
 .dash-signout button:hover { color: #eee; background: #34343a; }
+.dash-signout button:disabled { cursor: progress; opacity: .7; }
 """
 
     head_css = base_css + '\n' + page_css
@@ -666,13 +667,22 @@ table.dash .dim {
   if (btn) {{
     btn.addEventListener('click', function () {{
       btn.disabled = true;
-      fetch('/api/auth/logout', {{ method: 'POST', credentials: 'same-origin' }})
-        .catch(function () {{}})
-        .then(function () {{
-          var top = window.top || window.parent || window;
-          try {{ top.location.replace('/login.html'); }}
-          catch (e) {{ window.location.replace('/login.html'); }}
-        }});
+      btn.textContent = 'Signing out…';
+      // keepalive lets the cookie-clear POST finish after we navigate,
+      // so we can redirect immediately instead of waiting on the
+      // function's cold start.
+      try {{
+        fetch('/api/auth/logout', {{
+          method: 'POST',
+          credentials: 'same-origin',
+          keepalive: true,
+        }}).catch(function () {{}});
+      }} catch (e) {{}}
+      requestAnimationFrame(function () {{
+        var top = window.top || window.parent || window;
+        try {{ top.location.replace('/login.html'); }}
+        catch (e) {{ window.location.replace('/login.html'); }}
+      }});
     }});
   }}
 

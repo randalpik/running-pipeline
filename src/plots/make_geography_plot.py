@@ -432,8 +432,12 @@ def build_bin_hover(pivot, freq, ordered_labels, label_color,
             render_as_group = (len(items_ordered) >= 2 and g != GLOBAL_OTHER_KEY)
             if render_as_group:
                 parts.append(
-                    f'<div class="hov-group-title"><b>{g}</b>'
-                    f'<span class="hov-grouptotal">  ·  '
+                    f'<div class="hov-group-title">'
+                    f'<span class="hov-singleton-prefix">'
+                    f'<b class="hov-singleton-state">{g}</b>'
+                    f'<span class="hov-sep">·</span>'
+                    f'</span>'
+                    f'<span class="hov-grouptotal">'
                     f'{fmt_miles(group_bin_total[g])} mi</span></div>')
                 for lab, val, color, name, sub in items_ordered:
                     parts.append(
@@ -463,11 +467,13 @@ def build_bin_hover(pivot, freq, ordered_labels, label_color,
                             f'<b>{fmt_miles(val)}</b> mi</span></div>')
                     else:
                         state, city = split_label_for_singleton(name)
-                        display_name = city if city else state
+                        display_name = f"{city}, {state}" if city else state
                         parts.append(
                             f'<div class="hov-singleton">'
+                            f'<span class="hov-singleton-prefix">'
                             f'<b class="hov-singleton-state">{state}</b>'
-                            f'<span class="hov-sep">  ·  </span>'
+                            f'<span class="hov-sep">·</span>'
+                            f'</span>'
                             f'<span class="hov-box" style="background:'
                             f'{color}"></span>'
                             f'<span class="hov-name">{display_name}</span>'
@@ -534,8 +540,11 @@ def build_legend_html(ordered_labels, label_color, label_total,
                 parts.append(f'<div class="legend-group" data-group-key="{g}">')
                 parts.append(
                     f'<div class="legend-title">'
-                    f'<b>{g}</b>'
-                    f'<span class="legend-life">  ·  '
+                    f'<span class="legend-singleton-prefix">'
+                    f'<b class="legend-singleton-state">{g}</b>'
+                    f'<span class="legend-singleton-dot">·</span>'
+                    f'</span>'
+                    f'<span class="legend-life">'
                     f'{fmt_miles(group_total[g])} mi</span></div>')
                 open_wrapper = True
             elif is_state_singleton:
@@ -547,11 +556,13 @@ def build_legend_html(ordered_labels, label_color, label_total,
 
         if is_state_singleton:
             state, city = split_label_for_singleton(lab)
-            name = city if city else state
+            name = f"{city}, {state}" if city else state
             parts.append(
                 f'<div class="legend-singleton" data-trace-idx="{i}">'
+                f'<span class="legend-singleton-prefix">'
                 f'<b class="legend-singleton-state">{state}</b>'
-                f'<span class="legend-life">  ·  </span>'
+                f'<span class="legend-singleton-dot">·</span>'
+                f'</span>'
                 f'<span class="legend-box" style="background:'
                 f'{label_color[lab]}"></span>'
                 f'<span class="legend-name">{name}</span>'
@@ -634,12 +645,15 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
 #geo-legend .legend-group { margin-bottom: 8px; }
 #geo-legend .legend-block { margin-bottom: 4px; }
 #geo-legend .legend-title {
-  font-weight: 600; color: #fff; font-size: 14px;
+  display: flex; align-items: baseline; gap: 6px;
   cursor: pointer; padding: 2px 0;
   user-select: none;
+  white-space: nowrap;
   line-height: 1.25;
 }
-#geo-legend .legend-title:hover { color: #4aa3ff; }
+#geo-legend .legend-title:hover .legend-singleton-state,
+#geo-legend .legend-title:hover .legend-singleton-dot,
+#geo-legend .legend-title:hover .legend-life { color: #4aa3ff; }
 #geo-legend .legend-item {
   display: flex; align-items: center; gap: 6px;
   padding: 2px 0; cursor: pointer;
@@ -647,7 +661,7 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
   white-space: nowrap;
   line-height: 1.25;
 }
-#geo-legend .legend-item.grouped { padding-left: 14px; }
+#geo-legend .legend-item.grouped { padding-left: 22px; }
 #geo-legend .legend-item:hover { color: #fff; }
 #geo-legend .chev {
   display: inline-block; width: 13px; flex-shrink: 0;
@@ -663,7 +677,8 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
 }
 #geo-legend .legend-name { color: #ddd; }
 #geo-legend .legend-life {
-  color: #888; font-size: 11px; margin-left: 2px;
+  color: #888; font-size: 11px; margin-left: auto;
+  padding-left: 8px;
 }
 #geo-legend .legend-item.hidden .legend-box { opacity: 0.18; }
 #geo-legend .legend-item.hidden .legend-name {
@@ -678,8 +693,16 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
   margin-bottom: 4px;
 }
 #geo-legend .legend-singleton:hover { color: #fff; }
+#geo-legend .legend-singleton-prefix {
+  display: inline-flex; align-items: baseline; justify-content: flex-end;
+  gap: 4px;
+  min-width: 35px; flex-shrink: 0;
+}
 #geo-legend .legend-singleton-state {
   color: #fff; font-size: 14px; font-weight: 600;
+}
+#geo-legend .legend-singleton-dot {
+  color: #888; font-size: 11px;
 }
 #geo-legend .legend-singleton.hidden .legend-box { opacity: 0.18; }
 #geo-legend .legend-singleton.hidden .legend-name {
@@ -694,7 +717,7 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
   padding: 1px 0;
 }
 #geo-legend .legend-subcity.singleton { padding-left: 22px; }
-#geo-legend .legend-subcity.grouped   { padding-left: 36px; }
+#geo-legend .legend-subcity.grouped   { padding-left: 44px; }
 
 #geo-tooltip {
   position: fixed; top: 0; left: 0;
@@ -715,19 +738,26 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
   margin-bottom: 5px;
 }
 #geo-tooltip .hov-group-title {
-  font-weight: 600; color: #fff; margin-top: 4px;
+  display: flex; align-items: baseline; gap: 6px;
+  margin-top: 4px; white-space: nowrap;
 }
 #geo-tooltip .hov-grouptotal {
   color: #999; font-weight: 400; font-size: 11px;
+  margin-left: auto; padding-left: 8px;
 }
 #geo-tooltip .hov-item {
   display: flex; align-items: center; gap: 6px;
   white-space: nowrap; padding: 1px 0;
 }
-#geo-tooltip .hov-item.grouped { padding-left: 14px; }
+#geo-tooltip .hov-item.grouped { padding-left: 28px; }
 #geo-tooltip .hov-singleton {
   display: flex; align-items: center; gap: 6px;
   white-space: nowrap; padding: 1px 0;
+}
+#geo-tooltip .hov-singleton-prefix {
+  display: inline-flex; align-items: baseline; justify-content: flex-end;
+  gap: 4px;
+  min-width: 22px; flex-shrink: 0;
 }
 #geo-tooltip .hov-singleton-state {
   color: #fff; font-size: 13px; font-weight: 600;
@@ -740,7 +770,9 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
   border-radius: 1px; flex-shrink: 0;
 }
 #geo-tooltip .hov-name { color: #ddd; }
-#geo-tooltip .hov-val { color: #ddd; }
+#geo-tooltip .hov-val {
+  color: #ddd; margin-left: auto; padding-left: 8px;
+}
 #geo-tooltip .hov-val b { color: #fff; }
 #geo-tooltip .hov-subs { padding-left: 28px; }
 #geo-tooltip .hov-subcity {

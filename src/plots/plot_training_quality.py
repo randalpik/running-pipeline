@@ -31,7 +31,7 @@ from src.shared.long_run_model import (
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box,
                             sec_to_mss, fmt_min, CAT_COLORS, GRID, CS_LINE,
-                            GAP_BREAK_DAYS, adaptive_gauss_smoother,
+                            SURFACES, GAP_BREAK_DAYS, adaptive_gauss_smoother,
                             yearly_x_axis_kwargs)
 
 # Width of the route-betas box (#tq-routes); also used to size margin.r.
@@ -120,7 +120,7 @@ def workout_hover(r):
     cat = r['category']
     title = TOOLTIP_TITLE.get(cat, CAT_LABEL.get(cat, cat))
     title += _route_paren(r.get('display_name'), r.get('city_state'))
-    xc_note = ' <i style="color:#9cf">[XC-corrected -6%]</i>' if r.get('xc_corrected') else ''
+    xc_note = f' <span style="color:{SURFACES["XC"]}">(XC-corrected)</span>' if r.get('xc_corrected') else ''
     rep_count = int(r['rep_count'])
     rep_dist = int(r['rep_dist'])
     if cat == 'continuous_fartlek' and rep_count == 1:

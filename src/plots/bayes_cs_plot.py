@@ -170,9 +170,13 @@ def main():
         if is_5k and not is_xc:
             equiv_line = ''
         else:
-            label = ('XC-corrected' if is_xc and is_5k
-                     else '5K-equiv (XC-corrected)' if is_xc
-                     else '5K-equiv')
+            xc_color = SURFACES['XC']
+            if is_xc and is_5k:
+                label = f'<span style="color:{xc_color}">XC-corrected</span>'
+            elif is_xc:
+                label = f'5K-equiv <span style="color:{xc_color}">(XC-corrected)</span>'
+            else:
+                label = '5K-equiv'
             equiv_line = (f"<div>{label}: <b>{sec_to_mss(equiv_time_sec)}</b> "
                           f"<span class='tt-mute'>"
                           f"({sec_to_mss(equiv_pace_sec)}/mi)</span></div>")
