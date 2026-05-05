@@ -11,6 +11,11 @@ on:
         description: "Run the Bayesian CS fit (slow, ~5-20 min)"
         type: boolean
         default: false
+  # Sheets-trigger Apps Script (scripts/sheets_trigger.gs) POSTs here when
+  # a Workout cell finishes settling. event_type controls flags via the
+  # client_payload; see "Resolve inputs" step below.
+  repository_dispatch:
+    types: [pipeline-run, pipeline-run-fit]
 
 permissions:
   contents: read
@@ -27,6 +32,25 @@ jobs:
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve inputs
+        # Normalize the run's flags from either workflow_dispatch inputs
+        # (manual / admin button) or repository_dispatch client_payload
+        # (Sheets trigger). All later steps read steps.cfg.outputs.*.
+        id: cfg
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            fit="${{ github.event.client_payload.fit }}"
+            historical="${{ github.event.client_payload.historical }}"
+          else
+            fit="${{ inputs.fit }}"
+            historical="${{ inputs.historical }}"
+          fi
+          [ "$fit" = "true" ] || fit="false"
+          [ "$historical" = "true" ] || historical="false"
+          echo "fit=$fit" >> "$GITHUB_OUTPUT"
+          echo "historical=$historical" >> "$GITHUB_OUTPUT"
+          echo "Resolved: fit=$fit historical=$historical (via ${{ github.event_name }})"
 
       - name: Restore pipeline state cache
         # Persists pipeline state across CI runs, so we don't refit /
@@ -66,7 +90,7 @@ jobs:
             requirements-fit.txt
 
       - name: Install BLAS dev headers (PyTensor)
-        if: ${{ inputs.fit }}
+        if: steps.cfg.outputs.fit == 'true'
         # PyTensor compiles C ops on the fly and needs the dev headers (not
         # just the runtime libs) to link against BLAS/LAPACK. Without these
         # NUTS falls back to non-BLAS gradient evaluation and is 2-5x slower.
@@ -77,7 +101,7 @@ jobs:
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          if [ "${{ inputs.fit }}" = "true" ]; then
+          if [ "${{ steps.cfg.outputs.fit }}" = "true" ]; then
             pip install -r requirements-fit.txt
           else
             pip install -r requirements.txt
@@ -98,8 +122,8 @@ jobs:
       - name: Run pipeline
         run: |
           flags=()
-          [ "${{ inputs.historical }}" = "true" ] && flags+=(--historical)
-          [ "${{ inputs.fit }}" = "true" ] && flags+=(--fit)
+          [ "${{ steps.cfg.outputs.historical }}" = "true" ] && flags+=(--historical)
+          [ "${{ steps.cfg.outputs.fit }}" = "true" ] && flags+=(--fit)
           ./scripts/run_pipeline.sh "${flags[@]}"
 
       - name: Generate plots

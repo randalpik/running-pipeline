@@ -113,7 +113,19 @@ Merged into `merged_races.csv` (161 rows, distance-snapped to standard distances
 
 ## Hosting layer
 
-The site at **running.maxrandalmusic.com** lives in `site/`, deployed to Netlify by the `build-and-deploy.yml` GitHub Actions workflow. The pipeline runs in CI on `workflow_dispatch` (manual trigger from the admin UI), generates plots into `output/`, and the deploy step copies `output/*` directly into `site/dist/` (root, no subdirectory).
+The site at **running.maxrandalmusic.com** lives in `site/`, deployed to Netlify by the `build-and-deploy.yml` GitHub Actions workflow. The pipeline runs in CI, generates plots into `output/`, and the deploy step copies `output/*` directly into `site/dist/` (root, no subdirectory).
+
+### Pipeline triggers
+
+The workflow accepts three trigger modes, all flowing into the same job. The "Resolve inputs" step normalizes `fit` / `historical` flags from whichever mode fired:
+
+| Trigger | How | When |
+|---|---|---|
+| `workflow_dispatch` | Manual via GitHub UI or admin button on the site | Ad-hoc rebuilds, refit on demand |
+| `repository_dispatch` (`pipeline-run`) | Apps Script in the Running Log workbook posts to the GitHub API | Automatic — every Workout-column edit, after a 60s settle window |
+| `repository_dispatch` (`pipeline-run-fit`) | Same Apps Script, additionally sent when the workout text contains `race@` | Automatic refit on race days |
+
+The Sheets trigger is `scripts/sheets_trigger.gs` (Apps Script bound to the workbook). It uses an `onEdit` installable trigger to queue edits in `ScriptProperties` and a 1-minute time-driven trigger to drain the queue. Multiple edits to the same row reset the timer (debounce). On race days the regular run goes first; the refit run queues behind it via the workflow's `concurrency: build-and-deploy` group.
 
 ### URL layout — flat at root
 
