@@ -28,6 +28,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore pipeline state cache
+        # Persists pipeline state across CI runs, so we don't refit /
+        # re-freeze / re-geocode on every build. These files are NOT
+        # committed to the repo:
+        #   - city_coords.csv     (Nominatim cache; lists visited cities)
+        #   - historical_daily.csv  (--historical output)
+        #   - bayes_cs_*            (--fit output, ~16 min to regenerate)
+        # The cache evicts after 7 days idle; if that happens, dispatch
+        # one run with --fit and --historical to repopulate. (city_coords
+        # also rebuilds itself on cache miss — slow first time, ~110s for
+        # ~100 cities at the Nominatim rate limit.)
+        id: state_restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/city_coords.csv
+            data/historical_daily.csv
+            data/bayes_cs_summary.csv
+            data/bayes_cs_params.csv
+            data/bayes_cs_auto_exclusions.csv
+          key: pipeline-state-v1-${{ github.run_id }}
+          restore-keys: |
+            pipeline-state-v1-
+
+      - name: Warn on cache miss
+        if: steps.state_restore.outputs.cache-matched-key == ''
+        run: |
+          echo "::warning::No pipeline-state cache restored (first run or >7d idle). Plots that depend on bayes_cs_* or historical_daily will fail unless this run is dispatched with --fit and --historical set."
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -75,6 +104,21 @@ jobs:
 
       - name: Generate plots
         run: ./scripts/run_plots.sh
+
+      - name: Save pipeline state cache
+        # Save a fresh cache entry under a unique key after every successful
+        # pipeline run so the next run picks it up via the restore-keys
+        # prefix match. Old entries naturally evict after 7 days idle.
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/city_coords.csv
+            data/historical_daily.csv
+            data/bayes_cs_summary.csv
+            data/bayes_cs_params.csv
+            data/bayes_cs_auto_exclusions.csv
+          key: pipeline-state-v1-${{ github.run_id }}
 
       - name: Stage site/dist
         run: |
