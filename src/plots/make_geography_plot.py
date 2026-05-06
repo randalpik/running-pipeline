@@ -746,9 +746,8 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
 }
 #geo-tooltip .hov-item {
   display: flex; align-items: center; gap: 6px;
-  white-space: nowrap; padding: 1px 0;
+  white-space: nowrap; padding: 1px 0 1px 41px;
 }
-#geo-tooltip .hov-item.grouped { padding-left: 28px; }
 #geo-tooltip .hov-singleton {
   display: flex; align-items: center; gap: 6px;
   white-space: nowrap; padding: 1px 0;
@@ -756,7 +755,7 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
 #geo-tooltip .hov-singleton-prefix {
   display: inline-flex; align-items: baseline; justify-content: flex-end;
   gap: 4px;
-  min-width: 22px; flex-shrink: 0;
+  min-width: 35px; flex-shrink: 0;
 }
 #geo-tooltip .hov-singleton-state {
   color: #fff; font-size: 13px; font-weight: 600;
