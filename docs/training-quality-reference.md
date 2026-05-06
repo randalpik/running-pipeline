@@ -273,13 +273,16 @@ fitness races haven't yet shown; below = lagging behind.
 - Each session positioned at `CS_implied + corrected_resid / 60` so
   vertical distance from the CS line equals offset-corrected fitness
   signal
-- Custom vertical-hover tooltip: at any cursor x, shows the date, race
-  fitness (CS), training quality (smoother), diff in s/mi, and the
-  nearest session with day-difference label and full session detail
-- Plotly's per-trace hover is fully disabled; the hover system is a
-  precomputed daily payload (CS array, smoother array with NaN in gaps,
-  sessions list) consumed by a JS mousemove handler that converts pixel
-  x → day → tooltip
+- Hover: shared smart-spikeline scaffold (`_scaffold/cursor_tooltip.js`),
+  opted into via `cursor_tooltip=CursorTooltip(...)` on `render_plot()`.
+  Plotly's per-trace hover is disabled (`hoverinfo='skip'` everywhere);
+  the plot supplies a precomputed daily payload (CS array, smoother
+  array with NaN in gaps, sessions list) and a `buildTooltip(day)` body.
+  At any cursor x the tooltip shows the date, race fitness (CS),
+  training quality (smoother), diff in s/mi, and the nearest session
+  with day-difference label and full session detail. Snap mode (cursor
+  near a session marker) jumps the spikeline to the marker's x and uses
+  the marker's customdata HTML.
 
 ## Validated retrospective signals
 
