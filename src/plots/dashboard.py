@@ -63,6 +63,9 @@ D_THRESH_SHORT = 800.0
 
 OUT_HTML = OUTPUT_DIR / 'dashboard.html'
 SCAFFOLD_DIR = Path(__file__).resolve().parents[1] / 'plotting' / '_scaffold'
+_DASHBOARD_DIR = Path(__file__).resolve().parent
+_DASHBOARD_CSS = (_DASHBOARD_DIR / 'dashboard.css').read_text()
+_DASHBOARD_JS = (_DASHBOARD_DIR / 'dashboard.js').read_text()
 
 
 # ----- helpers -----
@@ -484,125 +487,7 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
         for label, value in wp_rows
     )
 
-    page_css = """
-.dash-body {
-  position: absolute;
-  top: var(--rp-title-h);
-  left: 0; right: 0; bottom: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-}
-.dash-main {
-  flex: 0 0 auto;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-evenly;
-  gap: 36px 24px;
-  padding: 28px 12px;
-  align-items: flex-start;
-}
-.dash-section {
-  /* shrink-to-content: each section is exactly as wide as its widest row */
-  flex: 0 0 auto;
-}
-.dash-section h2 {
-  font-size: 15px;
-  font-weight: 600;
-  color: #eee;
-  margin: 0 0 12px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid #333;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-}
-.kv {
-  display: grid;
-  grid-template-columns: max-content max-content;
-  column-gap: 12px;
-  row-gap: 6px;
-  align-items: baseline;
-}
-.kv .stat-label {
-  text-align: right;
-  color: #aaa;
-  font-size: 13px;
-  white-space: nowrap;
-}
-.kv .stat-value {
-  color: #ddd;
-  font-size: 14px;
-  white-space: nowrap;
-}
-.kv .stat-value b {
-  color: #fff;
-  font-weight: 600;
-  font-size: 16px;
-}
-.kv .stat-value .dim {
-  color: #888;
-  font-size: 13px;
-}
-table.dash {
-  border-collapse: collapse;
-  font-size: 13px;
-  color: #ddd;
-}
-table.dash th {
-  text-align: left;
-  color: #aaa;
-  font-weight: 500;
-  padding: 4px 10px 6px;
-  border-bottom: 1px solid #333;
-  white-space: nowrap;
-}
-table.dash th.num {
-  text-align: right;
-}
-table.dash td {
-  padding: 5px 10px;
-  vertical-align: baseline;
-  white-space: nowrap;
-}
-table.dash td.num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-table.dash td + td,
-table.dash th + th {
-  border-left: 1px solid #333;
-}
-table.dash td b {
-  color: #fff;
-  font-weight: 600;
-  font-size: 14px;
-}
-table.dash td.dim,
-table.dash .dim {
-  color: #777;
-}
-.dash-footer {
-  flex: 0 0 auto;
-  text-align: center;
-  color: #888;
-  font-size: 12px;
-  padding: 8px 12px 22px;
-}
-.dash-signout {
-  margin-top: 16px;
-}
-.dash-signout button {
-  background: #2a2a2f; color: #aaa;
-  border: 1px solid #3a3a3a; border-radius: 6px;
-  padding: 5px 14px; font: inherit; font-size: 12px;
-  cursor: pointer;
-  transition: color 0.12s, background 0.12s;
-}
-.dash-signout button:hover { color: #eee; background: #34343a; }
-.dash-signout button:disabled { cursor: progress; opacity: .7; }
-"""
-
-    head_css = base_css + '\n' + page_css
+    head_css = base_css + '\n' + _DASHBOARD_CSS
 
     body = f"""
 <div class="rp-title-bar">
@@ -662,46 +547,7 @@ table.dash .dim {
   </div>
 </div>
 <script>
-(function () {{
-  var btn = document.getElementById('rp-signout');
-  if (btn) {{
-    btn.addEventListener('click', function () {{
-      btn.disabled = true;
-      btn.textContent = 'Signing out…';
-      // keepalive lets the cookie-clear POST finish after we navigate,
-      // so we can redirect immediately instead of waiting on the
-      // function's cold start.
-      try {{
-        fetch('/api/auth/logout', {{
-          method: 'POST',
-          credentials: 'same-origin',
-          keepalive: true,
-        }}).catch(function () {{}});
-      }} catch (e) {{}}
-      requestAnimationFrame(function () {{
-        var top = window.top || window.parent || window;
-        try {{ top.location.replace('/login.html'); }}
-        catch (e) {{ window.location.replace('/login.html'); }}
-      }});
-    }});
-  }}
-
-  // Hydrate the last-updated timestamp into the viewer's local time.
-  // The element's datetime attribute is the build-time UTC ISO string.
-  // Force "DD MMM YYYY at HH:MM" (24h) regardless of viewer locale, to
-  // match the date format used everywhere else in the dashboard.
-  var t = document.getElementById('rp-last-updated');
-  if (t) {{
-    var iso = t.getAttribute('datetime');
-    var d = iso ? new Date(iso) : null;
-    if (d && !isNaN(d.getTime())) {{
-      var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-      var pad = function (n) {{ return n < 10 ? '0' + n : '' + n; }};
-      t.textContent = d.getDate() + ' ' + months[d.getMonth()] + ' ' + d.getFullYear()
-        + ' at ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
-    }}
-  }}
-}})();
+{_DASHBOARD_JS}
 </script>
 {_TAB_KEY_FORWARDER_JS}
 """

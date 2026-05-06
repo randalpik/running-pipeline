@@ -24,6 +24,8 @@ def sidebar(
     anchor: str = 'below-legend',
     compact: bool = False,
     width_px: Optional[int] = None,
+    top_px: Optional[int] = None,
+    right_px: Optional[int] = None,
     extra_attrs: str = '',
 ) -> str:
     """Fixed-position right-rail panel.
@@ -42,12 +44,22 @@ def sidebar(
     same value is what plots pass to ``right_margin_for_anchored_box``
     so the plot reserves matching room — keeping width as a single
     Python int avoids drift between the two.
+
+    ``top_px`` / ``right_px`` set static positioning for sidebars that
+    are NOT legend-anchored (pass ``anchor=''`` together with these).
     """
     classes = 'rp-sidebar'
     if compact:
         classes += ' rp-sidebar-compact'
     anchor_attr = f' data-rp-anchor="{anchor}"' if anchor else ''
-    style = f' style="width: {width_px}px"' if width_px is not None else ''
+    style_parts = []
+    if width_px is not None:
+        style_parts.append(f'width: {width_px}px')
+    if top_px is not None:
+        style_parts.append(f'top: {top_px}px')
+    if right_px is not None:
+        style_parts.append(f'right: {right_px}px')
+    style = f' style="{"; ".join(style_parts)}"' if style_parts else ''
     extra = f' {extra_attrs}' if extra_attrs else ''
     return (
         f'<div id="{overlay_id}" class="{classes}"{anchor_attr}{style}{extra}>\n'

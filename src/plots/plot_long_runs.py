@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.workouts import load_cs, project_long_runs
 from src.shared.cs_projection import load_cs_outputs, cs_line_at_anchor
+from src.plotting import widgets
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box,
                             sec_to_mss, GRID, CAT_COLORS, CS_LINE, rgba,
@@ -158,40 +159,23 @@ def main():
     # for explicit distance anchors.
     miles_min_int = int(np.floor(miles.min()))
     miles_max_int = int(np.ceil(miles.max()))
-    overlay_html = f"""
-<style>
-#lr-gradient {{
-  position: fixed;
-  background: rgba(26,26,26,0.92);
-  border: 1px solid #444;
-  padding: 8px 10px;
-  border-radius: 4px;
-  color: #eee;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  font-size: 11px;
-  z-index: 100;
-  width: {GRADIENT_BOX_WIDTH}px;
-  box-sizing: border-box;
-  user-select: none;
-}}
-#lr-gradient .gtitle {{ margin-bottom: 5px; color: #eee; }}
-#lr-gradient .gbar {{
-  width: 100%; height: 10px;
-  background: linear-gradient(to right, {LR_GRAD_BLUE}, {LR_GRAD_PURPLE}, {LR_GRAD_MAGENTA});
-  border-radius: 2px;
-  margin-bottom: 3px;
-}}
-#lr-gradient .glabels {{
-  display: flex; justify-content: space-between;
-  font-size: 10.5px; color: #aaa;
-}}
-</style>
-<div id="lr-gradient" data-rp-anchor="below-legend">
-  <div class="gtitle">Distance (mi)</div>
-  <div class="gbar"></div>
-  <div class="glabels"><span>{miles_min_int}</span><span>{miles_max_int}</span></div>
-</div>
-"""
+    # Distance gradient strip — three plot-specific bits (gradient colors,
+    # min/max labels) are inlined; the panel chrome comes from .rp-sidebar
+    # via widgets.sidebar(compact=True).
+    gradient_bar = (
+        '<div class="rp-sidebar-title" style="font-size:11px;'
+        'margin-bottom:5px">Distance (mi)</div>'
+        '<div style="width:100%;height:10px;border-radius:2px;'
+        'margin-bottom:3px;background:linear-gradient(to right,'
+        f'{LR_GRAD_BLUE},{LR_GRAD_PURPLE},{LR_GRAD_MAGENTA})"></div>'
+        '<div style="display:flex;justify-content:space-between;'
+        f'font-size:10.5px;color:#aaa"><span>{miles_min_int}</span>'
+        f'<span>{miles_max_int}</span></div>'
+    )
+    overlay_html = widgets.sidebar(
+        'lr-gradient', body=gradient_bar,
+        compact=True, width_px=GRADIENT_BOX_WIDTH,
+    )
 
     # ---------- cursor-tooltip payload ----------
     js_epoch = pd.Timestamp('1970-01-01')

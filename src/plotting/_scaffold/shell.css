@@ -1,0 +1,85 @@
+/* Tab shell — a thin tabbar over a stacked iframe pool. Each visited
+   tab gets its own iframe, kept alive for the page's lifetime, so
+   revisits are paint-only. */
+
+html, body {
+  margin: 0; padding: 0; height: 100%;
+  background: #1a1a1a; color: #eee;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               "Helvetica Neue", Arial, sans-serif;
+}
+
+#tabbar {
+  display: flex; align-items: stretch;
+  background: #111; border-bottom: 1px solid #333;
+  padding: 0 4px; height: 36px;
+  overflow-x: auto;
+  user-select: none;
+}
+#tabbar .brand {
+  display: flex; align-items: center;
+  padding: 0 18px 0 12px;
+  color: #fff;
+  font-size: 13px; font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  border-right: 1px solid #2a2a2a;
+  margin-right: 6px;
+}
+#tabbar .tab {
+  background: transparent; color: #aaa;
+  border: 0; border-bottom: 2px solid transparent;
+  padding: 0 14px; margin: 0 1px;
+  font: inherit; font-size: 13px;
+  cursor: pointer; white-space: nowrap;
+  transition: color 0.12s, background 0.12s, border-bottom-color 0.12s;
+}
+#tabbar .tab:hover { color: #eee; background: #1a1a1a; }
+#tabbar .tab.active {
+  color: #fff;
+  border-bottom-color: #93f;
+  background: #1a1a1a;
+}
+
+/* Admin tab: hidden by default, revealed by JS once /api/auth/me
+   confirms the viewer is admin (sets #tabbar.show-admin). The
+   has-admin gate keeps these rules inert when the shell was rendered
+   without --admin. */
+body.has-admin #tabbar .tab.admin-only { display: none; }
+body.has-admin #tabbar.show-admin .tab.admin-only { display: block; }
+
+#frame-wrap {
+  position: absolute; left: 0; right: 0;
+  top: 36px; bottom: 0;
+}
+/* Stacked iframe pool. Hide via visibility (not display:none); a
+   Plotly figure laid out inside a zero-size container renders broken
+   and never auto-recovers. */
+#frame-wrap iframe {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  border: 0; background: #1a1a1a;
+  visibility: hidden; pointer-events: none;
+  z-index: 0;
+}
+#frame-wrap iframe.active {
+  visibility: visible; pointer-events: auto;
+  z-index: 1;
+}
+
+#spinner {
+  position: absolute; inset: 0; z-index: 2;
+  display: none; align-items: center; justify-content: center;
+  background: #1a1a1a;
+  pointer-events: none;
+}
+#spinner.show { display: flex; }
+#spinner::after {
+  content: '';
+  width: 32px; height: 32px;
+  border: 3px solid #333;
+  border-top-color: #93f;
+  border-radius: 50%;
+  animation: rp-spin 0.8s linear infinite;
+}
+@keyframes rp-spin { to { transform: rotate(360deg); } }
