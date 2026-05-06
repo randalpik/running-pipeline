@@ -48,6 +48,11 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             pr_marker, is_pr_eligible,
                             PR_LEGEND_NAME, PR_LEGEND_RANK,
                             yearly_x_axis_kwargs)
+from src.plotting import widgets
+
+_PLOTS_DIR = Path(__file__).resolve().parent
+_FILTER_JS = _PLOTS_DIR / 'make_race_plots_filter.js'
+_PANEL_PRS_JS = _PLOTS_DIR / 'make_race_plots_panel_prs.js'
 
 # Width of the distance-filter box (#bin-filter); also used to size margin.r.
 BIN_FILTER_WIDTH = 150
@@ -307,181 +312,24 @@ def build_hover_anchored(row, anchor_m):
 
 
 def build_distance_filter_ui(bin_names):
-    """HTML/CSS/JS for the right-sidebar distance-filter checkboxes.
+    """HTML for the right-sidebar distance-filter checkboxes.
 
-    Each checkbox toggles the visibility of all traces tagged with
-    meta.filter_bin matching the box's data-bin attribute. Sentinel traces
-    (without meta.filter_bin) are left alone, which is what keeps each
-    surface's legend entry alive even when all its bins are unchecked.
+    Behavior — checkbox toggles trace visibility by meta.filter_bin,
+    plus PR-overlay recompute on any visibility change — lives in
+    make_race_plots_filter.js (loaded via overlay_js_files).
     """
-    cb_html = '\n'.join(
-        f'  <label class="bf-row"><input type="checkbox" data-bin="{b}" checked> {b}</label>'
-        for b in bin_names)
-    return f"""
-<style>
-#bin-filter {{
-  position: fixed;
-  background: rgba(26,26,26,0.92);
-  border: 1px solid #444;
-  padding: 12px 14px;
-  border-radius: 4px;
-  color: #eee;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  font-size: 13px;
-  z-index: 100;
-  width: {BIN_FILTER_WIDTH}px;
-  box-sizing: border-box;
-  user-select: none;
-  max-height: calc(100vh - 100px);
-  overflow-y: auto;
-}}
-#bin-filter .bf-title {{ font-weight: 500; margin-bottom: 8px; color: #eee; }}
-#bin-filter .bf-buttons {{ margin-bottom: 8px; display: flex; gap: 4px; }}
-#bin-filter .bf-buttons button {{
-  background: transparent; border: 1px solid #555; color: #eee;
-  padding: 2px 8px; cursor: pointer; font-size: 12px; border-radius: 3px;
-  flex: 1;
-}}
-#bin-filter .bf-buttons button:hover {{ background: #2a2a2a; }}
-#bin-filter .bf-row {{ display: block; margin: 3px 0; cursor: pointer; line-height: 1.6; }}
-#bin-filter input[type=checkbox] {{ margin-right: 6px; vertical-align: middle; cursor: pointer; accent-color: #4aa3ff; }}
-</style>
-<div id="bin-filter" data-rp-anchor="below-legend">
-  <div class="bf-title">Distance</div>
-  <div class="bf-buttons">
-    <button id="bf-all">All</button>
-    <button id="bf-none">None</button>
-  </div>
-{cb_html}
-</div>
-<script>
-(function() {{
-  function findPlot() {{
-    return document.querySelector('.plotly-graph-div');
-  }}
-  // Plotly may store numeric arrays in a binary-packed typedarray-spec
-  // format ({{dtype, bdata, _inputArray}}) for compactness — t.y[i] then
-  // returns undefined and t.y.length is undefined. The original numbers
-  // are on _inputArray, which is typically a Float64Array (a TypedArray,
-  // NOT a plain Array — Array.isArray() returns false on it). Both
-  // TypedArrays and plain Arrays support [i] indexing and .length, so
-  // checking for length is enough.
-  function asArray(v) {{
-    if (v == null) return null;
-    if (Array.isArray(v)) return v;
-    if (v._inputArray && typeof v._inputArray.length === 'number') return v._inputArray;
-    if (typeof v.length === 'number') return v;
-    return null;
-  }}
-  // Walk every trace tagged meta.filter_bin and gather (date, y) tuples
-  // from those currently visible AND PR-eligible (Downhill races are
-  // excluded). Respects bin checkboxes AND surface legend toggles, both
-  // of which mutate trace.visible.
-  function gatherVisibleRaces(plot) {{
-    var pts = [];
-    plot.data.forEach(function(t) {{
-      if (!t.meta || !t.meta.filter_bin) return;
-      if (t.meta.pr_eligible === false) return;
-      var v = t.visible;
-      if (v === false || v === 'legendonly') return;
-      var xs = asArray(t.x);
-      var ys = asArray(t.y);
-      if (!xs || !ys) return;
-      for (var i = 0; i < xs.length; i++) {{
-        var y = ys[i];
-        if (y == null || isNaN(y)) continue;
-        pts.push({{x: xs[i], y: y, ts: new Date(xs[i]).getTime()}});
-      }}
-    }});
-    return pts;
-  }}
-  function computePRs(pts) {{
-    pts.sort(function(a, b) {{ return a.ts - b.ts; }});
-    var best = Infinity, prX = [], prY = [];
-    for (var i = 0; i < pts.length; i++) {{
-      if (pts[i].y < best) {{
-        best = pts[i].y;
-        prX.push(pts[i].x);
-        prY.push(pts[i].y);
-      }}
-    }}
-    return {{x: prX, y: prY}};
-  }}
-  function findOverlayIdx(plot) {{
-    for (var i = 0; i < plot.data.length; i++) {{
-      var t = plot.data[i];
-      if (t.meta && t.meta.is_pr_overlay) return i;
-    }}
-    return -1;
-  }}
-  function recomputePRs() {{
-    var plot = findPlot();
-    if (!plot || !plot.data || !window.Plotly) return;
-    var idx = findOverlayIdx(plot);
-    if (idx < 0) return;
-    var pts = gatherVisibleRaces(plot);
-    var pr  = computePRs(pts);
-    Plotly.restyle(plot, {{x: [pr.x], y: [pr.y]}}, [idx]);
-  }}
-  function update() {{
-    var plot = findPlot();
-    if (!plot || !plot.data || !window.Plotly) {{ setTimeout(update, 100); return; }}
-    var checked = new Set();
-    document.querySelectorAll('#bin-filter input[type=checkbox]').forEach(function(cb) {{
-      if (cb.checked) checked.add(cb.dataset.bin);
-    }});
-    var updates = plot.data.map(function(t) {{
-      var bin = t.meta && t.meta.filter_bin;
-      if (!bin) return true;          // CS lines, sentinels, PR overlay — leave alone
-      return checked.has(bin);
-    }});
-    // Restyle visibility — the plotly_restyle event listener will trigger
-    // recomputePRs once the change is applied.
-    Plotly.restyle(plot, {{'visible': updates}});
-  }}
-  function attachLegendInterceptor() {{
-    var plot = findPlot();
-    if (!plot || !plot.data || !window.Plotly) {{ setTimeout(attachLegendInterceptor, 100); return; }}
-    // Cancel clicks on the PR-legend sentinel (returning false stops Plotly
-    // from toggling visibility AND prevents the legend marker from dimming).
-    plot.on('plotly_legendclick', function(ev) {{
-      var t = plot.data[ev.curveNumber];
-      if (t && t.meta && t.meta.is_pr_legend_sentinel) return false;
-    }});
-    plot.on('plotly_legenddoubleclick', function(ev) {{
-      var t = plot.data[ev.curveNumber];
-      if (t && t.meta && t.meta.is_pr_legend_sentinel) return false;
-    }});
-    // plotly_restyle fires AFTER the visibility change is applied — both
-    // for our own checkbox-driven restyles AND for Plotly's internal
-    // legend-click toggles. To avoid recursion when recomputePRs itself
-    // calls Plotly.restyle on the overlay, we identify our own restyles
-    // by checking the event payload: a restyle scoped to ONLY the PR
-    // overlay's trace index is ours, so skip. Anything else is a real
-    // visibility change and we recompute.
-    plot.on('plotly_restyle', function(eventData) {{
-      var indices = (eventData && eventData[1]) || null;
-      var prIdx = findOverlayIdx(plot);
-      if (indices && indices.length === 1 && indices[0] === prIdx) return;
-      // Defer slightly so any in-flight Plotly state updates settle.
-      setTimeout(recomputePRs, 0);
-    }});
-  }}
-  document.querySelectorAll('#bin-filter input[type=checkbox]').forEach(function(cb) {{
-    cb.addEventListener('change', update);
-  }});
-  document.getElementById('bf-all').addEventListener('click', function() {{
-    document.querySelectorAll('#bin-filter input[type=checkbox]').forEach(function(cb) {{ cb.checked = true; }});
-    update();
-  }});
-  document.getElementById('bf-none').addEventListener('click', function() {{
-    document.querySelectorAll('#bin-filter input[type=checkbox]').forEach(function(cb) {{ cb.checked = false; }});
-    update();
-  }});
-  attachLegendInterceptor();
-}})();
-</script>
-"""
+    body = (
+        widgets.title('Distance')
+        + '\n'
+        + widgets.button_row([('bf-all', 'All'), ('bf-none', 'None')])
+        + '\n'
+        + widgets.checkbox_rows(
+            [(b, b) for b in bin_names], data_attr='bin'
+        )
+    )
+    return widgets.sidebar(
+        'bin-filter', body=body, width_px=BIN_FILTER_WIDTH
+    )
 
 
 # ---------- shared y-axis & x-axis layout ----------
@@ -682,117 +530,6 @@ def add_pr_overlay_filterable(fig, df, *, value_col='pace_norm_min',
         showlegend=True, hoverinfo='skip',
         legendgroup='pr', legendrank=PR_LEGEND_RANK,
         meta={'is_pr_legend_sentinel': True}))
-
-
-def build_per_panel_pr_js():
-    """JS for the by-distance plot: per-panel PR overlay that recomputes
-    on legend toggle.
-
-    Each race trace is tagged with meta.panel_name + meta.pr_eligible. Each
-    PR overlay is tagged with meta.panel_name + meta.is_pr_overlay. On any
-    plotly_restyle that isn't self-inflicted (i.e. didn't only touch PR
-    overlays), we walk all traces, group races by panel, compute the
-    chronological running min on visible PR-eligible races, and update
-    each panel's overlay in a single batched restyle.
-
-    The PR-effort legend sentinel still returns false from legendclick so
-    clicking it doesn't toggle visibility.
-    """
-    return """
-<script>
-(function () {
-  function findPlot() { return document.querySelector('.plotly-graph-div'); }
-
-  // Plotly may pack numeric arrays as a typedarray spec. _inputArray is the
-  // original, typically Float64Array (Array.isArray returns false on it).
-  function asArray(v) {
-    if (v == null) return null;
-    if (Array.isArray(v)) return v;
-    if (v._inputArray && typeof v._inputArray.length === 'number') return v._inputArray;
-    if (typeof v.length === 'number') return v;
-    return null;
-  }
-
-  function recomputePanelPRs() {
-    var plot = findPlot();
-    if (!plot || !plot.data || !window.Plotly) return;
-    var byPanel = {};
-    plot.data.forEach(function (t, i) {
-      var m = t.meta;
-      if (!m || !m.panel_name) return;
-      var p = byPanel[m.panel_name];
-      if (!p) { p = byPanel[m.panel_name] = { races: [], overlayIdx: -1 }; }
-      if (m.is_pr_overlay) {
-        p.overlayIdx = i;
-      } else if (m.pr_eligible) {
-        var v = t.visible;
-        if (v === false || v === 'legendonly') return;
-        var xs = asArray(t.x);
-        var ys = asArray(t.y);
-        if (!xs || !ys) return;
-        for (var k = 0; k < xs.length; k++) {
-          var y = ys[k];
-          if (y == null || isNaN(y)) continue;
-          p.races.push({ x: xs[k], y: y, ts: new Date(xs[k]).getTime() });
-        }
-      }
-    });
-
-    var indices = [], xs_all = [], ys_all = [];
-    Object.keys(byPanel).forEach(function (name) {
-      var info = byPanel[name];
-      if (info.overlayIdx < 0) return;
-      info.races.sort(function (a, b) { return a.ts - b.ts; });
-      var best = Infinity, prX = [], prY = [];
-      for (var i = 0; i < info.races.length; i++) {
-        var p = info.races[i];
-        if (p.y < best) { best = p.y; prX.push(p.x); prY.push(p.y); }
-      }
-      indices.push(info.overlayIdx);
-      xs_all.push(prX);
-      ys_all.push(prY);
-    });
-    if (indices.length === 0) return;
-    Plotly.restyle(plot, { x: xs_all, y: ys_all }, indices);
-  }
-
-  function isSelfRestyle(eventData) {
-    var indices = (eventData && eventData[1]) || null;
-    if (!indices || !indices.length) return false;
-    var plot = findPlot();
-    if (!plot) return false;
-    return indices.every(function (i) {
-      var m = plot.data[i] && plot.data[i].meta;
-      return m && m.is_pr_overlay;
-    });
-  }
-
-  function attach() {
-    var plot = findPlot();
-    if (!plot || !plot.data || !window.Plotly) { setTimeout(attach, 100); return; }
-    plot.on('plotly_legendclick', function (ev) {
-      var t = plot.data[ev.curveNumber];
-      if (t && t.meta && t.meta.is_pr_legend_sentinel) return false;
-    });
-    plot.on('plotly_legenddoubleclick', function (ev) {
-      var t = plot.data[ev.curveNumber];
-      if (t && t.meta && t.meta.is_pr_legend_sentinel) return false;
-    });
-    // Run synchronously inside the restyle event so our overlay update
-    // is batched with the visibility-toggle paint. Deferring via
-    // setTimeout(0) splits this into two paints — visibility changes
-    // first, PR diamonds catch up a frame later. Plotly's plotly_restyle
-    // is dispatched after its internal state mutation completes, so it
-    // is safe to issue another restyle from inside the handler.
-    plot.on('plotly_restyle', function (ev) {
-      if (isSelfRestyle(ev)) return;
-      recomputePanelPRs();
-    });
-  }
-  attach();
-})();
-</script>
-"""
 
 
 def yearly_x_axis(x_lo, x_hi, **kwargs):
@@ -1000,6 +737,7 @@ function buildTooltip(day, isSnap, pointHtml) {
             last_day=cs_last_day,
         ),
         overlay_html=filter_ui,
+        overlay_js_files=[_FILTER_JS],
     )
     print(f'Wrote {out1}')
 
@@ -1384,7 +1122,7 @@ function buildTooltip(day, isSnap, pointHtml, ctx) {
             first_day=panel_first_day,
             last_day=panel_last_day,
         ),
-        overlay_html=build_per_panel_pr_js(),
+        overlay_js_files=[_PANEL_PRS_JS],
     )
     print(f'Wrote {out2}')
 

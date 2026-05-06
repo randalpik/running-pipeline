@@ -119,7 +119,9 @@ def render_plot(
     subtitle: Optional[str] = None,
     cursor_tooltip: Optional[CursorTooltip] = None,
     overlay_html: str = '',
+    overlay_js_files: Optional[list] = None,
     extra_head_css: str = '',
+    extra_head_css_files: Optional[list] = None,
     plotly_config: Optional[dict] = None,
 ) -> Path:
     """Write ``fig`` as a self-contained HTML document at ``out_path``.
@@ -145,10 +147,24 @@ def render_plot(
         tooltip-related markup is written and the plot is responsible for
         any custom hover behavior via ``overlay_html``.
     overlay_html : str
-        Opaque HTML/CSS/JS injected just before ``</body>``. Use this for
-        plot-specific UI (sidebars, restyle handlers, event listeners).
+        Opaque HTML injected just before ``</body>``. Use this for the
+        structural skeleton of plot-specific UI. Prefer composing it from
+        :mod:`src.plotting.widgets` helpers and styling via shared
+        ``.rp-*`` classes in ``_scaffold/base.css`` rather than embedding
+        ``<style>`` / ``<script>`` blocks inline.
+    overlay_js_files : list[str | Path] | None
+        Paths to ``.js`` files (one per plot, sibling-located is the
+        canonical layout). Each is read and wrapped in a single
+        ``<script>`` tag, injected after ``overlay_html`` so the DOM it
+        binds to already exists. Use this instead of embedding JS in
+        Python f-strings.
     extra_head_css : str
         Plot-specific CSS injected into ``<head>`` after the shared base CSS.
+    extra_head_css_files : list[str | Path] | None
+        Paths to ``.css`` files appended to ``<head>`` after
+        ``extra_head_css``. Use for plot-specific rules that don't
+        generalize into shared ``_scaffold/base.css`` (e.g. geography's
+        legend tree).
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -170,6 +186,9 @@ def render_plot(
     head_css = _BASE_CSS
     if extra_head_css:
         head_css = head_css + '\n' + extra_head_css
+    if extra_head_css_files:
+        for css_path in extra_head_css_files:
+            head_css = head_css + '\n' + Path(css_path).read_text()
 
     body_pre_close_parts = [
         _TAB_KEY_FORWARDER_JS,
@@ -180,6 +199,11 @@ def render_plot(
         body_pre_close_parts.append(_render_title_bar(title, subtitle))
     if overlay_html:
         body_pre_close_parts.append(overlay_html)
+    if overlay_js_files:
+        for js_path in overlay_js_files:
+            body_pre_close_parts.append(
+                f'<script>\n{Path(js_path).read_text()}\n</script>'
+            )
     if cursor_tooltip is not None:
         body_pre_close_parts.append(_render_cursor_tooltip(cursor_tooltip))
 
