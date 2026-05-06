@@ -15,7 +15,9 @@ import calendar
 import json
 import os
 import sys
+from datetime import date
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -392,8 +394,8 @@ def main():
         for h in historical:
             cs = h['city_state']
             if cs in existing.index:
-                cur_min = existing.at[cs, 'd_min']
-                cur_max = existing.at[cs, 'd_max']
+                cur_min = cast(date, existing.at[cs, 'd_min'])
+                cur_max = cast(date, existing.at[cs, 'd_max'])
                 existing.at[cs, 'd_min'] = min(cur_min, h['min_hist'])
                 existing.at[cs, 'd_max'] = max(cur_max, h['max_hist'])
             else:
@@ -426,7 +428,7 @@ def main():
         df_for_cat = df
     label_for, _, label_color, *_ = build_categories(df_for_cat)
     agg['color'] = agg['city_state'].map(
-        lambda cs: label_color.get(label_for.get(cs)))
+        lambda cs: label_color.get(label_for.get(cs, '')))
     agg['color'] = agg['color'].fillna('#888888')
 
     # Load any coordinate overrides from the snapshot. The "coordinates"
@@ -437,9 +439,9 @@ def main():
     coords = ensure_coords(agg['city_state'].tolist(),
                            overrides=coord_overrides)
     agg['lat'] = agg['city_state'].map(
-        lambda cs: coords.get(cs, (None, None))[0])
+        lambda cs: coords.get(cast(str, cs), (None, None))[0])
     agg['lon'] = agg['city_state'].map(
-        lambda cs: coords.get(cs, (None, None))[1])
+        lambda cs: coords.get(cast(str, cs), (None, None))[1])
 
     missing = agg[agg['lat'].isna()]
     if len(missing):

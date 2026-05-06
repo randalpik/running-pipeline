@@ -263,7 +263,7 @@ def decompose(daily_df):
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    p = argparse.ArgumentParser(description=(__doc__ or '').split('\n\n')[0])
     p.add_argument('--diagnostics', action='store_true',
                    help='Also write workout_pruned.csv (audit of rows that '
                         'failed to decompose) into output/debug/. Off by '

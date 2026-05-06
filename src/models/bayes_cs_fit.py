@@ -40,6 +40,7 @@ import sys
 import time as tclock
 import datetime as dt
 from pathlib import Path
+from typing import Any, cast
 import numpy as np
 import pandas as pd
 import pymc as pm
@@ -257,7 +258,7 @@ def derive_exclusions(elig, xc_correction=0.06,
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    p = argparse.ArgumentParser(description=(__doc__ or '').split('\n\n')[0])
     p.add_argument('--races', default=DEFAULT_RACES,
                    help=f'Path to races.csv (default: {DEFAULT_RACES})')
     p.add_argument('--out-dir', default=DEFAULT_OUT_DIR,
@@ -383,8 +384,8 @@ def main():
         for rd in elig['date']
     ])
 
-    race_distances = elig['distance_m'].values.astype(float)
-    race_times = elig['time_sec'].values.astype(float)
+    race_distances = elig['distance_m'].to_numpy().astype(float)
+    race_times = elig['time_sec'].to_numpy().astype(float)
     log_race_times = np.log(race_times)
 
     # Center grid_t for HSGP numerical stability
@@ -470,8 +471,8 @@ def main():
         log_cs_total = mu_cs + log_cs_trend + log_cs_dev
         log_dp_total = log_dp + mu_dp
 
-        cs_at_race = pm.math.exp(log_cs_total[race_grid_idx])
-        dp_at_race = pm.math.exp(log_dp_total[race_grid_idx])
+        cs_at_race = cast(Any, pm.math.exp(log_cs_total[race_grid_idx]))
+        dp_at_race = cast(Any, pm.math.exp(log_dp_total[race_grid_idx]))
 
         # Hyperbolic likelihood: t = (d - D')/CS, then long-distance correction
         expected_time = (race_distances - dp_at_race) / cs_at_race
@@ -483,7 +484,7 @@ def main():
     # ---------- prior predictive ----------
     print("\nRunning prior predictive (200 samples)...")
     with model:
-        prior_pred = pm.sample_prior_predictive(samples=200, random_seed=args.seed)
+        prior_pred: Any = pm.sample_prior_predictive(samples=200, random_seed=args.seed)
     log_cs_pp = (prior_pred.prior['log_cs_trend'].values +
                  prior_pred.prior['log_cs_dev'].values +
                  prior_pred.prior['mu_cs'].values[..., None])
@@ -497,7 +498,7 @@ def main():
     print(f"\nSampling NUTS: tune={args.tune} draws={args.draws} chains={args.chains}")
     t0 = tclock.time()
     with model:
-        trace = pm.sample(
+        trace: Any = pm.sample(
             draws=args.draws, tune=args.tune,
             chains=args.chains, cores=min(args.chains, os.cpu_count()),
             target_accept=0.95, random_seed=args.seed,
@@ -697,7 +698,7 @@ def main():
             f.write(f"\nBy distance band:\n")
             f.write(f"{'band':<22} {'n':>4} {'cov_50':>9} {'cov_95':>9}\n")
             for label, mask in bands:
-                mask_arr = mask.values
+                mask_arr = mask.to_numpy()
                 if mask_arr.sum() == 0: continue
                 f.write(f"{label:<22} {int(mask_arr.sum()):>4} "
                         f"{in_50[mask_arr].mean()*100:>8.1f}% "

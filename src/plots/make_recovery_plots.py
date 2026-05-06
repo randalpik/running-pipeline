@@ -178,7 +178,7 @@ def days_since(daily, source_dates_sorted):
         if idx == 0:
             out.append(np.nan)
         else:
-            prev = pd.Timestamp(sd[idx - 1])
+            prev = pd.Timestamp(int(sd[idx - 1]))
             out.append((d - prev).days)
     return np.array(out, dtype=float)
 
@@ -307,10 +307,10 @@ def main():
     if neighbor_mask.sum() > 0:
         nbr_dates_ms = np.array(
             [d.value // 10**6 for d in rec.loc[neighbor_mask, 'date']])
-        nbr_pace = rec.loc[neighbor_mask, 'recovery_pace_sec_per_mi'].values
+        nbr_pace = rec.loc[neighbor_mask, 'recovery_pace_sec_per_mi'].to_numpy()
         all_dates_ms = np.array([d.value // 10**6 for d in rec['date']])
-        all_pace = rec['recovery_pace_sec_per_mi'].values
-        in_pool = neighbor_mask.values
+        all_pace = rec['recovery_pace_sec_per_mi'].to_numpy()
+        in_pool = neighbor_mask.to_numpy()
         half_ms = OUTLIER_WINDOW_HALF_DAYS * 86_400_000
         loo_resid = np.full(len(rec), np.nan)
         for i, d_ms in enumerate(all_dates_ms):
@@ -355,7 +355,7 @@ def main():
 
     for cat in QUALITY_CATS:
         tau = FATIGUE_TAU_DAYS[cat]
-        rec[f'fat_{cat}'] = np.exp(-rec[f'dsq_{cat}'] / tau).fillna(0)
+        rec[f'fat_{cat}'] = np.exp(-rec[f'dsq_{cat}'].fillna(np.inf) / tau)
 
     # Qualifying routes
     route_counts = (rec.loc[~rec['is_pruned'], 'location']
@@ -397,8 +397,8 @@ def main():
     rec_fit = rec[~rec['is_pruned']].dropna(
         subset=feature_cols + ['residual_detrended']).copy()
 
-    X = rec_fit[feature_cols].values.astype(float)
-    y = rec_fit['residual_detrended'].values.astype(float)
+    X = rec_fit[feature_cols].to_numpy().astype(float)
+    y = rec_fit['residual_detrended'].to_numpy().astype(float)
     X_int = np.hstack([np.ones((len(X), 1)), X])
     coef, *_ = np.linalg.lstsq(X_int, y, rcond=None)
     intercept = float(coef[0])
@@ -409,8 +409,8 @@ def main():
     ss_tot = float(np.sum((y - y.mean()) ** 2))
     r2_detrended = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
-    raw_y = rec_fit['residual_raw'].values
-    raw_yhat = rec_fit['era_trend'].values + yhat
+    raw_y = rec_fit['residual_raw'].to_numpy()
+    raw_yhat = rec_fit['era_trend'].to_numpy() + yhat
     ss_res_raw = float(np.sum((raw_y - raw_yhat) ** 2))
     ss_tot_raw = float(np.sum((raw_y - raw_y.mean()) ** 2))
     r2_raw = 1 - ss_res_raw / ss_tot_raw if ss_tot_raw > 0 else 0.0
@@ -550,11 +550,11 @@ def main():
     # Customdata channels — ORDER MUST MATCH FACTOR_ORDER in JS:
     # 0=temp, 1=route, 2=recent_effort, 3=tod, 4=era
     contrib_arr = np.stack([
-        rec['contrib_temp'].values,
-        rec['contrib_route'].values,
-        rec['contrib_quality'].values,
-        rec['contrib_tod'].values,
-        rec['contrib_era'].values,
+        rec['contrib_temp'].to_numpy(),
+        rec['contrib_route'].to_numpy(),
+        rec['contrib_quality'].to_numpy(),
+        rec['contrib_tod'].to_numpy(),
+        rec['contrib_era'].to_numpy(),
     ], axis=1).tolist()
 
     # Snap HTML lives on the residual trace's text field — same content as
@@ -678,8 +678,7 @@ def main():
             ),
         ),
     )
-    for ann in fig['layout']['annotations']:
-        ann['font'] = dict(color=FG, size=14)
+    fig.update_annotations(font=dict(color=FG, size=14))
 
     # ---------- spikeline tooltip payload ----------
     # Per-day arrays the JS uses for the trend section, plus a sorted list

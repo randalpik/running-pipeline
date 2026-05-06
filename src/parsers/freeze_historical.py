@@ -124,7 +124,7 @@ def load_hill_lookup(adj_xlsx_path):
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     p.add_argument("--logs-dir",
                    help="Directory containing the xlsx logs. If omitted, fetches all "
                         "'Running Log YYYY' files + adjustments xlsx from Drive.")
@@ -216,7 +216,8 @@ def main():
               f"blank: {loc_blank} (filled at build via historical)")
         print("  by inferred location:")
         for loc, n in sub_1617["location"].value_counts(dropna=False).items():
-            label = "(none — non-hill)" if loc is None or pd.isna(loc) else loc
+            is_blank = loc is None or (isinstance(loc, float) and pd.isna(loc))
+            label = "(none — non-hill)" if is_blank else str(loc)
             print(f"    {label:<25s} {n:>5d}")
 
     print()

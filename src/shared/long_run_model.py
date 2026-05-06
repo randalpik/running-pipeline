@@ -66,8 +66,8 @@ def fit_long_run_model(lr_in):
     ], axis=1)
     y = lr_in['raw_resid'].astype(float)
 
-    pruned = set()
-    coef = None
+    pruned: set = set()
+    coef = np.zeros(X.shape[1])
     for _ in range(10):
         keep_mask = ~lr_in.index.isin(pruned)
         Xa = X.values[keep_mask]
@@ -84,10 +84,10 @@ def fit_long_run_model(lr_in):
             break
         pruned = new_pruned
 
-    coef_map = dict(zip(X.columns, coef))
-    intercept = float(coef_map['Intercept'])
-    bin_coefs = {c.replace('bin_', ''): float(coef_map[c]) for c in bin_dum.columns}
-    route_coefs = {c.replace('route_', ''): float(coef_map[c]) for c in route_dum.columns}
+    coef_map = {str(name): float(c) for name, c in zip(X.columns, coef)}
+    intercept = coef_map['Intercept']
+    bin_coefs = {str(c).replace('bin_', ''): coef_map[str(c)] for c in bin_dum.columns}
+    route_coefs = {str(c).replace('route_', ''): coef_map[str(c)] for c in route_dum.columns}
 
     lr_in['bin_coef'] = lr_in['bin'].map(lambda b: bin_coefs.get(b, 0.0))
     lr_in['route_coef'] = lr_in['route'].map(lambda r: route_coefs.get(r, 0.0))

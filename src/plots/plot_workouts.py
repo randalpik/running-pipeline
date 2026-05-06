@@ -161,11 +161,11 @@ def main():
     if not TRACK_CSV.exists():
         raise SystemExit(f'Missing {TRACK_CSV} — run plot_training_quality.py first.')
     track = pd.read_csv(TRACK_CSV, parse_dates=['date'])
-    track_days = (track['date'] - epoch).dt.days.astype(float).values
-    track_vals = track['p5k_track_min'].values
+    track_days = (track['date'] - epoch).dt.days.astype(float).to_numpy()
+    track_vals = track['p5k_track_min'].to_numpy()
 
     if not hills_r.empty:
-        hr_days = (hills_r['date'] - epoch).dt.days.astype(float).values
+        hr_days = (hills_r['date'] - epoch).dt.days.astype(float).to_numpy()
         hr_track = np.interp(hr_days, track_days, track_vals,
                               left=np.nan, right=np.nan)
         # Force NaN where the underlying track value at the bracketing day is
@@ -288,8 +288,8 @@ def main():
     plot_end   = pd.Timestamp(workouts['date'].max()) + pd.Timedelta(days=30)
     all_days   = pd.date_range(plot_start, plot_end, freq='D')
 
-    days_2016 = (all_days - epoch).days.astype(float).values
-    cs_pace_per_day = np.interp(days_2016, cs['day'].values, cs['p5k_implied_min'].values)
+    days_2016 = (all_days - epoch).days.astype(float).to_numpy()
+    cs_pace_per_day = np.interp(days_2016, cs['day'].to_numpy(), cs['p5k_implied_min'].to_numpy())
 
     sessions = []
     for _, r in workouts.iterrows():

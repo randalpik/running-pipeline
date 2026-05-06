@@ -75,7 +75,7 @@ CAT_LABEL = {
 # HC_LOOPS, HILL_LOOP_META are imported from src.shared.workouts.
 
 
-def apply_offsets(workouts, hills=None):
+def apply_offsets(workouts, hills=None) -> tuple:
     """Compute per-category median offsets across workouts (+ optional hills),
     return both frames augmented with offset/resid columns plus the offsets
     dict. Long runs are corrected by `fit_long_run_model` instead of pooled
@@ -122,7 +122,7 @@ TOOLTIP_TITLE = {
 
 def workout_hover(r):
     cat = r['category']
-    title = TOOLTIP_TITLE.get(cat, CAT_LABEL.get(cat, cat))
+    title = str(TOOLTIP_TITLE.get(cat, CAT_LABEL.get(cat, cat)))
     title += _route_paren(r.get('display_name'), r.get('city_state'))
     xc_note = f' <span style="color:{SURFACES["XC"]}">(XC-corrected)</span>' if r.get('xc_corrected') else ''
     rep_count = int(r['rep_count'])
@@ -263,6 +263,7 @@ def main():
     workouts, hills, offsets = apply_offsets(workouts, hills)
 
     print('\n--- Offset shifts (initial -> final) ---')
+    assert initial_offsets is not None  # set on first iteration of the loop above
     for cat in sorted(set(initial_offsets) | set(offsets)):
         i_off = initial_offsets.get(cat, float('nan'))
         f_off = offsets.get(cat, float('nan'))
@@ -316,7 +317,7 @@ def main():
         print(f'Track broken: {gap_start.date()} -> {gap_end.date()} '
               f'({(gap_end - gap_start).days} days)')
 
-    p5k_at_grid = np.interp(grid_days, cs['day'].values, cs['p5k_implied_min'].values)
+    p5k_at_grid = np.interp(grid_days, cs['day'].to_numpy(), cs['p5k_implied_min'].to_numpy())
     track = p5k_at_grid + smoothed / 60.0
 
     # Persist the smoother track at daily resolution so other plots (Workouts
@@ -507,8 +508,8 @@ def main():
 
     target_days_2016 = (all_days - epoch).days.astype(float).values
     cs_pace_per_day = np.interp(target_days_2016,
-                                cs['day'].values,
-                                cs['p5k_implied_min'].values)
+                                cs['day'].to_numpy(),
+                                cs['p5k_implied_min'].to_numpy())
 
     # Smoother pace per day. Linear interp between 7-day grid points, but
     # if either bracketing grid point is NaN (gap), the result is NaN.

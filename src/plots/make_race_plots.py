@@ -880,7 +880,7 @@ function buildTooltip(day, isSnap, pointHtml) {
 
         # 5. CS solid trace (post-handdrawn) and dotted (handdrawn).
         #    Only the first subplot puts the entries in the legend.
-        daily_dates = daily_summary['date'].values
+        daily_dates = daily_summary['date'].to_numpy()
         mask_solid = daily_dates >= np.datetime64(hd_end)
         fig2.add_trace(go.Scatter(
             x=daily_dates[mask_solid],

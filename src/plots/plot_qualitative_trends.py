@@ -28,6 +28,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -263,7 +264,7 @@ def main():
     dates = full.index
     miles_max = float(full['miles'].max())
 
-    metrics = [
+    metrics: list[dict[str, Any]] = [
         dict(key='volume', label='Daily volume', unit='mi',
              series=full['miles'],
              # 3-stop yellow-family gradient. Mid-stop at 8 mi places
@@ -292,7 +293,7 @@ def main():
                       (170.0, '#E89535')]),
     ]
 
-    fig = make_subplots(
+    fig: go.Figure = make_subplots(
         rows=4, cols=1, shared_xaxes=True,
         vertical_spacing=0.03,
         subplot_titles=[
@@ -368,8 +369,7 @@ def main():
         showlegend=False,
         hovermode=False,
     )
-    for ann in fig['layout']['annotations']:
-        ann['font'] = dict(color=FG, size=13)
+    fig.update_annotations(font=dict(color=FG, size=13))
 
     epoch = pd.Timestamp('1970-01-01')
     first_day = int((pd.Timestamp(args.start) - epoch).days)
@@ -418,7 +418,7 @@ def main():
     print(f"  weight  n={len(w):>5d}  ({len(raw_w)} raw, "
           f"{len(w) - len(raw_w)} interpolated)  "
           f"min={w.min():.1f}  max={w.max():.1f}  median={w.median():.1f}")
-    print(f"\ntotal traces: {len(fig.data)}")
+    print(f"\ntotal traces: {len(tuple(fig.data))}")
 
 
 _BUILD_JS = r"""

@@ -8,6 +8,8 @@ y-axis tick label in the lower-left corner.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 
 from .tokens import FG, GRID
@@ -36,7 +38,7 @@ def thin_yearly_ticks(x_lo, x_hi, *, max_labels=11):
     return tickvals, ticktext
 
 
-def yearly_x_axis_kwargs(x_lo, x_hi, *, max_labels=11, **extra):
+def yearly_x_axis_kwargs(x_lo, x_hi, *, max_labels=11, **extra) -> dict[str, Any]:
     """Standard yearly x-axis config — pass to ``update_xaxes(...)`` or
     spread into ``xaxis=dict(...)``. ``extra`` overrides any returned key.
 

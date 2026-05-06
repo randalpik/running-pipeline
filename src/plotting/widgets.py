@@ -177,7 +177,7 @@ def table(
     headers: Sequence[str],
     rows: Sequence[Sequence],
     *,
-    align: Optional[Sequence[str]] = None,
+    align: Optional[Sequence[Optional[str]]] = None,
 ) -> str:
     """Compact zebra-striped coefficient table.
 
@@ -186,7 +186,7 @@ def table(
     ``num`` class so the CSS handles the alignment (and the
     monospace-friendly padding).
     """
-    align = list(align or [None] * len(headers))
+    align_cols: list[Optional[str]] = list(align) if align else [None] * len(headers)
 
     def _cell_class(a):
         return ' class="num"' if a == 'right' else ''
@@ -195,12 +195,12 @@ def table(
         return ' style="text-align:right"' if a == 'right' else ''
 
     head = '<tr>' + ''.join(
-        f'<th{_th_style(a)}>{h}</th>' for h, a in zip(headers, align)
+        f'<th{_th_style(a)}>{h}</th>' for h, a in zip(headers, align_cols)
     ) + '</tr>'
     body_rows = []
     for row in rows:
         cells = ''.join(
-            f'<td{_cell_class(a)}>{c}</td>' for c, a in zip(row, align)
+            f'<td{_cell_class(a)}>{c}</td>' for c, a in zip(row, align_cols)
         )
         body_rows.append(f'<tr>{cells}</tr>')
     return (

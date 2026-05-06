@@ -244,7 +244,7 @@ def build_categories(df):
         g = group_for_label[lab]
         group_size[g] = group_size.get(g, 0) + 1
 
-    sorted_groups = sorted(group_total, key=group_total.get, reverse=True)
+    sorted_groups = sorted(group_total, key=lambda g: group_total[g], reverse=True)
     if GLOBAL_OTHER_KEY in sorted_groups:
         sorted_groups.remove(GLOBAL_OTHER_KEY)
         sorted_groups.append(GLOBAL_OTHER_KEY)
@@ -410,7 +410,7 @@ def build_bin_hover(pivot, freq, ordered_labels, label_color,
         group_bin_total = {g: sum(it[1] for it in items)
                            for g, items in group_items.items()}
         sorted_groups = sorted(group_bin_total,
-                               key=group_bin_total.get, reverse=True)
+                               key=lambda g: group_bin_total[g], reverse=True)
         if GLOBAL_OTHER_KEY in sorted_groups:
             sorted_groups.remove(GLOBAL_OTHER_KEY)
             sorted_groups.append(GLOBAL_OTHER_KEY)
