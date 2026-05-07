@@ -211,6 +211,8 @@ def render_plot(
 
     head_inject = (
         f'<title>{page_title}</title>\n'
+        f'<link rel="icon" href="data:,">\n'
+        f'<meta name="darkreader-lock">\n'
         f'<meta name="rp-slug" content="{title_slug}">\n'
         f'<style>\n{head_css}\n</style>\n'
     )

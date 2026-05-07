@@ -42,6 +42,7 @@ def _empty_shell() -> str:
     return (
         '<!doctype html>\n<html><head><meta charset="utf-8">'
         "<title>Max's Running Data</title>"
+        '<link rel="icon" href="data:,">'
         '<style>body{background:#1a1a1a;color:#eee;'
         'font-family:system-ui,sans-serif;padding:2rem}</style>'
         '</head><body>'
@@ -84,7 +85,9 @@ def render_shell(tabs, include_admin: bool = False) -> str:
     return f'''<!doctype html>
 <html><head>
 <meta charset="utf-8">
+<meta name="darkreader-lock">
 <title>Max's Running Data</title>
+<link rel="icon" href="data:,">
 <meta name="rp-default-slug" content="{default_slug}">
 <style>
 {_SHELL_CSS}
