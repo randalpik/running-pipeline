@@ -28,6 +28,7 @@ from src.shared.workouts import (
 from src.shared.long_run_model import (
     fit_long_run_model, MIN_ROUTE_N, PRUNE_SIGMA,
 )
+from src.plotting import widgets
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box,
                             sec_to_mss, fmt_min, CAT_COLORS, GRID, CS_LINE,
@@ -36,6 +37,9 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
 
 # Width of the route-betas box (#tq-routes); also used to size margin.r.
 ROUTES_BOX_WIDTH = 196
+
+_PLOTS_DIR = Path(__file__).resolve().parent
+_TQ_JS = _PLOTS_DIR / 'plot_training_quality.js'
 
 
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -71,7 +75,7 @@ CAT_LABEL = {
 # HC_LOOPS, HILL_LOOP_META are imported from src.shared.workouts.
 
 
-def apply_offsets(workouts, hills=None):
+def apply_offsets(workouts, hills=None) -> tuple:
     """Compute per-category median offsets across workouts (+ optional hills),
     return both frames augmented with offset/resid columns plus the offsets
     dict. Long runs are corrected by `fit_long_run_model` instead of pooled
@@ -118,7 +122,7 @@ TOOLTIP_TITLE = {
 
 def workout_hover(r):
     cat = r['category']
-    title = TOOLTIP_TITLE.get(cat, CAT_LABEL.get(cat, cat))
+    title = str(TOOLTIP_TITLE.get(cat, CAT_LABEL.get(cat, cat)))
     title += _route_paren(r.get('display_name'), r.get('city_state'))
     xc_note = f' <span style="color:{SURFACES["XC"]}">(XC-corrected)</span>' if r.get('xc_corrected') else ''
     rep_count = int(r['rep_count'])
@@ -259,6 +263,7 @@ def main():
     workouts, hills, offsets = apply_offsets(workouts, hills)
 
     print('\n--- Offset shifts (initial -> final) ---')
+    assert initial_offsets is not None  # set on first iteration of the loop above
     for cat in sorted(set(initial_offsets) | set(offsets)):
         i_off = initial_offsets.get(cat, float('nan'))
         f_off = offsets.get(cat, float('nan'))
@@ -312,7 +317,7 @@ def main():
         print(f'Track broken: {gap_start.date()} -> {gap_end.date()} '
               f'({(gap_end - gap_start).days} days)')
 
-    p5k_at_grid = np.interp(grid_days, cs['day'].values, cs['p5k_implied_min'].values)
+    p5k_at_grid = np.interp(grid_days, cs['day'].to_numpy(), cs['p5k_implied_min'].to_numpy())
     track = p5k_at_grid + smoothed / 60.0
 
     # Persist the smoother track at daily resolution so other plots (Workouts
@@ -503,8 +508,8 @@ def main():
 
     target_days_2016 = (all_days - epoch).days.astype(float).values
     cs_pace_per_day = np.interp(target_days_2016,
-                                cs['day'].values,
-                                cs['p5k_implied_min'].values)
+                                cs['day'].to_numpy(),
+                                cs['p5k_implied_min'].to_numpy())
 
     # Smoother pace per day. Linear interp between 7-day grid points, but
     # if either bracketing grid point is NaN (gap), the result is NaN.
@@ -635,7 +640,6 @@ function buildTooltip(day, isSnap, pointHtml) {
     # unchecked, traces show raw 5K-equivalent pace in min/mi against the
     # actual CS curve. JS reads `meta.raw_y` / `meta.norm_y` from each trace
     # and restyles, then relayouts the y-axis.
-    import json as _json
     axis_raw = {
         'range': [y_max_raw, y_min_raw],
         'tickvals': raw_tickvals,
@@ -658,91 +662,39 @@ function buildTooltip(day, isSnap, pointHtml) {
         f'<td style="text-align:right">{lr_fit.route_coefs.get(r, 0.0):+.1f}</td></tr>'
         for r in routes_by_beta)
 
-    overlay_html = f"""
-<style>
-#tq-norm-toggle {{
-  position: fixed; right: 60px; top: 20px;
-  background: rgba(26,26,26,0.92);
-  border: 1px solid #444;
-  padding: 5px 10px;
-  border-radius: 4px;
-  color: #eee;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  font-size: 11px;
-  z-index: 100;
-  user-select: none;
-}}
-#tq-norm-toggle label {{ cursor: pointer; display: flex; align-items: center; gap: 6px; }}
-#tq-norm-toggle input[type=checkbox] {{ cursor: pointer; accent-color: #4aa3ff; margin: 0; }}
-
-#tq-routes {{
-  position: fixed;
-  background: rgba(26,26,26,0.92);
-  border: 1px solid #444;
-  padding: 8px 10px;
-  border-radius: 4px;
-  color: #eee;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  font-size: 11px;
-  z-index: 100;
-  width: {ROUTES_BOX_WIDTH}px;
-  box-sizing: border-box;
-  user-select: none;
-  max-height: calc(100vh - 100px);
-  overflow-y: auto;
-}}
-#tq-routes .tq-routes-title {{ font-weight: 500; margin-bottom: 4px; color: #eee; }}
-#tq-routes .tq-routes-sub {{ font-size: 10.5px; color: #999; margin-bottom: 6px; line-height: 1.3; }}
-#tq-routes table {{ width: 100%; font-size: 10.5px; border-collapse: collapse; }}
-#tq-routes th {{ text-align: left; padding: 2px 4px; color: #aaa; font-weight: 500; }}
-#tq-routes td {{ padding: 1px 4px; }}
-#tq-routes tr:nth-child(even) td {{ background: rgba(255,255,255,0.03); }}
-</style>
-<div id="tq-norm-toggle">
-  <label><input type="checkbox" id="tq-norm-cb" checked> Normalize to CS</label>
-</div>
-<div id="tq-routes" data-rp-anchor="below-legend">
-  <div class="tq-routes-title">Long-run route offsets</div>
-  <div class="tq-routes-sub">vs. baseline (n &ge; {MIN_ROUTE_N}); intercept {lr_fit.intercept:+.1f}, lr_lo {lr_fit.bin_coefs.get('lr_lo', 0.0):+.1f}</div>
-  <table>
-    <thead><tr><th>Route</th><th style="text-align:right">n</th><th style="text-align:right">β</th></tr></thead>
-    <tbody>{route_rows_html}</tbody>
-  </table>
-</div>
-<script>
-window.__TQ_AXIS_RAW = {_json.dumps(axis_raw)};
-window.__TQ_AXIS_NORM = {_json.dumps(axis_norm)};
-(function() {{
-  function getPlot() {{ return document.querySelector('.plotly-graph-div'); }}
-  function applyState(checked) {{
-    var plot = getPlot();
-    if (!plot || !plot.data || !window.Plotly) {{ setTimeout(function() {{ applyState(checked); }}, 100); return; }}
-    var newY = [], indices = [];
-    for (var i = 0; i < plot.data.length; i++) {{
-      var meta = plot.data[i].meta;
-      if (meta && meta.raw_y && meta.norm_y) {{
-        newY.push(checked ? meta.norm_y : meta.raw_y);
-        indices.push(i);
-      }}
-    }}
-    if (indices.length) {{
-      Plotly.restyle(plot, {{y: newY}}, indices);
-    }}
-    var ax = checked ? window.__TQ_AXIS_NORM : window.__TQ_AXIS_RAW;
-    Plotly.relayout(plot, {{
-      'yaxis.range': ax.range,
-      'yaxis.tickvals': ax.tickvals,
-      'yaxis.ticktext': ax.ticktext,
-      'yaxis.title.text': ax.title,
-    }});
-  }}
-  var cb = document.getElementById('tq-norm-cb');
-  cb.addEventListener('change', function() {{ applyState(cb.checked); }});
-  // Initial python render already matches the default checked state, no
-  // initial restyle needed.
-}})();
-</script>
-"""
+    # Normalize-to-CS toggle (small fixed pill in the upper-right area
+    # — distinct from the legend-anchored route table below).
+    norm_toggle_html = (
+        '<div id="tq-norm-toggle" class="rp-sidebar rp-sidebar-compact" '
+        'style="right:60px; top:20px">'
+        '<label class="rp-row" style="margin:0">'
+        '<input type="checkbox" id="tq-norm-cb" checked> Normalize to CS'
+        '</label></div>'
+    )
+    routes_table = widgets.table(
+        ('Route', 'n', 'β'),
+        [(r, int(route_n.get(r, 0)),
+          f'{lr_fit.route_coefs.get(r, 0.0):+.1f}')
+         for r in routes_by_beta],
+        align=('left', 'right', 'right'),
+    )
+    routes_panel = widgets.sidebar(
+        'tq-routes',
+        body=(
+            widgets.title('Long-run route offsets')
+            + widgets.subtitle(
+                f'vs. baseline (n &ge; {MIN_ROUTE_N}); '
+                f'intercept {lr_fit.intercept:+.1f}, '
+                f'lr_lo {lr_fit.bin_coefs.get("lr_lo", 0.0):+.1f}')
+            + routes_table
+        ),
+        compact=True,
+        width_px=ROUTES_BOX_WIDTH,
+    )
+    overlay_html = (
+        widgets.js_globals({'AXIS_RAW': axis_raw, 'AXIS_NORM': axis_norm})
+        + '\n' + norm_toggle_html + '\n' + routes_panel
+    )
 
     render_plot(
         fig, OUT_HTML,
@@ -757,6 +709,7 @@ window.__TQ_AXIS_NORM = {_json.dumps(axis_norm)};
             last_day=last_day,
         ),
         overlay_html=overlay_html,
+        overlay_js_files=[_TQ_JS],
     )
     print(f'\nWrote {OUT_HTML}')
 

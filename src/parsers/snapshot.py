@@ -43,7 +43,8 @@ import io
 import os
 import re
 import sys
-from datetime import date
+from datetime import date, datetime
+from typing import Any
 
 import pandas as pd
 
@@ -408,7 +409,7 @@ def snapshot_from_markdown(log_md_path, log_year, adj_md_path, out_path):
 
 # ---------- xlsx → snapshot ----------
 
-def _xlsx_cell(ws, row, col):
+def _xlsx_cell(ws, row, col) -> Any:
     if col is None:
         return None
     v = ws.cell(row=row, column=col).value
@@ -502,7 +503,7 @@ def adjustments_dfs_from_xlsx(xlsx_path):
             for date_col in ("date", "min_hist", "max_hist"):
                 if date_col in rec and rec[date_col] not in (None, ""):
                     d = rec[date_col]
-                    if hasattr(d, "date") and not isinstance(d, date):
+                    if isinstance(d, datetime):
                         rec[date_col] = d.date().isoformat()
                     elif isinstance(d, date):
                         rec[date_col] = d.isoformat()
@@ -546,7 +547,7 @@ def snapshot_from_xlsx(log_xlsx_path, log_year, adj_xlsx_path, out_path):
 # ---------- CLI ----------
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
 
     md = sub.add_parser("from-markdown",

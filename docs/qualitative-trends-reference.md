@@ -52,13 +52,13 @@ Weight has multi-day stretches without measurements. `WEIGHT_INTERP_MAX_GAP = 7`
 
 For these long gaps, the trendline AND envelope both vanish on the same days. Implementation gotcha: must mask `lo_raw`/`hi_raw`/`ma` to `series.notna()` *before* the 7d smoothing pass, AND *again after*. The `min_periods=1` in the smoother lets it spread valid neighbour values back into the gap, so masking only once leaves the envelope extending past the trendline at gap boundaries.
 
-## Custom hover (TQ pattern)
+## Hover — smart spikeline scaffold
 
-All traces have `hoverinfo='skip'` so plotly's native hover events don't fire. Instead, a `mousemove` listener on the plot div:
-1. Reads `pdiv._fullLayout.xaxis.p2c(pixel_x)` to convert pixel → ms timestamp → day index.
-2. Looks up MA, lo, hi at that index in pre-built JSON payload (`P.ma`, `P.lo`, `P.hi`).
-3. Renders a fixed-position tooltip + a 1px full-viewport spike line transformed to the mouse X.
-4. Rows where `ma`, `lo`, AND `hi` are all null are hidden entirely (so weight rows disappear before 2022 and during long gaps; the whole tooltip disappears if all three metrics are null).
+All traces have `hoverinfo='skip'` so Plotly's native hover events don't fire. The plot opts into the shared cursor-tooltip scaffold (`_scaffold/cursor_tooltip.js`) via `cursor_tooltip=CursorTooltip(...)` on `render_plot()`. The scaffold owns the cursor-following spike (`.rp-spike`) and tooltip (`.rp-tooltip`); the plot supplies the per-day data and the `buildTooltip(day)` body.
+
+- **Payload** is a precomputed daily-indexed structure (`P.ma`, `P.lo`, `P.hi` per metric) keyed by `day - first_day`, serialized as `window.__TT_DATA`.
+- **`buildTooltip(day)`** looks up MA / lo / hi at the day index and emits one row per metric. Rows where all three are null are omitted (weight rows disappear before 2022 and during long gaps); if every metric is null at the cursor's day, returning `''` suppresses the tooltip entirely.
+- **`spike_full_plot=True`** is set on `CursorTooltip` so the spikeline visually spans every stacked subplot rather than per-subplot clipping (default).
 
 Range format: `(155.0 to 162.4)` instead of an en-dash, for readability with negative numbers (especially temp).
 

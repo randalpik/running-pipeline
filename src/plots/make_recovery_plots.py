@@ -100,8 +100,12 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             CS_LINE, CS_LINE_WIDTH, TREND_LINE, TREND_WIDTH,
                             GRID, gaussian_rolling_trend,
                             yearly_x_axis_kwargs)
+from src.plotting import widgets
 from src.shared.paths import DEBUG_DIR
 from src.shared.cs_projection import load_cs_outputs
+
+_PLOTS_DIR = Path(__file__).resolve().parent
+_RECOVERY_JS = _PLOTS_DIR / 'make_recovery_plots.js'
 
 
 DEFAULT_IN_DIR = str(DATA_DIR)
@@ -174,7 +178,7 @@ def days_since(daily, source_dates_sorted):
         if idx == 0:
             out.append(np.nan)
         else:
-            prev = pd.Timestamp(sd[idx - 1])
+            prev = pd.Timestamp(int(sd[idx - 1]))
             out.append((d - prev).days)
     return np.array(out, dtype=float)
 
@@ -303,10 +307,10 @@ def main():
     if neighbor_mask.sum() > 0:
         nbr_dates_ms = np.array(
             [d.value // 10**6 for d in rec.loc[neighbor_mask, 'date']])
-        nbr_pace = rec.loc[neighbor_mask, 'recovery_pace_sec_per_mi'].values
+        nbr_pace = rec.loc[neighbor_mask, 'recovery_pace_sec_per_mi'].to_numpy()
         all_dates_ms = np.array([d.value // 10**6 for d in rec['date']])
-        all_pace = rec['recovery_pace_sec_per_mi'].values
-        in_pool = neighbor_mask.values
+        all_pace = rec['recovery_pace_sec_per_mi'].to_numpy()
+        in_pool = neighbor_mask.to_numpy()
         half_ms = OUTLIER_WINDOW_HALF_DAYS * 86_400_000
         loo_resid = np.full(len(rec), np.nan)
         for i, d_ms in enumerate(all_dates_ms):
@@ -351,7 +355,7 @@ def main():
 
     for cat in QUALITY_CATS:
         tau = FATIGUE_TAU_DAYS[cat]
-        rec[f'fat_{cat}'] = np.exp(-rec[f'dsq_{cat}'] / tau).fillna(0)
+        rec[f'fat_{cat}'] = np.exp(-rec[f'dsq_{cat}'].fillna(np.inf) / tau)
 
     # Qualifying routes
     route_counts = (rec.loc[~rec['is_pruned'], 'location']
@@ -393,8 +397,8 @@ def main():
     rec_fit = rec[~rec['is_pruned']].dropna(
         subset=feature_cols + ['residual_detrended']).copy()
 
-    X = rec_fit[feature_cols].values.astype(float)
-    y = rec_fit['residual_detrended'].values.astype(float)
+    X = rec_fit[feature_cols].to_numpy().astype(float)
+    y = rec_fit['residual_detrended'].to_numpy().astype(float)
     X_int = np.hstack([np.ones((len(X), 1)), X])
     coef, *_ = np.linalg.lstsq(X_int, y, rcond=None)
     intercept = float(coef[0])
@@ -405,8 +409,8 @@ def main():
     ss_tot = float(np.sum((y - y.mean()) ** 2))
     r2_detrended = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
-    raw_y = rec_fit['residual_raw'].values
-    raw_yhat = rec_fit['era_trend'].values + yhat
+    raw_y = rec_fit['residual_raw'].to_numpy()
+    raw_yhat = rec_fit['era_trend'].to_numpy() + yhat
     ss_res_raw = float(np.sum((raw_y - raw_yhat) ** 2))
     ss_tot_raw = float(np.sum((raw_y - raw_y.mean()) ** 2))
     r2_raw = 1 - ss_res_raw / ss_tot_raw if ss_tot_raw > 0 else 0.0
@@ -546,11 +550,11 @@ def main():
     # Customdata channels — ORDER MUST MATCH FACTOR_ORDER in JS:
     # 0=temp, 1=route, 2=recent_effort, 3=tod, 4=era
     contrib_arr = np.stack([
-        rec['contrib_temp'].values,
-        rec['contrib_route'].values,
-        rec['contrib_quality'].values,
-        rec['contrib_tod'].values,
-        rec['contrib_era'].values,
+        rec['contrib_temp'].to_numpy(),
+        rec['contrib_route'].to_numpy(),
+        rec['contrib_quality'].to_numpy(),
+        rec['contrib_tod'].to_numpy(),
+        rec['contrib_era'].to_numpy(),
     ], axis=1).tolist()
 
     # Snap HTML lives on the residual trace's text field — same content as
@@ -674,8 +678,7 @@ def main():
             ),
         ),
     )
-    for ann in fig['layout']['annotations']:
-        ann['font'] = dict(color=FG, size=14)
+    fig.update_annotations(font=dict(color=FG, size=14))
 
     # ---------- spikeline tooltip payload ----------
     # Per-day arrays the JS uses for the trend section, plus a sorted list
@@ -824,15 +827,25 @@ function buildTooltip(day, isSnap, pointHtml) {
             first_day=first_day,
             last_day=last_day,
         ),
-        overlay_html=build_normalization_ui(
-            betas, intercept, r2_detrended, r2_raw, len(rec_fit),
-            int(rec['is_bad_cond'].sum()),
-            int(rec['is_partner_run'].sum()),
-            int(rec['is_outlier_loo'].sum()),
-            int(rec['is_pruned'].sum()),
-            qualifying_routes, route_col_map, route_counts,
-            global_mean_residual),
+        overlay_html=(
+            widgets.js_globals({'TREND_SIGMA_DAYS': TREND_SMOOTH_SIGMA_DAYS})
+            + '\n'
+            + build_normalization_ui(
+                betas, intercept, r2_detrended, r2_raw, len(rec_fit),
+                int(rec['is_bad_cond'].sum()),
+                int(rec['is_partner_run'].sum()),
+                int(rec['is_outlier_loo'].sum()),
+                int(rec['is_pruned'].sum()),
+                qualifying_routes, route_col_map, route_counts,
+                global_mean_residual)
+        ),
+        overlay_js_files=[_RECOVERY_JS],
         extra_head_css=(
+            # Suppress Plotly's built-in hover label — recovery has
+            # hoverlabel-configured traces that would otherwise double
+            # up with the smart spikeline tooltip. NOT global in
+            # base.css since world_map relies on native hover.
+            '.hovertext { display: none !important; }\n'
             '@media (max-width:760px){'
             '#norm-filter{position:static!important;'
             'margin:8px;width:auto!important;}}'
@@ -877,268 +890,93 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
     """
     q_betas = [betas['fat_marathon'], betas['fat_race_short']]
 
-    factors = [
+    factors_norm = [
         ('era',           'Era trend'),
         ('temp',          'Temperature'),
         ('route',         'Route'),
         ('recent_effort', 'Recent race'),
         ('time_of_day',   'Time of day'),
     ]
-    cb_html = '\n'.join(
-        f'  <label class="nf-row"><input type="checkbox" data-factor="{key}" data-mode="norm"> {label}</label>'
-        for key, label in factors)
+    norm_rows = widgets.checkbox_rows(
+        factors_norm, data_attr='factor', checked=False
+    ).replace('data-factor=', 'data-mode="norm" data-factor=')
 
     filter_items = [
-        ('hide_bad_cond', 'Hide bad conditions', n_bad_cond),
-        ('hide_partner',  'Hide non-solo',       n_partner_runs),
-        ('hide_outlier',  'Hide outliers',       n_outliers),
+        ('hide_bad_cond', 'Hide bad conditions', f'({n_bad_cond})'),
+        ('hide_partner',  'Hide non-solo',       f'({n_partner_runs})'),
+        ('hide_outlier',  'Hide outliers',       f'({n_outliers})'),
     ]
-    filter_html = '\n'.join(
-        f'  <label class="nf-row"><input type="checkbox" data-factor="{key}" data-mode="filter"> '
-        f'{label} <span style="color:#888">({n})</span></label>'
-        for key, label, n in filter_items)
+    filter_rows = widgets.checkbox_rows(
+        filter_items, data_attr='factor', checked=False
+    ).replace('data-factor=', 'data-mode="filter" data-factor=')
 
     routes_by_beta = sorted(qualifying_routes,
-                              key=lambda r: betas[route_col_map[r]])
-    rt_rows = '\n'.join(
-        f'<tr><td>{r}</td><td>{int(route_counts[r])}</td>'
-        f'<td style="text-align:right">{betas[route_col_map[r]]:+.2f}</td></tr>'
-        for r in routes_by_beta)
+                            key=lambda r: betas[route_col_map[r]])
+    route_table = widgets.table(
+        ('Route', 'n', 'β'),
+        [(r, int(route_counts[r]), f'{betas[route_col_map[r]]:+.2f}')
+         for r in routes_by_beta],
+        align=('left', 'left', 'right'),
+    )
 
-    return f"""
-<style>
-#norm-filter {{
-  position: fixed; right: 12px; top: 48px;
-  background: rgba(26,26,26,0.92);
-  border: 1px solid #444;
-  padding: 12px 14px;
-  border-radius: 4px;
-  color: #eee;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  font-size: 12px;
-  z-index: 100;
-  width: 240px;
-  user-select: none;
-  max-height: calc(100vh - 100px);
-  overflow-y: auto;
-}}
-#norm-filter .nf-title {{ font-weight: 500; margin-bottom: 4px; color: #eee; font-size: 13px; }}
-#norm-filter .nf-sub {{ font-size: 11px; color: #999; margin-bottom: 8px; line-height: 1.4; }}
-#norm-filter .nf-buttons {{ margin-bottom: 8px; display: flex; gap: 4px; }}
-#norm-filter .nf-buttons button {{
-  background: transparent; border: 1px solid #555; color: #eee;
-  padding: 2px 8px; cursor: pointer; font-size: 12px; border-radius: 3px;
-  flex: 1;
-}}
-#norm-filter .nf-buttons button:hover {{ background: #2a2a2a; }}
-#norm-filter .nf-row {{ display: block; margin: 5px 0; cursor: pointer; line-height: 1.35; }}
-#norm-filter input[type=checkbox] {{ margin-right: 6px; vertical-align: top; cursor: pointer; accent-color: #4aa3ff; margin-top: 3px; }}
-#norm-filter .nf-stats {{ margin-top: 10px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888; line-height: 1.4; }}
-#norm-filter details {{ margin-top: 10px; }}
-#norm-filter summary {{ cursor: pointer; font-size: 11px; color: #aaa; }}
-#norm-filter table {{ width: 100%; font-size: 10.5px; margin-top: 6px; border-collapse: collapse; }}
-#norm-filter td, #norm-filter th {{ padding: 2px 4px; }}
-#norm-filter tr:nth-child(even) {{ background: rgba(255,255,255,0.03); }}
-#norm-filter .nf-noteworthy {{ font-size: 10.5px; color: #777; margin-top: 8px; line-height: 1.4; font-style: italic; }}
-#norm-filter .nf-detail-row {{ font-size: 11px; color: #bbb; margin-top: 6px; line-height: 1.4; }}
-#norm-filter .nf-detail-row b {{ color: #ddd; }}
-#norm-filter .nf-divider {{ border-top: 1px solid #333; margin: 8px 0 4px; }}
-/* Suppress Plotly's built-in hover label — the smart spikeline scaffold
-   renders the tooltip via .rp-tooltip / .rp-spike. */
-.hovertext {{ display: none !important; }}
-</style>
-<div id="norm-filter">
-  <div class="nf-title">Normalize</div>
-  <div class="nf-sub">Subtract each factor's modeled contribution.</div>
-  <div class="nf-buttons">
-    <button id="nf-norm-all">All</button>
-    <button id="nf-norm-none">None</button>
-  </div>
-{cb_html}
-  <div class="nf-divider"></div>
-  <div class="nf-title" style="margin-top:6px">Hide from chart</div>
-  <div class="nf-buttons">
-    <button id="nf-hide-all">All</button>
-    <button id="nf-hide-none">None</button>
-  </div>
-{filter_html}
-  <details>
-    <summary>Coefficient details</summary>
-    <div class="nf-detail-row"><b>Era trend:</b> residual panel only; centers around {global_mean_residual:+.0f} s/mi</div>
-    <div class="nf-detail-row"><b>Temperature:</b> β = {betas["temp_centered"]:+.2f} sec/mi per °C from {int(TEMP_REFERENCE_C)}°C</div>
-    <div class="nf-detail-row"><b>Recent race</b> (exponential decay):
-      marathon {q_betas[0]:+.1f} (τ={FATIGUE_TAU_DAYS['marathon']:.0f}d),
-      short race {q_betas[1]:+.1f} (τ={FATIGUE_TAU_DAYS['race_short']:.0f}d)</div>
-    <div class="nf-detail-row"><b>Time of day:</b> β = {betas["tod_is_pm"]:+.2f} sec/mi for afternoon/late (vs early/morning)</div>
-    <div class="nf-detail-row"><b>Route offsets</b> (n ≥ {MIN_ROUTE_N}):</div>
-    <table>
-      <thead><tr><th style="text-align:left">Route</th><th>n</th><th style="text-align:right">β</th></tr></thead>
-      <tbody>{rt_rows}</tbody>
-    </table>
-    <div class="nf-noteworthy">
-      Sleep cycles, run distance, shoes, rain and wind were tested and
-      excluded as non-factors. Non-race quality efforts were also found
-      to have no detectable next-day pace effect.
-    </div>
-  </details>
-  <div class="nf-stats">
-    n={n_fit:,} in fit; {n_pruned_unique} excluded (classes overlap)<br>
-    R² = {r2_detrended:.3f} (factors only on detrended)<br>
-    R² = {r2_raw:.3f} (era + factors on raw)<br>
-    Trend: gaussian kernel, σ={TREND_SMOOTH_SIGMA_DAYS}d
-  </div>
-</div>
-<script>
-(function() {{
-  // ORDER MUST MATCH customdata channel order in Python
-  var FACTOR_ORDER = ['temp', 'route', 'recent_effort', 'time_of_day', 'era'];
-  var ERA_INDEX = FACTOR_ORDER.indexOf('era');
+    details_body = (
+        widgets.detail_row(
+            'Era trend',
+            f'residual panel only; centers around {global_mean_residual:+.0f} s/mi')
+        + widgets.detail_row(
+            'Temperature',
+            f'β = {betas["temp_centered"]:+.2f} sec/mi per °C '
+            f'from {int(TEMP_REFERENCE_C)}°C')
+        + widgets.detail_row(
+            'Recent race',
+            f'(exponential decay): marathon {q_betas[0]:+.1f} '
+            f'(τ={FATIGUE_TAU_DAYS["marathon"]:.0f}d), '
+            f'short race {q_betas[1]:+.1f} '
+            f'(τ={FATIGUE_TAU_DAYS["race_short"]:.0f}d)')
+        + widgets.detail_row(
+            'Time of day',
+            f'β = {betas["tod_is_pm"]:+.2f} sec/mi for afternoon/late '
+            '(vs early/morning)')
+        + widgets.detail_row('Route offsets', f'(n ≥ {MIN_ROUTE_N}):')
+        + route_table
+        + widgets.noteworthy(
+            'Sleep cycles, run distance, shoes, rain and wind were tested '
+            'and excluded as non-factors. Non-race quality efforts were '
+            'also found to have no detectable next-day pace effect.')
+    )
 
-  var TREND_SIGMA_MS = {TREND_SMOOTH_SIGMA_DAYS} * 86400000;
-  var TREND_TRUNC_MS = 4 * TREND_SIGMA_MS;  // truncate kernel at 4σ
-  var TREND_STEP_MS = 1 * 86400000;          // daily step
-  var TREND_TWO_SIGSQ = 2 * TREND_SIGMA_MS * TREND_SIGMA_MS;
-  var BASE_OPACITY = 0.6;
+    body = (
+        widgets.title('Normalize')
+        + widgets.subtitle("Subtract each factor's modeled contribution.")
+        + widgets.button_row([
+            ('nf-norm-all', 'All'), ('nf-norm-none', 'None'),
+        ])
+        + norm_rows
+        + widgets.divider()
+        + widgets.title('Hide from chart')
+        + widgets.button_row([
+            ('nf-hide-all', 'All'), ('nf-hide-none', 'None'),
+        ])
+        + filter_rows
+        + '\n<details><summary>Coefficient details</summary>\n'
+        + details_body
+        + '\n</details>\n'
+        + widgets.stats_footer([
+            f'n={n_fit:,} in fit; {n_pruned_unique} excluded (classes overlap)',
+            f'R² = {r2_detrended:.3f} (factors only on detrended)',
+            f'R² = {r2_raw:.3f} (era + factors on raw)',
+            f'Trend: gaussian kernel, σ={TREND_SMOOTH_SIGMA_DAYS}d',
+        ])
+    )
 
-  function getPlot() {{ return document.querySelector('.plotly-graph-div'); }}
-
-  function findTraces(plot) {{
-    var idx = {{pace:-1, residual:-1, trendPace:-1, trendResid:-1}};
-    plot.data.forEach(function(t, i) {{
-      if (!t.meta) return;
-      if (t.meta.role === 'pace') idx.pace = i;
-      else if (t.meta.role === 'residual') idx.residual = i;
-      else if (t.meta.role === 'trend_pace') idx.trendPace = i;
-      else if (t.meta.role === 'trend_resid') idx.trendResid = i;
-    }});
-    return idx;
-  }}
-
-  function rollingTrend(dateMs, ys, mask) {{
-    // Gaussian-kernel smoother, σ = TREND_SIGMA_MS, truncated at ±4σ.
-    // mask: optional boolean array. True = include this point in the trend.
-    if (dateMs.length === 0) return {{x:[], y:[]}};
-    var t0 = dateMs[0], t1 = dateMs[dateMs.length - 1];
-    var trendX = [], trendY = [];
-    var lo = 0, hi = 0;
-    for (var t = t0; t <= t1; t += TREND_STEP_MS) {{
-      var lo_target = t - TREND_TRUNC_MS, hi_target = t + TREND_TRUNC_MS;
-      while (lo < dateMs.length && dateMs[lo] < lo_target) lo++;
-      while (hi < dateMs.length && dateMs[hi] <= hi_target) hi++;
-      var sumWY = 0, sumW = 0, count = 0;
-      for (var k = lo; k < hi; k++) {{
-        if (mask && !mask[k]) continue;
-        if (ys[k] == null || isNaN(ys[k])) continue;
-        var dt = dateMs[k] - t;
-        var w = Math.exp(-(dt*dt) / TREND_TWO_SIGSQ);
-        sumWY += ys[k] * w;
-        sumW  += w;
-        count++;
-      }}
-      if (count >= 5) {{
-        trendX.push(new Date(t));
-        trendY.push(sumWY / sumW);
-      }}
-    }}
-    return {{x: trendX, y: trendY}};
-  }}
-
-  function update() {{
-    var plot = getPlot();
-    if (!plot || !plot.data || !window.Plotly) {{ setTimeout(update, 100); return; }}
-    var idx = findTraces(plot);
-    if (idx.pace < 0 || idx.residual < 0) return;
-
-    var checked = {{}};
-    document.querySelectorAll('#norm-filter input[type=checkbox]').forEach(function(cb) {{
-      checked[cb.dataset.factor] = cb.checked;
-    }});
-
-    var paceTrace = plot.data[idx.pace];
-    var residTrace = plot.data[idx.residual];
-    var rawPace = paceTrace.meta.raw_y;
-    var rawResid = residTrace.meta.raw_y;
-    var dateMs = residTrace.meta.date_ms;
-    var isBadCond = residTrace.meta.is_bad_cond;
-    var isPartner = residTrace.meta.is_partner_run;
-    var isOutlier = residTrace.meta.is_outlier;
-    var custom = paceTrace.customdata;
-
-    var hideBadCond = !!checked['hide_bad_cond'];
-    var hidePartner = !!checked['hide_partner'];
-    var hideOutlier = !!checked['hide_outlier'];
-
-    var n = rawPace.length;
-    var newPace = new Array(n);
-    var newResid = new Array(n);
-    var newOpacity = new Array(n);
-    var visibleMask = new Array(n);
-    for (var i = 0; i < n; i++) {{
-      var hidden = (hideBadCond && isBadCond[i]) ||
-                   (hidePartner && isPartner[i]) ||
-                   (hideOutlier && isOutlier[i]);
-      if (hidden) {{
-        // null y suppresses both rendering AND hover hit-testing
-        newPace[i] = null;
-        newResid[i] = null;
-        newOpacity[i] = 0;
-        visibleMask[i] = false;
-        continue;
-      }}
-      var adjPace = 0, adjResid = 0;
-      var c = custom[i];
-      for (var j = 0; j < FACTOR_ORDER.length; j++) {{
-        if (!checked[FACTOR_ORDER[j]]) continue;
-        if (j === ERA_INDEX) {{
-          adjResid += c[j];
-        }} else {{
-          adjPace += c[j];
-          adjResid += c[j];
-        }}
-      }}
-      newPace[i] = rawPace[i] - adjPace;
-      newResid[i] = rawResid[i] - adjResid;
-      newOpacity[i] = BASE_OPACITY;
-      visibleMask[i] = true;
-    }}
-
-    Plotly.restyle(plot,
-                   {{y: [newPace, newResid],
-                     'marker.opacity': [newOpacity, newOpacity]}},
-                   [idx.pace, idx.residual]);
-
-    if (idx.trendPace >= 0 && idx.trendResid >= 0) {{
-      var tp = rollingTrend(dateMs, newPace, visibleMask);
-      var tr = rollingTrend(dateMs, newResid, visibleMask);
-      Plotly.restyle(plot, {{x: [tp.x, tr.x], y: [tp.y, tr.y]}},
-                     [idx.trendPace, idx.trendResid]);
-    }}
-  }}
-
-  function setGroup(mode, on) {{
-    var sel = '#norm-filter input[data-mode="' + mode + '"]';
-    document.querySelectorAll(sel).forEach(function(cb) {{ cb.checked = on; }});
-    update();
-  }}
-
-  // Initial paint shows the no-normalization-applied scatter and trend
-  // exactly as Python wrote them — no JS recompute needed. update() only
-  // fires from now on when the user toggles a checkbox or button.
-
-  document.querySelectorAll('#norm-filter input[type=checkbox]').forEach(function(cb) {{
-    cb.addEventListener('change', update);
-  }});
-  document.getElementById('nf-norm-all').addEventListener('click', function() {{ setGroup('norm', true); }});
-  document.getElementById('nf-norm-none').addEventListener('click', function() {{ setGroup('norm', false); }});
-  document.getElementById('nf-hide-all').addEventListener('click', function() {{ setGroup('filter', true); }});
-  document.getElementById('nf-hide-none').addEventListener('click', function() {{ setGroup('filter', false); }});
-
-  // Tooltip rendering is handled by the smart spikeline scaffold (see
-  // src/plotting/_scaffold/cursor_tooltip.js); this overlay only owns the
-  // normalization sidebar and the plotly_restyle recompute loop.
-}})();
-</script>
-"""
+    return widgets.sidebar(
+        'norm-filter',
+        body=body,
+        anchor='',
+        width_px=240,
+        top_px=48,
+        right_px=12,
+    )
 
 
 if __name__ == '__main__':

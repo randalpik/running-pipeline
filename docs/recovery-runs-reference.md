@@ -310,40 +310,23 @@ than the old uniform window. σ=28 was selected after observation that
 σ=14 left visible 2-3 week excursions; doubling smooths these out while
 still capturing genuine multi-month structure.
 
-### Custom tooltip with arrow
+### Tooltip — smart spikeline scaffold
 
-Plotly's built-in hover label is suppressed via CSS
-(`.hovertext { display: none !important; }`) and replaced with a
-custom `<div id="rec-tooltip">` rendered on `plotly_hover` events.
-Reasons:
-- Plotly's modebar is at top-right of the chart; default-positioned
-  hover labels would extend into the sidebar area when hovering points
-  near the right edge of the plot.
-- Plotly's auto-flip only kicks in at the paper edge, not the plot-area
-  edge, so the sidebar-overlap problem isn't solved natively.
+Recovery uses the shared cursor-tooltip scaffold (`_scaffold/cursor_tooltip.js`, opt-in via `cursor_tooltip=CursorTooltip(...)` on `render_plot()`); the tooltip and spike are rendered by `.rp-tooltip` and `.rp-spike` from `_scaffold/base.css`. Plotly's native hover label is suppressed via `extra_head_css='.hovertext { display: none !important; }'` because recovery has `hoverlabel=` on its scatter trace that would otherwise double up. (The rule isn't global in `base.css` because `make_world_map.py` relies on Plotly's native `hovertemplate`.)
 
-The custom tooltip:
-- Snaps to the actual data point's pixel position via
-  `point.xaxis.c2p(...)` + `_offset` + plot bounding rect.
-- Has a CSS arrow (`::before` border + `::after` fill) indicating the
-  data point's location, with `data-side="right"` or `"left"` toggling
-  which edge the arrow renders on.
-- Uses **fixed-pixel flip threshold** `FLIP_LEFT_PX = 360`: if point's
-  screen X is within 360px of the viewport right edge, tooltip flips to
-  the left side of the point. Decision is point-position-based (not
-  tooltip-width-based), so no jitter when the cursor moves around within
-  one point's hover zone.
+The scaffold runs in two modes:
 
-Hover content (built once at fig construction by `build_hover()`):
-- Header: `YYYY-MM-DD (DOW)` — DOW abbreviation matches the TQ tooltip
-  format.
-- Pace + miles, CS pace, residual, temp, location label
-- Most-recent race only (within 14d): `Recent marathon: Nd ago` or
-  `Recent race: Nd ago` (whichever category is closest)
-- Pruning flags rendered as `<i>... (excluded from fit)</i>` with
-  simplified outlier text (just `Outlier (excluded from fit)`, no
-  redundant LOO-residual display)
+- **Smooth** — cursor isn't near any data point. Spikeline tracks the cursor's date; tooltip is built from the smooth-mode `buildTooltip(day)` defined in `smooth_build_js`. The "Nearest run [±Nd]" section binary-searches the per-run `sessions` payload and surfaces a run within ±60 days (`nearest_window_days`).
+- **Snap** — cursor is within `snap_px` (default 30px) of a marker on a `meta.snap_eligible=True` trace. Spikeline jumps to the marker's x; tooltip uses `customdata[i]` (the per-point HTML pre-rendered in Python) for its run-detail section, but the date header + CS-pace/Trend-pace + residual rows are still drawn by `buildTooltip`.
+
+Per-run HTML (used by both modes) is built once at fig construction by `build_hover(row)`:
+- Header: `YYYY-MM-DD (DOW)` — DOW abbreviation matches the TQ tooltip format.
+- Pace + miles, temp, location label
+- Conditions / partners / outlier flags rendered as `<i>... (excluded from fit)</i>` when the run is pruned from the fit
+- Most recent race within `FATIGUE_HOVER_DAYS = 14`: `Recent marathon: Nd ago` or `Recent race: Nd ago` (whichever category is closest)
 - Time of day (raw label)
+
+The scaffold itself owns the date header, the CS-pace / Trend-pace section, and the CS-residual / Trend-residual rows — those come from the `payload` dict (`cs_pace`, `trend_pace`, `trend_resid`, `sessions`, `first_day`, `nearest_window_days`) serialized into `window.__TT_DATA`. `build_hover()`'s output is the run-specific tail appended after that.
 
 ### Sidebar layout
 

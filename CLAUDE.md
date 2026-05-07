@@ -123,15 +123,43 @@ The 2016 schema special-case: `split_2016_notes` peels trailing `[Event]` marker
 
 ## Plot conventions
 
-Shared utilities live in `src/plotting/` and should be imported by every plot script — not copy-pasted.
+The plotting layer separates four concerns. **Never embed `<style>` or `<script>` blocks in Python f-strings** — every shape below has a home for its concern.
 
+```
+src/plotting/
+  tokens.py            design tokens (colors, sizes) — single re-skin point
+  layout.py axes.py markers.py formatters.py smoothing.py
+                       Plotly helpers
+  render.py            single rendering authority — render_plot()
+  widgets.py           HTML primitives (sidebar, button_row, …)
+  _scaffold/           shared CSS/JS loaded by every plot
+    base.css           dark-theme chrome + .rp-* design system
+    cursor_tooltip.js  smart spikeline + smooth/snap tooltip
+    overlay_anchor.js  positions overlays below the legend
+    shell.css shell.js tab shell — loaded by build_shell.py
+
+src/plots/
+  <plot>.py            data prep + Plotly figure construction
+  <plot>.js            plot-specific JS (event handlers, restyle logic)
+  <plot>.css           plot-specific CSS (only when rules don't generalize)
+```
+
+**`render_plot()` is the only thing that writes a plot HTML.** Each plot calls it with the figure plus, optionally, `overlay_html` (structural HTML), `overlay_js_files` (sibling `.js` paths), `extra_head_css_files` (sibling `.css` paths), and `cursor_tooltip` (the smart spikeline scaffold).
+
+**Python ↔ JS handoff:** plots pass values to their sibling JS via `widgets.js_globals({KEY: value})`, which serializes as `window.__PLOT_<KEY>`. The `.js` file reads those globals at startup. Don't interpolate values into JS source — keep `.js` files static.
+
+**Shared CSS classes (`_scaffold/base.css`):** `.rp-sidebar`, `.rp-sidebar-title`, `.rp-sidebar-sub`, `.rp-sidebar-stats`, `.rp-sidebar-noteworthy`, `.rp-sidebar-divider`, `.rp-detail-row`, `.rp-toggle-bar`, `.rp-btn-row`, `.rp-btn`, `.rp-btn-pill`, `.rp-row`, `.rp-row-meta`, `.rp-table` (`.num` for right-align). Active state is the `is-active` modifier. Use `widgets.*` helpers to compose these — don't hand-write the markup.
+
+**When to use plot-specific `.css` vs. extending `_scaffold/base.css`:** generalize into `base.css` if two or more plots would share the rule; keep co-located when the rules are inherently plot-specific (geography's nested legend tree, long-runs' gradient strip).
+
+**Plot-domain knobs:**
 - `pr_marker(base_size)` — white-ringed diamonds for PR markers (line=1.5px, ring=base+1 tight hug).
 - `PR_EXCLUDED_SURFACES = {'Downhill'}` — plotted but PR-ineligible.
 - `GAP_BREAK_DAYS` — 90 for the TQ smoother; preserves the 2020–21 labrum gap.
-- Color and font tokens — single source.
-- A standard plotly layout helper.
 
 **Plotly numeric-array gotcha:** numeric arrays in figure JSON serialize as `{dtype, bdata, _inputArray}`. `_inputArray` is a `Float64Array`, so `Array.isArray(...)` returns false. Use length checks. PR recompute via the `plotly_restyle` listener; skip when `indices == [prIdx]`.
+
+**Plotly hover suppression:** plots with `cursor_tooltip` should set `hoverinfo='skip'` on every trace so Plotly's native hover label never renders. If a plot has `hoverlabel=` on any trace (e.g. recovery), pair it with `extra_head_css='.hovertext { display: none !important; }'`. The rule is **not** in `base.css` because `make_world_map.py` relies on Plotly's native `hovertemplate` hover.
 
 ## Hosting / auth model
 

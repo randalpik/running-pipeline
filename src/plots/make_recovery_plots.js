@@ -1,0 +1,160 @@
+// Normalization sidebar for the recovery plot.
+//
+// Toggles 4 normalization factors (temp, route, recent_effort,
+// time_of_day, era) and 3 visibility filters (bad conditions,
+// non-solo, outliers). On each change, walks every recovery point's
+// customdata, subtracts the selected factor contributions, and
+// restyles both the pace panel and the residual panel. Trend lines
+// are recomputed via a Gaussian rolling smoother to mirror the
+// Python-side trend exactly (σ provided via window.__PLOT_TREND_SIGMA_DAYS).
+//
+// Hidden points get y=null + opacity=0 so hover hit-testing skips them
+// AND the rolling-mean trend ignores them.
+(function () {
+  // ORDER MUST MATCH customdata channel order in Python
+  var FACTOR_ORDER = ['temp', 'route', 'recent_effort', 'time_of_day', 'era'];
+  var ERA_INDEX = FACTOR_ORDER.indexOf('era');
+
+  var TREND_SIGMA_MS = window.__PLOT_TREND_SIGMA_DAYS * 86400000;
+  var TREND_TRUNC_MS = 4 * TREND_SIGMA_MS;  // truncate kernel at 4σ
+  var TREND_STEP_MS = 1 * 86400000;          // daily step
+  var TREND_TWO_SIGSQ = 2 * TREND_SIGMA_MS * TREND_SIGMA_MS;
+  var BASE_OPACITY = 0.6;
+
+  function getPlot() { return document.querySelector('.plotly-graph-div'); }
+
+  function findTraces(plot) {
+    var idx = { pace: -1, residual: -1, trendPace: -1, trendResid: -1 };
+    plot.data.forEach(function (t, i) {
+      if (!t.meta) return;
+      if (t.meta.role === 'pace') idx.pace = i;
+      else if (t.meta.role === 'residual') idx.residual = i;
+      else if (t.meta.role === 'trend_pace') idx.trendPace = i;
+      else if (t.meta.role === 'trend_resid') idx.trendResid = i;
+    });
+    return idx;
+  }
+
+  function rollingTrend(dateMs, ys, mask) {
+    // Gaussian-kernel smoother, σ = TREND_SIGMA_MS, truncated at ±4σ.
+    // mask: optional boolean array. True = include this point in the trend.
+    if (dateMs.length === 0) return { x: [], y: [] };
+    var t0 = dateMs[0], t1 = dateMs[dateMs.length - 1];
+    var trendX = [], trendY = [];
+    var lo = 0, hi = 0;
+    for (var t = t0; t <= t1; t += TREND_STEP_MS) {
+      var lo_target = t - TREND_TRUNC_MS, hi_target = t + TREND_TRUNC_MS;
+      while (lo < dateMs.length && dateMs[lo] < lo_target) lo++;
+      while (hi < dateMs.length && dateMs[hi] <= hi_target) hi++;
+      var sumWY = 0, sumW = 0, count = 0;
+      for (var k = lo; k < hi; k++) {
+        if (mask && !mask[k]) continue;
+        if (ys[k] == null || isNaN(ys[k])) continue;
+        var dt = dateMs[k] - t;
+        var w = Math.exp(-(dt * dt) / TREND_TWO_SIGSQ);
+        sumWY += ys[k] * w;
+        sumW += w;
+        count++;
+      }
+      if (count >= 5) {
+        trendX.push(new Date(t));
+        trendY.push(sumWY / sumW);
+      }
+    }
+    return { x: trendX, y: trendY };
+  }
+
+  function update() {
+    var plot = getPlot();
+    if (!plot || !plot.data || !window.Plotly) { setTimeout(update, 100); return; }
+    var idx = findTraces(plot);
+    if (idx.pace < 0 || idx.residual < 0) return;
+
+    var checked = {};
+    document.querySelectorAll('#norm-filter input[type=checkbox]').forEach(function (cb) {
+      checked[cb.dataset.factor] = cb.checked;
+    });
+
+    var paceTrace = plot.data[idx.pace];
+    var residTrace = plot.data[idx.residual];
+    var rawPace = paceTrace.meta.raw_y;
+    var rawResid = residTrace.meta.raw_y;
+    var dateMs = residTrace.meta.date_ms;
+    var isBadCond = residTrace.meta.is_bad_cond;
+    var isPartner = residTrace.meta.is_partner_run;
+    var isOutlier = residTrace.meta.is_outlier;
+    var custom = paceTrace.customdata;
+
+    var hideBadCond = !!checked['hide_bad_cond'];
+    var hidePartner = !!checked['hide_partner'];
+    var hideOutlier = !!checked['hide_outlier'];
+
+    var n = rawPace.length;
+    var newPace = new Array(n);
+    var newResid = new Array(n);
+    var newOpacity = new Array(n);
+    var visibleMask = new Array(n);
+    for (var i = 0; i < n; i++) {
+      var hidden = (hideBadCond && isBadCond[i]) ||
+                   (hidePartner && isPartner[i]) ||
+                   (hideOutlier && isOutlier[i]);
+      if (hidden) {
+        // null y suppresses both rendering AND hover hit-testing
+        newPace[i] = null;
+        newResid[i] = null;
+        newOpacity[i] = 0;
+        visibleMask[i] = false;
+        continue;
+      }
+      var adjPace = 0, adjResid = 0;
+      var c = custom[i];
+      for (var j = 0; j < FACTOR_ORDER.length; j++) {
+        if (!checked[FACTOR_ORDER[j]]) continue;
+        if (j === ERA_INDEX) {
+          adjResid += c[j];
+        } else {
+          adjPace += c[j];
+          adjResid += c[j];
+        }
+      }
+      newPace[i] = rawPace[i] - adjPace;
+      newResid[i] = rawResid[i] - adjResid;
+      newOpacity[i] = BASE_OPACITY;
+      visibleMask[i] = true;
+    }
+
+    Plotly.restyle(plot,
+                   { y: [newPace, newResid],
+                     'marker.opacity': [newOpacity, newOpacity] },
+                   [idx.pace, idx.residual]);
+
+    if (idx.trendPace >= 0 && idx.trendResid >= 0) {
+      var tp = rollingTrend(dateMs, newPace, visibleMask);
+      var tr = rollingTrend(dateMs, newResid, visibleMask);
+      Plotly.restyle(plot, { x: [tp.x, tr.x], y: [tp.y, tr.y] },
+                     [idx.trendPace, idx.trendResid]);
+    }
+  }
+
+  function setGroup(mode, on) {
+    var sel = '#norm-filter input[data-mode="' + mode + '"]';
+    document.querySelectorAll(sel).forEach(function (cb) { cb.checked = on; });
+    update();
+  }
+
+  // Initial paint shows the no-normalization-applied scatter and trend
+  // exactly as Python wrote them — no JS recompute needed. update() only
+  // fires from now on when the user toggles a checkbox or button.
+
+  document.querySelectorAll('#norm-filter input[type=checkbox]').forEach(function (cb) {
+    cb.addEventListener('change', update);
+  });
+  document.getElementById('nf-norm-all').addEventListener('click', function () { setGroup('norm', true); });
+  document.getElementById('nf-norm-none').addEventListener('click', function () { setGroup('norm', false); });
+  document.getElementById('nf-hide-all').addEventListener('click', function () { setGroup('filter', true); });
+  document.getElementById('nf-hide-none').addEventListener('click', function () { setGroup('filter', false); });
+
+  // Tooltip rendering is handled by the smart spikeline scaffold (see
+  // src/plotting/_scaffold/cursor_tooltip.js); this overlay only owns the
+  // normalization sidebar and the plotly_restyle recompute loop.
+})();

@@ -32,6 +32,7 @@ import os
 import sys
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -168,7 +169,7 @@ def _join_location_metadata(daily, locations_df):
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     p.add_argument("--historical",
                    help="Path to historical_daily.csv")
     p.add_argument("--snapshot",
@@ -444,7 +445,7 @@ def main():
             minutes = total_time_sec / 60.0
             pace_sec_per_mi = (total_time_sec / miles) if miles > 0 else None
             d = pd.to_datetime(date_str).date()
-            row = {col: None for col in DAILY_COLUMNS}
+            row: dict[str, Any] = {col: None for col in DAILY_COLUMNS}
             row.update({
                 "date": d,
                 "year": d.year,

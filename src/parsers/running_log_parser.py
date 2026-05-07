@@ -540,10 +540,8 @@ def ingest_year_standard(path, year, sheet_name=None, hill_lookup=None):
             continue
         # Prune zero-mile days (rest, cross-training, blank-mile entries).
         # Daily.csv is a running-only dataset; absent rows = days not run.
-        try:
-            if miles_v in (None, "") or float(miles_v) == 0:
-                continue
-        except (ValueError, TypeError):
+        miles_check = _safe_float(miles_v)
+        if miles_check is None or miles_check == 0:
             continue
 
         doy = r - 2
@@ -556,14 +554,11 @@ def ingest_year_standard(path, year, sheet_name=None, hill_lookup=None):
             v = ws.cell(row=r, column=col).value
             return None if v in (None, "") else v
 
-        if sleep_v in (None, ""):
+        sleep_num = _safe_float(sleep_v)
+        if sleep_num is None:
             sleep_cycles = None
         else:
-            try:
-                sleep_num = float(sleep_v)
-                sleep_cycles = sleep_num / 1.5 if sch["sleep_unit"] == "hours" else sleep_num
-            except (ValueError, TypeError):
-                sleep_cycles = None
+            sleep_cycles = sleep_num / 1.5 if sch["sleep_unit"] == "hours" else sleep_num
 
         miles = _safe_float(miles_v)
         minutes = _safe_float(minutes_v)
@@ -638,13 +633,8 @@ def ingest_2016(path, hill_lookup=None):
             temp = _safe_float(temp_v)
             weather = str(weather_v).lower() if weather_v else None
             workout, partners = split_2016_notes(notes_v)
-            if sleep_v in (None, ""):
-                sleep_cycles = None
-            else:
-                try:
-                    sleep_cycles = float(sleep_v) / 1.5  # hours -> cycles
-                except (ValueError, TypeError):
-                    sleep_cycles = None
+            sleep_num = _safe_float(sleep_v)
+            sleep_cycles = sleep_num / 1.5 if sleep_num is not None else None
 
             rows.append(_derive_daily_row(
                 dt, 2016, 2016, source_file,

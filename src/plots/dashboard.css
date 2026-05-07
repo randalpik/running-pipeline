@@ -1,0 +1,121 @@
+/* Dashboard-specific layout and tables.
+   Stacks four shrink-to-content sections, each headed by an h2 and
+   filled with either a key/value grid (.kv) or a table.dash. The
+   shared dark chrome (.rp-title-bar, body bg, font) comes from
+   _scaffold/base.css. */
+
+.dash-body {
+  position: absolute;
+  top: var(--rp-title-h);
+  left: 0; right: 0; bottom: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.dash-main {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-evenly;
+  gap: 36px 24px;
+  padding: 28px 12px;
+  align-items: flex-start;
+}
+.dash-section {
+  /* shrink-to-content: each section is exactly as wide as its widest row */
+  flex: 0 0 auto;
+}
+.dash-section h2 {
+  font-size: 15px;
+  font-weight: 600;
+  color: #eee;
+  margin: 0 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #333;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.kv {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  column-gap: 12px;
+  row-gap: 6px;
+  align-items: baseline;
+}
+.kv .stat-label {
+  text-align: right;
+  color: #aaa;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.kv .stat-value {
+  color: #ddd;
+  font-size: 14px;
+  white-space: nowrap;
+}
+.kv .stat-value b {
+  color: #fff;
+  font-weight: 600;
+  font-size: 16px;
+}
+.kv .stat-value .dim {
+  color: #888;
+  font-size: 13px;
+}
+table.dash {
+  border-collapse: collapse;
+  font-size: 13px;
+  color: #ddd;
+}
+table.dash th {
+  text-align: left;
+  color: #aaa;
+  font-weight: 500;
+  padding: 4px 10px 6px;
+  border-bottom: 1px solid #333;
+  white-space: nowrap;
+}
+table.dash th.num {
+  text-align: right;
+}
+table.dash td {
+  padding: 5px 10px;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+table.dash td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+table.dash td + td,
+table.dash th + th {
+  border-left: 1px solid #333;
+}
+table.dash td b {
+  color: #fff;
+  font-weight: 600;
+  font-size: 14px;
+}
+table.dash td.dim,
+table.dash .dim {
+  color: #777;
+}
+.dash-footer {
+  flex: 0 0 auto;
+  text-align: center;
+  color: #888;
+  font-size: 12px;
+  padding: 8px 12px 22px;
+}
+.dash-signout {
+  margin-top: 16px;
+}
+.dash-signout button {
+  background: #2a2a2f; color: #aaa;
+  border: 1px solid #3a3a3a; border-radius: 6px;
+  padding: 5px 14px; font: inherit; font-size: 12px;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.dash-signout button:hover { color: #eee; background: #34343a; }
+.dash-signout button:disabled { cursor: progress; opacity: .7; }

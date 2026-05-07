@@ -111,6 +111,33 @@ Merged into `merged_races.csv` (161 rows, distance-snapped to standard distances
 | Max's Running Data | `1EnfRO7iFG7KAO6QxrnI-wToRm1OOrCFQADC2W3zHN6w` |
 | Running Data folder | `1b5yUJBkQA7FZfQX4STHBoFOnQBdlsQMv` |
 
+## Plotting layer
+
+Each plot script in `src/plots/` reads CSVs from `data/`, builds a Plotly figure, and writes a self-contained HTML to `output/` via the single rendering authority `render_plot()` in `src/plotting/render.py`. The rendering layer is deliberately split into four concerns; see `CLAUDE.md` § "Plot conventions" for the working rules.
+
+```
+src/plotting/
+  tokens.py             design tokens (colors, sizes)
+  layout.py axes.py     Plotly helpers
+  markers.py formatters.py smoothing.py
+  render.py             render_plot() — writes HTML, injects CSS/JS
+  widgets.py            HTML primitives (sidebar, button_row, …)
+  _scaffold/            shared CSS/JS loaded into every plot
+    base.css            dark-theme chrome + .rp-* design system
+    cursor_tooltip.js   smart spikeline + smooth/snap tooltip
+    overlay_anchor.js   positions overlays below the legend
+    shell.css shell.js  tab shell — loaded by build_shell.py
+
+src/plots/
+  <plot>.py             data prep + figure construction
+  <plot>.js             plot-specific JS (loaded via overlay_js_files)
+  <plot>.css            plot-specific CSS (loaded via extra_head_css_files)
+```
+
+Two outliers bypass `render_plot()`: `dashboard.py` (text-only stats — no Plotly bundle needed) and `build_shell.py` (the tab shell itself, not a plot). Both still consume the shared scaffold (`_scaffold/base.css`, `_scaffold/shell.{css,js}`, `_TAB_KEY_FORWARDER_JS`).
+
+**Output inventory:** ~12 HTML files + `plotly.min.js` (shared across all plots, ~4.7 MB), all written to `output/` and copied verbatim to `site/dist/` at deploy time.
+
 ## Hosting layer
 
 The site at **running.maxrandalmusic.com** lives in `site/`, deployed to Netlify by the `build-and-deploy.yml` GitHub Actions workflow. The pipeline runs in CI, generates plots into `output/`, and the deploy step copies `output/*` directly into `site/dist/` (root, no subdirectory).

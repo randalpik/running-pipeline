@@ -31,7 +31,6 @@ monthly).
 """
 import argparse
 import colorsys
-import json
 import os
 import re
 import sys
@@ -43,6 +42,11 @@ import plotly.graph_objects as go
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.plotting import (render_plot, apply_default_layout, GRID)
+from src.plotting import widgets
+
+_PLOTS_DIR = Path(__file__).resolve().parent
+_GEO_CSS = _PLOTS_DIR / 'make_geography_plot.css'
+_GEO_JS = _PLOTS_DIR / 'make_geography_plot.js'
 
 
 DEFAULT_DAILY = str(DATA_DIR / 'daily.csv')
@@ -240,7 +244,7 @@ def build_categories(df):
         g = group_for_label[lab]
         group_size[g] = group_size.get(g, 0) + 1
 
-    sorted_groups = sorted(group_total, key=group_total.get, reverse=True)
+    sorted_groups = sorted(group_total, key=lambda g: group_total[g], reverse=True)
     if GLOBAL_OTHER_KEY in sorted_groups:
         sorted_groups.remove(GLOBAL_OTHER_KEY)
         sorted_groups.append(GLOBAL_OTHER_KEY)
@@ -406,7 +410,7 @@ def build_bin_hover(pivot, freq, ordered_labels, label_color,
         group_bin_total = {g: sum(it[1] for it in items)
                            for g, items in group_items.items()}
         sorted_groups = sorted(group_bin_total,
-                               key=group_bin_total.get, reverse=True)
+                               key=lambda g: group_bin_total[g], reverse=True)
         if GLOBAL_OTHER_KEY in sorted_groups:
             sorted_groups.remove(GLOBAL_OTHER_KEY)
             sorted_groups.append(GLOBAL_OTHER_KEY)
@@ -606,408 +610,21 @@ def build_tickvals_for_monthly(monthly_bin_list):
 
 # ---------- write HTML ----------
 def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
-    extra_head_css = '.barlayer path{shape-rendering:crispEdges;}'
-
-    overlay_css = r"""
-<style>
-#geo-toggle {
-  position: fixed; top: 56px; right: 20px;
-  background: rgba(26,26,26,0.92);
-  border: 1px solid #444; border-radius: 6px;
-  padding: 4px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  font-size: 13px; z-index: 1000;
-  display: flex; gap: 2px;
-}
-#geo-toggle .gt-btn {
-  padding: 6px 16px; cursor: pointer; border-radius: 4px;
-  color: #aaa; background: transparent; border: none;
-  transition: background 0.12s, color 0.12s;
-  font-size: 13px; font-family: inherit;
-}
-#geo-toggle .gt-btn:hover { color: #fff; background: #333; }
-#geo-toggle .gt-btn.active {
-  background: #93f; color: #fff; font-weight: 500;
-}
-
-#geo-legend {
-  position: fixed; top: 110px; right: 20px; bottom: 80px;
-  width: 300px;
-  background: rgba(26,26,26,0.94);
-  border: 1px solid #3a3a3a; border-radius: 4px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  font-size: 13px; color: #ccc;
-  z-index: 100;
-  overflow-y: auto;
-  padding: 8px 0;
-}
-#geo-legend .legend-inner { padding: 0 12px; }
-#geo-legend .legend-group { margin-bottom: 8px; }
-#geo-legend .legend-block { margin-bottom: 4px; }
-#geo-legend .legend-title {
-  display: flex; align-items: baseline; gap: 6px;
-  font-weight: 600;
-  cursor: pointer; padding: 2px 0;
-  user-select: none;
-  white-space: nowrap;
-  line-height: 1.25;
-}
-#geo-legend .legend-title:hover .legend-singleton-state,
-#geo-legend .legend-title:hover .legend-singleton-dot,
-#geo-legend .legend-title:hover .legend-life { color: #4aa3ff; }
-#geo-legend .legend-item {
-  display: flex; align-items: center; gap: 6px;
-  padding: 2px 0; cursor: pointer;
-  user-select: none;
-  white-space: nowrap;
-  line-height: 1.25;
-}
-#geo-legend .legend-item.grouped { padding-left: 22px; }
-#geo-legend .legend-item:hover { color: #fff; }
-#geo-legend .chev {
-  display: inline-block; width: 13px; flex-shrink: 0;
-  text-align: center; font-size: 11px; color: #aaa;
-  line-height: 1; transition: transform 0.15s;
-}
-#geo-legend .chev.expandable { cursor: pointer; }
-#geo-legend .chev.expandable:hover { color: #fff; }
-#geo-legend .chev.expanded { transform: rotate(90deg); }
-#geo-legend .legend-box {
-  display: inline-block; width: 12px; height: 12px;
-  border-radius: 1px; flex-shrink: 0;
-}
-#geo-legend .legend-name { color: #ddd; }
-#geo-legend .legend-life {
-  color: #888; font-size: 11px; margin-left: 2px;
-}
-#geo-legend .legend-item.hidden .legend-box { opacity: 0.18; }
-#geo-legend .legend-item.hidden .legend-name {
-  color: #666; text-decoration: line-through;
-}
-#geo-legend .legend-singleton {
-  display: flex; align-items: center; gap: 6px;
-  padding: 2px 0; cursor: pointer;
-  user-select: none;
-  white-space: nowrap;
-  line-height: 1.25;
-  margin-bottom: 4px;
-}
-#geo-legend .legend-singleton:hover { color: #fff; }
-#geo-legend .legend-singleton-prefix {
-  display: inline-flex; align-items: baseline; justify-content: flex-end;
-  gap: 4px;
-  min-width: 35px; flex-shrink: 0;
-}
-#geo-legend .legend-singleton-state {
-  color: #fff; font-size: 14px; font-weight: 600;
-}
-#geo-legend .legend-singleton-dot {
-  color: #888; font-size: 11px;
-}
-#geo-legend .legend-singleton.hidden .legend-box { opacity: 0.18; }
-#geo-legend .legend-singleton.hidden .legend-name {
-  color: #666; text-decoration: line-through;
-}
-#geo-legend .legend-subgroup { display: none; }
-#geo-legend .legend-subgroup.expanded { display: block; }
-#geo-legend .legend-subcity {
-  font-size: 12px; color: #889;
-  white-space: nowrap;
-  line-height: 1.25;
-  padding: 1px 0;
-}
-#geo-legend .legend-subcity.singleton { padding-left: 22px; }
-#geo-legend .legend-subcity.grouped   { padding-left: 44px; }
-
-#geo-tooltip {
-  position: fixed; top: 0; left: 0;
-  background: rgba(26,26,26,0.96);
-  color: #eee;
-  border: 1px solid #555;
-  padding: 9px 12px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  font-size: 12px; line-height: 1.45;
-  border-radius: 4px;
-  pointer-events: none;
-  z-index: 9999; max-width: 360px;
-  display: none;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-}
-#geo-tooltip .hov-day {
-  font-weight: 600; font-size: 13px; color: #fff;
-  margin-bottom: 5px;
-}
-#geo-tooltip .hov-group-title {
-  display: flex; align-items: baseline; gap: 6px;
-  margin-top: 4px; white-space: nowrap;
-}
-#geo-tooltip .hov-grouptotal {
-  color: #999; font-weight: 400; font-size: 11px;
-}
-#geo-tooltip .hov-item {
-  display: flex; align-items: center; gap: 6px;
-  white-space: nowrap; padding: 1px 0 1px 41px;
-}
-#geo-tooltip .hov-singleton {
-  display: flex; align-items: center; gap: 6px;
-  white-space: nowrap; padding: 1px 0;
-}
-#geo-tooltip .hov-singleton-prefix {
-  display: inline-flex; align-items: baseline; justify-content: flex-end;
-  gap: 4px;
-  min-width: 35px; flex-shrink: 0;
-}
-#geo-tooltip .hov-singleton-state {
-  color: #fff; font-size: 13px; font-weight: 600;
-}
-#geo-tooltip .hov-sep {
-  color: #888; font-size: 11px;
-}
-#geo-tooltip .hov-box {
-  display: inline-block; width: 9px; height: 9px;
-  border-radius: 1px; flex-shrink: 0;
-}
-#geo-tooltip .hov-name { color: #ddd; }
-#geo-tooltip .hov-val { color: #ddd; }
-#geo-tooltip .hov-val b { color: #fff; }
-#geo-tooltip .hov-subs { padding-left: 28px; }
-#geo-tooltip .hov-subcity {
-  font-size: 11px; color: #9aa; line-height: 1.35;
-}
-#geo-tooltip .hov-total {
-  margin-top: 6px; padding-top: 6px;
-  border-top: 1px solid #444;
-  color: #aaa; font-size: 12px;
-}
-#geo-tooltip .hov-total b { color: #fff; }
-
-#geo-spike {
-  position: fixed; top: 0; left: 0;
-  width: 1px; height: 100vh;
-  background: rgba(255,255,255,0.25);
-  pointer-events: none;
-  z-index: 9998;
-  display: none;
-}
-</style>
-"""
-
-    toggle_html = (
-        '<div id="geo-toggle">'
-        '<button class="gt-btn active" data-mode="year">Yearly</button>'
-        '<button class="gt-btn" data-mode="month">Monthly</button>'
-        '</div>'
+    toggle_html = widgets.toggle_bar(
+        'geo-toggle',
+        [('year', 'Yearly'), ('month', 'Monthly')],
+        default_id='year',
     )
+    # The toggle bar's default position (top:14px) is too high — geography
+    # has the title bar above it, so push the toggle down to 56px.
+    toggle_html = toggle_html.replace(
+        'class="rp-toggle-bar"',
+        'class="rp-toggle-bar" style="top: 56px"',
+    )
+    globals_html = widgets.js_globals({'GEO': payload})
     tooltip_html = '<div id="geo-tooltip"></div><div id="geo-spike"></div>'
-
-    js = r"""
-<script>
-(function() {
-  var GEO = __GEO_PAYLOAD__;
-  var mode = 'year';
-
-  function pdiv() { return document.querySelector('.plotly-graph-div'); }
-
-  // ===== Bar pixel snap (uniform per-mode pixel gap) =====
-  var BAR_PATH_RE = /^M([-\d.]+),([-\d.]+)V([-\d.]+)H([-\d.]+)V([-\d.]+)Z$/;
-
-  function snapBars() {
-    var gd = pdiv();
-    if (!gd || !gd._fullLayout) return;
-    var fl = gd._fullLayout;
-    var bg = fl._size;
-    var plotW = bg.w;
-    var nBins = GEO[mode].bins.length;
-    if (nBins === 0 || plotW <= 0) return;
-    var pitch = plotW / nBins;
-    var gap = GEO[mode].gap_px;
-
-    var paths = gd.querySelectorAll('.barlayer .point path');
-    paths.forEach(function(path) {
-      var d = path.getAttribute('d');
-      if (!d) return;
-      var m = d.match(BAR_PATH_RE);
-      if (!m) return;
-      var x1 = parseFloat(m[1]);
-      var y1 = parseFloat(m[2]);
-      var y2 = parseFloat(m[3]);
-      var x2 = parseFloat(m[4]);
-      if (Math.abs(y1 - y2) < 0.5) return;
-      var center = (x1 + x2) / 2;
-      var binIdx = Math.round(center / pitch - 0.5);
-      if (binIdx < 0) binIdx = 0;
-      if (binIdx >= nBins) binIdx = nBins - 1;
-      var newLeft  = Math.round(binIdx * pitch);
-      var newRight = Math.round((binIdx + 1) * pitch) - gap;
-      if (newRight <= newLeft) newRight = newLeft + 1;
-      var newD = 'M' + newLeft + ',' + y1 + 'V' + y2 + 'H' + newRight + 'V' + y1 + 'Z';
-      path.setAttribute('d', newD);
-    });
-  }
-
-  // ===== Mode toggle =====
-  function applyMode() {
-    var gd = pdiv();
-    if (!gd || !gd.data) return;
-    var n = gd.data.length;
-    var x = [], y = [];
-    for (var i = 0; i < n; i++) {
-      var m = gd.data[i].meta || {};
-      x.push(mode === 'year' ? m.x_year  : m.x_month);
-      y.push(mode === 'year' ? m.y_year  : m.y_month);
-    }
-    Plotly.restyle(gd, {x: x, y: y});
-    var modeData = GEO[mode];
-    Plotly.relayout(gd, {
-      'xaxis.tickvals': modeData.tickvals,
-      'xaxis.ticktext': modeData.ticktext,
-    });
-  }
-
-  document.querySelectorAll('#geo-toggle .gt-btn').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      var newMode = btn.getAttribute('data-mode');
-      if (newMode === mode) return;
-      mode = newMode;
-      document.querySelectorAll('#geo-toggle .gt-btn').forEach(function(b) {
-        b.classList.toggle('active', b === btn);
-      });
-      applyMode();
-    });
-  });
-
-  // ===== Legend interaction =====
-  function setVisible(indices, visible) {
-    var gd = pdiv();
-    if (!gd) return;
-    Plotly.restyle(gd, {visible: visible ? true : 'legendonly'}, indices);
-  }
-
-  document.querySelectorAll('#geo-legend .legend-item, #geo-legend .legend-singleton').forEach(function(el) {
-    el.addEventListener('click', function() {
-      var idx = parseInt(el.getAttribute('data-trace-idx'));
-      var hidden = el.classList.contains('hidden');
-      setVisible([idx], hidden);
-      el.classList.toggle('hidden', !hidden);
-    });
-  });
-
-  // Chevron click toggles expand/collapse of the next-sibling subgroup.
-  // stopPropagation so the row's visibility-toggle handler doesn't fire.
-  document.querySelectorAll('#geo-legend .chev.expandable').forEach(function(chev) {
-    chev.addEventListener('click', function(e) {
-      e.stopPropagation();
-      var item = chev.closest('.legend-item');
-      if (!item) return;
-      var sub = item.nextElementSibling;
-      if (!sub || !sub.classList.contains('legend-subgroup')) return;
-      var willExpand = !sub.classList.contains('expanded');
-      sub.classList.toggle('expanded', willExpand);
-      chev.classList.toggle('expanded', willExpand);
-    });
-  });
-
-  document.querySelectorAll('#geo-legend .legend-title').forEach(function(el) {
-    el.addEventListener('click', function() {
-      var groupDiv = el.parentElement;
-      var items = groupDiv.querySelectorAll('.legend-item');
-      var allHidden = Array.from(items).every(function(it) {
-        return it.classList.contains('hidden');
-      });
-      var visible = allHidden;
-      var indices = [];
-      items.forEach(function(it) {
-        indices.push(parseInt(it.getAttribute('data-trace-idx')));
-      });
-      setVisible(indices, visible);
-      items.forEach(function(it) {
-        it.classList.toggle('hidden', !visible);
-      });
-    });
-  });
-
-  // ===== Custom hover =====
-  function findBinFromPx(plotPx) {
-    var nBins = GEO[mode].bins.length;
-    if (nBins === 0) return -1;
-    var gd = pdiv();
-    var plotW = gd._fullLayout._size.w;
-    var pitch = plotW / nBins;
-    var idx = Math.floor(plotPx / pitch);
-    if (idx < 0) idx = 0;
-    if (idx >= nBins) idx = nBins - 1;
-    return idx;
-  }
-
-  function bindHover() {
-    var gd = pdiv();
-    if (!gd || !gd._fullLayout) { setTimeout(bindHover, 100); return; }
-    var tt = document.getElementById('geo-tooltip');
-    var spike = document.getElementById('geo-spike');
-
-    gd.addEventListener('mousemove', function(e) {
-      var fl = gd._fullLayout;
-      if (!fl) return;
-      var rect = gd.getBoundingClientRect();
-      var bg = fl._size;
-      var pl = rect.left + bg.l, pr = rect.left + bg.l + bg.w;
-      var pt = rect.top  + bg.t, pb = rect.top  + bg.t + bg.h;
-      if (e.clientX < pl || e.clientX > pr ||
-          e.clientY < pt || e.clientY > pb) {
-        tt.style.display = 'none';
-        spike.style.display = 'none';
-        return;
-      }
-      var plotPx = e.clientX - pl;
-      var binIdx = findBinFromPx(plotPx);
-      if (binIdx < 0 || binIdx >= GEO[mode].hover_html.length) {
-        tt.style.display = 'none';
-        spike.style.display = 'none';
-        return;
-      }
-      var html = GEO[mode].hover_html[binIdx];
-      if (!html) {
-        tt.style.display = 'none';
-        spike.style.display = 'none';
-        return;
-      }
-      tt.innerHTML = html;
-      tt.style.display = 'block';
-      var ttW = tt.offsetWidth, ttH = tt.offsetHeight;
-      var x = e.clientX + 14, y = e.clientY + 12;
-      if (x + ttW > window.innerWidth)  x = e.clientX - ttW - 14;
-      if (y + ttH > window.innerHeight) y = window.innerHeight - ttH - 10;
-      tt.style.transform = 'translate(' + x + 'px,' + y + 'px)';
-
-      var pitch = bg.w / GEO[mode].bins.length;
-      var binCenterPx = pl + (binIdx + 0.5) * pitch;
-      spike.style.transform = 'translateX(' + binCenterPx + 'px)';
-      spike.style.display = 'block';
-    });
-
-    gd.addEventListener('mouseleave', function() {
-      tt.style.display = 'none';
-      spike.style.display = 'none';
-    });
-
-    if (gd.on) {
-      gd.on('plotly_afterplot', function() {
-        requestAnimationFrame(snapBars);
-      });
-    }
-    requestAnimationFrame(snapBars);
-    requestAnimationFrame(snapBars);
-  }
-
-  bindHover();
-})();
-</script>
-"""
-
-    js = js.replace('__GEO_PAYLOAD__', json.dumps(payload))
-
-    overlay_html = (overlay_css + toggle_html + legend_html
-                    + tooltip_html + js)
+    overlay_html = (toggle_html + '\n' + legend_html
+                    + tooltip_html + '\n' + globals_html)
     render_plot(
         fig, path,
         title_slug='mileage_by_geography',
@@ -1015,7 +632,8 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
         title=title,
         subtitle=subtitle,
         overlay_html=overlay_html,
-        extra_head_css=extra_head_css,
+        overlay_js_files=[_GEO_JS],
+        extra_head_css_files=[_GEO_CSS],
     )
 
 
