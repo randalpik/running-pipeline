@@ -57,14 +57,38 @@ _SHELL_CSS = (_SCAFFOLD_DIR / 'shell.css').read_text()
 _SHELL_JS = (_SCAFFOLD_DIR / 'shell.js').read_text()
 
 
-def render_shell(tabs, include_admin: bool = False) -> str:
+def _profile_switch_html(profiles, current_id) -> str:
+    """Render the right-aligned profile <select>, or '' for a single profile.
+
+    ``profiles`` is a list of (id, label, url_base); ``current_id`` marks the
+    selected option. shell.js navigates to the chosen option's value (the
+    profile's site root) on change.
+    """
+    if not profiles or len(profiles) < 2:
+        return ''
+    options = '\n'.join(
+        f'        <option value="{url_base}"'
+        f'{" selected" if pid == current_id else ""}>{label}</option>'
+        for pid, label, url_base in profiles
+    )
+    return ('\n    <div class="profile-switch">\n'
+            '      <select aria-label="Profile">\n'
+            f'{options}\n'
+            '      </select>\n'
+            '    </div>')
+
+
+def render_shell(tabs, include_admin: bool = False,
+                 profiles=None, current_id=None) -> str:
     """Render the tab-shell HTML.
 
     ``tabs`` is a list of (slug, label) for plots whose HTML actually exists.
     ``include_admin`` adds an admin tab whose visibility is gated client-side
-    on /api/auth/me and which loads /admin.html absolutely. The shell's
-    style + behavior live in src/plotting/_scaffold/shell.css and shell.js;
-    this function only emits the structural HTML and the default-slug meta.
+    on /api/auth/me and which loads /admin.html absolutely. ``profiles`` (a
+    list of (id, label, url_base)) + ``current_id`` add a profile switcher when
+    there's more than one profile. The shell's style + behavior live in
+    src/plotting/_scaffold/shell.css and shell.js; this function only emits the
+    structural HTML and the default-slug meta.
     """
     if not tabs:
         return _empty_shell()
@@ -81,6 +105,7 @@ def render_shell(tabs, include_admin: bool = False) -> str:
 
     default_slug = tabs[0][0]
     body_class = ' class="has-admin"' if include_admin else ''
+    profile_switch = _profile_switch_html(profiles, current_id)
 
     return f'''<!doctype html>
 <html><head>
@@ -96,7 +121,7 @@ def render_shell(tabs, include_admin: bool = False) -> str:
 <body{body_class}>
   <div id="tabbar">
     <div class="brand">Max's Running Data</div>
-{buttons}
+{buttons}{profile_switch}
   </div>
   <div id="frame-wrap">
     <div id="spinner"></div>
@@ -109,19 +134,24 @@ def render_shell(tabs, include_admin: bool = False) -> str:
 
 
 def write_index(output_dir: Path = DEFAULT_OUTPUT_DIR,
-                include_admin: bool = False) -> bool:
+                include_admin: bool = False,
+                profiles=None, current_id=None) -> bool:
     """Write output_dir/index.html based on which plot HTMLs exist there.
 
+    Tabs whose plot HTML doesn't exist in ``output_dir`` are omitted — that's
+    how a profile lacking a dataset (e.g. no workouts) auto-hides that tab.
+    ``profiles``/``current_id`` add the profile switcher (see render_shell).
     Returns True if the file was written, False if unchanged on disk.
     """
-    output_dir.mkdir(exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     index_path = output_dir / "index.html"
     existing = {p.stem for p in output_dir.glob("*.html") if p.name != "index.html"}
     tabs = [(slug, label) for slug, label in TABS if slug in existing]
     extras = sorted(existing - {slug for slug, _ in TABS})
     for slug in extras:
         tabs.append((slug, slug.replace('_', ' ')))
-    new_html = render_shell(tabs, include_admin=include_admin)
+    new_html = render_shell(tabs, include_admin=include_admin,
+                            profiles=profiles, current_id=current_id)
     if index_path.exists() and index_path.read_text() == new_html:
         return False
     index_path.write_text(new_html)

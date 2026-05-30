@@ -41,6 +41,8 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.shared.plot_window import daily_floor
+from src.shared.country_codes import country_abbrev
 from src.plotting import (render_plot, apply_default_layout, GRID)
 from src.plotting import widgets
 
@@ -652,7 +654,13 @@ def main():
     # Daily.csv now includes pre-2016 stub rows synthesized from race
     # additions (used by the world map). All other daily-driven plots —
     # this one included — standardize on the 2016+ logging era.
-    df = df[df['date'] >= pd.Timestamp('2016-01-01')]
+    df = df[df['date'] >= daily_floor()]
+    # Drop rows with no resolved city_state (e.g. indoor runs in a watch-import
+    # profile) — the geography categories are keyed on city_state.
+    df = df.dropna(subset=['city_state'])
+    # Display only: collapse foreign 'City, Country' -> 'City, CC' (this plot
+    # is a treemap, not geocoded, so the abbreviated form is safe to group on).
+    df['city_state'] = df['city_state'].map(country_abbrev)
 
     (label_for, ordered_labels, label_color, label_total,
      group_for_label, group_total, group_size,

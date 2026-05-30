@@ -146,6 +146,26 @@ def download_file(service, file_id, dest_path):
     return dest_path
 
 
+def fetch_sheet_as_df(service, file_id):
+    """Export a native Google Sheet's first tab as CSV and return a DataFrame.
+
+    Used for single-tab sheets that are already in a tabular schema (e.g. a
+    per-profile race-`additions` sheet). The Sheet must be shared with the
+    service-account email (CI) or owned/visible to the OAuth user (local).
+    """
+    import pandas as pd
+    from googleapiclient.http import MediaIoBaseDownload
+
+    request = service.files().export_media(fileId=file_id, mimeType='text/csv')
+    buf = io.BytesIO()
+    downloader = MediaIoBaseDownload(buf, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    buf.seek(0)
+    return pd.read_csv(buf)
+
+
 def find_log_by_year(service, year, folder_id=FOLDER_ID):
     """Find the log file for a given year by title match within the folder.
 

@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'parsers'))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.geocoding import ensure_coords
+from src.shared.country_codes import country_abbrev
 from src.plotting import render_plot, apply_default_layout
 from src.plotting import widgets
 from src.plots.make_geography_plot import build_categories
@@ -451,6 +452,11 @@ def main():
               .sort_values('miles', ascending=False)
               .to_string(index=False))
     agg = agg.dropna(subset=['lat', 'lon']).copy()
+
+    # Display only: collapse foreign 'City, Country' to 'City, CC' for the
+    # hover label now that geocoding (which needs the full country name) is
+    # done. US/CA city_states already carry a 2-letter code and pass through.
+    agg['city_state'] = agg['city_state'].map(country_abbrev)
 
     agg['size'] = (np.log10(np.maximum(agg['miles'], SIZE_FLOOR_MILES) + 1)
                    * SIZE_SCALE + SIZE_OFFSET)

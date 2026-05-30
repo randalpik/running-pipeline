@@ -8,11 +8,57 @@ y-axis tick label in the lower-left corner.
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from .tokens import FG, GRID
+from .formatters import sec_to_mss
+
+
+# ---------- time / pace y-axis ticks ----------
+
+# Nice tick intervals (seconds) for pace/duration axes, ascending. 15 keeps
+# the long-runs density; 10 keeps workouts / training-quality; 30 keeps
+# races / CS / recovery. A formula picks from this ladder per data range so
+# the gridline density a plot wants is preserved across any profile's range,
+# instead of hardcoding a fixed interval (and, worse, a fixed range).
+TIME_LADDER = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
+
+
+def nice_time_interval(lo, hi, *, target, ladder=TIME_LADDER):
+    """Smallest ladder interval (seconds) giving at most ``target`` gridlines
+    across [lo, hi]. Falls back to the largest ladder entry for huge spans."""
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return ladder[0]
+    span = hi - lo
+    for iv in ladder:
+        if span / iv <= target:
+            return iv
+    return ladder[-1]
+
+
+def time_ticks_at_interval(lo, hi, interval):
+    """Tickvals (seconds) snapped outward to multiples of ``interval``, with
+    M:SS / H:MM:SS labels via ``sec_to_mss``."""
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return [int(round(lo))], [sec_to_mss(lo)]
+    tick_min = math.floor(lo / interval) * interval
+    tick_max = math.ceil(hi / interval) * interval
+    n = int(round((tick_max - tick_min) / interval)) + 1
+    ticks = [tick_min + i * interval for i in range(n)]
+    return ticks, [sec_to_mss(t) for t in ticks]
+
+
+def nice_time_ticks(lo, hi, *, target, ladder=TIME_LADDER):
+    """Pace/time axis ticks: pick a nice interval for ~``target`` gridlines,
+    snap the range outward to it, return (tickvals_sec, M:SS labels). The
+    snapped range is ``[ticks[0], ticks[-1]]`` — use it as the axis bounds so
+    gridlines land on round values and nothing is clipped."""
+    iv = nice_time_interval(lo, hi, target=target, ladder=ladder)
+    return time_ticks_at_interval(lo, hi, iv)
 
 
 def thin_yearly_ticks(x_lo, x_hi, *, max_labels=11):

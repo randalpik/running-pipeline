@@ -27,6 +27,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.shared.plot_window import daily_floor
 from src.shared.workouts import (
     LONG_FLOOR, LONG_CEIL, LR_INTERNAL_BIN, TAU,
     load_cs, project_long_runs,
@@ -142,8 +143,13 @@ def compute_stats(daily, races, now_utc):
     streak_active = is_streak_active(last_log_date, now_utc)
 
     # --- miles logged ---
-    since_2016 = daily[daily['date'] >= pd.Timestamp('2016-01-01')]
-    miles_logged = int(math.floor(since_2016['miles'].sum() + PRE_2016_VERIFIED_MILES))
+    # PRE_2016_VERIFIED_MILES is a Max-specific hand-verified pre-2016 total
+    # (his paper logs aren't in the CSV); it must not be added to other
+    # profiles, whose data starts when their device history does.
+    since_2016 = daily[daily['date'] >= daily_floor()]
+    pre_floor_miles = (PRE_2016_VERIFIED_MILES
+                       if os.environ.get('RP_PROFILE', 'max') == 'max' else 0)
+    miles_logged = int(math.floor(since_2016['miles'].sum() + pre_floor_miles))
 
     # --- miles projected ---
     today_utc = now_utc.date()
@@ -343,12 +349,21 @@ def _bin_residuals(lr_in_aug):
     actually runs in each bin, including the route-mix skew (e.g. lr_lo
     runs on belle meade/greenway pull lr_lo's mean down).
     """
-    keep = lr_in_aug[(lr_in_aug['route'] != 'other')
-                     & (~lr_in_aug['is_outlier'])]
+    keep = lr_in_aug[~lr_in_aug['is_outlier']]
+    # Max grounds the residual on qualifying routes (route != 'other') so the
+    # route-mix skew is captured. Other profiles have no route betas yet —
+    # every run is 'other' — so requiring a qualifying route would drop them
+    # all; use every non-outlier long run instead.
+    if os.environ.get('RP_PROFILE', 'max') == 'max':
+        keep = keep[keep['route'] != 'other']
     out = {}
     for b in ('lr_lo', 'lr_hi'):
         sub = keep[keep['bin'] == b]
-        out[b] = float(sub['raw_resid'].mean()) if len(sub) else 0.0
+        # None (not 0.0) when a bin has no long runs: a 0 residual would mean
+        # "no slowdown vs CS pace", collapsing the long-run prediction onto the
+        # bare CS curve (i.e. ~interval pace) — far too fast. Callers omit the
+        # prediction instead of fabricating one.
+        out[b] = float(sub['raw_resid'].mean()) if len(sub) else None
     return out
 
 
@@ -388,7 +403,8 @@ def compute_workout_predictions(daily_summary, lr_in_aug):
         t_d = (d - dp) / cs_mps_lr
         return t_d * 1609.344 / d
 
-    pace_long_24 = project_long(24, bin_resid['lr_hi'])
+    pace_long_24 = (project_long(24, bin_resid['lr_hi'])
+                    if bin_resid['lr_hi'] is not None else None)
 
     return {
         'intervals_6x1600': pace_intervals,
@@ -411,24 +427,25 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
     miles_logged_html = f"<b>{stats['miles_logged']:,}</b> miles"
     projected_html = f"<b>{stats['projected_miles']:,.0f}</b> miles"
     past7_html = f"<b>{stats['past_7_miles']:.1f}</b> miles"
-    if stats['training_shoe']:
-        ts = (f"<b>{escape(stats['training_shoe'])}</b> "
-              f"<span class=\"dim\">({stats['training_miles']:.1f} miles)</span>")
-    else:
-        ts = '<span class="dim">—</span>'
-    if stats['racing_shoe']:
-        rs = f"<b>{escape(stats['racing_shoe'])}</b>"
-    else:
-        rs = '<span class="dim">—</span>'
 
     stat_rows = [
         ('Streak:',                streak_value),
         ('Lifetime logged:',       miles_logged_html),
         (f"Projected for {stats['projected_year']}:", projected_html),
         ('Past 7 days:',           past7_html),
-        ('Current training shoe:', ts),
-        ('Current racing shoe:',   rs),
     ]
+    # Shoe rows are omitted entirely (not shown as a "—" line) when the profile
+    # logs no shoes — e.g. watch imports. Each row appears only if present, so
+    # a profile that tracks training but not racing shoes shows just the one.
+    if stats['training_shoe']:
+        stat_rows.append((
+            'Current training shoe:',
+            f"<b>{escape(stats['training_shoe'])}</b> "
+            f"<span class=\"dim\">({stats['training_miles']:.1f} miles)</span>"))
+    if stats['racing_shoe']:
+        stat_rows.append((
+            'Current racing shoe:',
+            f"<b>{escape(stats['racing_shoe'])}</b>"))
     stats_html = ''.join(
         f'<div class="stat-label">{label}</div>'
         f'<div class="stat-value">{value}</div>'
@@ -479,8 +496,11 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
     wp_rows = [
         ('Intervals (6×1600m):', fmt_pace_per_mi(workout_preds['intervals_6x1600'])),
         ('Fartlek (8000m continuous):', fmt_pace_per_mi(workout_preds['fartlek_8000'])),
-        ('Long (24 miles):', fmt_pace_per_mi(workout_preds['long_24'])),
     ]
+    # Long-run prediction needs an empirical slowdown residual; omit it when
+    # the profile has no qualifying long-run history (see _bin_residuals).
+    if workout_preds['long_24'] is not None:
+        wp_rows.append(('Long (24 miles):', fmt_pace_per_mi(workout_preds['long_24'])))
     workout_html = ''.join(
         f'<div class="stat-label">{label}</div>'
         f'<div class="stat-value"><b>{value}</b></div>'

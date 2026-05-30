@@ -39,6 +39,7 @@ from plotly.subplots import make_subplots
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.shared.plot_window import pad_range, first_race_date
 from src.shared.cs_projection import (load_cs_outputs, project_races_to_5k_pace,
                                        cs_line_at_anchor, cubic_at_anchor)
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
@@ -47,7 +48,7 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             SURFACES, CS_LINE, CS_LINE_WIDTH, GRID,
                             pr_marker, is_pr_eligible,
                             PR_LEGEND_NAME, PR_LEGEND_RANK,
-                            yearly_x_axis_kwargs)
+                            yearly_x_axis_kwargs, nice_time_ticks)
 from src.plotting import widgets
 
 _PLOTS_DIR = Path(__file__).resolve().parent
@@ -116,21 +117,6 @@ SUBPLOT_DISPLAY = {
 }
 
 
-# Preferred y-axis tick interval (seconds) per panel — tuned for visual
-# density given each distance's typical race time spread. Values not in the
-# dict fall through to auto_time_ticks.
-PANEL_TICK_SEC = {
-    '400':       1,
-    '800':       5,
-    'Mile':     10,
-    '3000m':   60,
-    '5K':      120,
-    '10K':      30,
-    'HM':      300,
-    'Marathon': 300,
-}
-
-
 # ---------- distance bins for the all-races plot's checkbox filter ----------
 # 10 bins, snap-to-nearest by absolute meter distance — every race gets a bin
 # regardless of how unusual the distance is. The farthest natural snap is
@@ -181,38 +167,6 @@ def friendly_distance(d):
     if 38819 <= d <= 45570:
         return 'Marathon'
     return f'{d:.0f} m'
-
-
-def auto_time_ticks(t_min, t_max, *, target_count=6):
-    """Pick sensible tickvals/ticktext on a time axis given a range in
-    seconds. Aim for ~target_count ticks; pick from a fixed interval ladder
-    (1, 2, 5, 10, 30, 60, 300, 600, 1800, 3600 sec). Labels via sec_to_mss
-    so short ranges show M:SS and HM/marathon ranges show H:MM:SS.
-    """
-    import math
-    if not np.isfinite(t_min) or not np.isfinite(t_max) or t_max <= t_min:
-        return [int(round(t_min))], [sec_to_mss(t_min)]
-    span = t_max - t_min
-    intervals = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
-    interval = intervals[-1]
-    for iv in intervals:
-        if span / iv <= target_count:
-            interval = iv
-            break
-    return time_ticks_at_interval(t_min, t_max, interval)
-
-
-def time_ticks_at_interval(t_min, t_max, interval):
-    """Tickvals/ticktext at a fixed seconds interval, snapped to multiples
-    of `interval`. Labels via sec_to_mss."""
-    import math
-    if not np.isfinite(t_min) or not np.isfinite(t_max) or t_max <= t_min:
-        return [int(round(t_min))], [sec_to_mss(t_min)]
-    tick_min = math.floor(t_min / interval) * interval
-    tick_max = math.ceil(t_max / interval) * interval
-    n = int(round((tick_max - tick_min) / interval)) + 1
-    ticks = [tick_min + i * interval for i in range(n)]
-    return ticks, [sec_to_mss(t) for t in ticks]
 
 
 # ---------- visual encoding ----------
@@ -336,9 +290,6 @@ def build_distance_filter_ui(bin_names):
 # y-range chosen to accommodate Max's full historical range, from his 2024
 # downhill mile (~4:40/mi 5K-equiv) to his 2008 Nike 5K For Kids (~9:54).
 # Reversed so faster paces appear higher.
-Y_MIN, Y_MAX = 4.30, 10.00
-YTICK_VALS = [4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0]
-YTICK_TXT  = [sec_to_mss(v * 60) for v in YTICK_VALS]
 
 
 def add_cs_line(fig, daily_summary, *, row=None, col=None, show_legend=True,
@@ -537,10 +488,16 @@ def yearly_x_axis(x_lo, x_hi, **kwargs):
     return yearly_x_axis_kwargs(x_lo, x_hi, **kwargs)
 
 
-def reversed_pace_y_axis(**kwargs):
+def reversed_pace_y_axis(y_lo_min, y_hi_min, *, target=12, **kwargs):
+    """Data-driven reversed (faster-up) 5K-equiv pace axis. Bounds come from
+    the slowest/fastest plotted pace (min/mi); ticks land on nice 30s-ish
+    marks via nice_time_ticks (target≈12 reproduces Max's old 30s spacing
+    over his ~4:30-10:00 span, and adapts to any profile's range)."""
+    ticks, labels = nice_time_ticks(y_lo_min * 60.0, y_hi_min * 60.0, target=target)
+    vals = [t / 60.0 for t in ticks]
     base = dict(title='5K-equivalent pace (min/mi)',
-                range=[Y_MAX, Y_MIN],
-                tickmode='array', tickvals=YTICK_VALS, ticktext=YTICK_TXT,
+                range=[vals[-1], vals[0]],   # reversed: faster up
+                tickmode='array', tickvals=vals, ticktext=labels,
                 showgrid=True, gridcolor=GRID)
     base.update(kwargs)
     return base
@@ -606,15 +563,23 @@ def main():
     elig['filter_bin']   = elig['distance_m'].apply(classify_filter_bin)
     elig['hover']        = elig.apply(build_hover, axis=1)
 
-    # X-axis range: 2008-04-01 (just before earliest race 2008-04-26) → today
-    x_lo = pd.Timestamp('2008-04-01')
-    x_hi = pd.Timestamp(dt.date.today())
+    # X-axis range: from the first race to today, with a small (≈pixel) pad so
+    # the first/last race markers aren't clipped — no big empty left margin.
+    _today = pd.Timestamp(dt.date.today())
+    _fr = first_race_date()
+    x_lo, x_hi = pad_range(_fr if _fr is not None else _today, _today)
 
     # ---------- plot 1: all races, single panel, with distance-filter checkboxes ----------
     fig1 = go.Figure()
     add_cs_line_blended(fig1, daily_summary, elig['date'])
     add_race_traces_filterable(fig1, elig, marker_size=9)
     add_pr_overlay_filterable(fig1, elig, value_col='pace_norm_min')
+
+    # Data-driven y-bounds from the plotted race paces (the markers the axis
+    # is sized for; the CS line stays within their envelope).
+    _yp = elig['pace_norm_min'].to_numpy(dtype=float)
+    _yp = _yp[np.isfinite(_yp)]
+    y_lo_all, y_hi_all = (float(_yp.min()), float(_yp.max())) if len(_yp) else (4.5, 10.0)
     apply_default_layout(
         fig1,
         hovermode='closest',
@@ -623,7 +588,7 @@ def main():
                     b=60),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02),
         xaxis=yearly_x_axis(x_lo, x_hi, title='Date'),
-        yaxis=reversed_pace_y_axis())
+        yaxis=reversed_pace_y_axis(y_lo_all, y_hi_all))
 
     out1 = os.path.join(args.out_dir, 'race_pace_all.html')
     filter_ui = build_distance_filter_ui([b[0] for b in FILTER_BINS])
@@ -773,11 +738,19 @@ function buildTooltip(day, isSnap, pointHtml) {
         fn = SUBPLOT_DISPLAY.get(name, lambda n: f"{name} (n={n})")
         return fn(n)
 
-    fig2 = make_subplots(rows=2, cols=4,
-                         subplot_titles=[subplot_title(n) for n in group_names],
+    # Only render bins with races — empty distances are dropped entirely
+    # (a profile that's raced a few distances shouldn't show blank panels).
+    # Layout: <4 bins → a single row; otherwise two rows, balanced via ceil.
+    present = [name for name in group_names if bin_counts[name] > 0]
+    nbins = len(present)
+    n_rows = 1 if nbins < 4 else 2
+    n_cols = -(-nbins // n_rows)  # ceil
+
+    fig2 = make_subplots(rows=n_rows, cols=n_cols,
+                         subplot_titles=[subplot_title(n) for n in present],
                          shared_yaxes=False, shared_xaxes=False,
                          horizontal_spacing=0.07,
-                         vertical_spacing=0.16)
+                         vertical_spacing=0.16 if n_rows > 1 else 0.0)
 
     # Cubic, computed once and reused for every panel
     cubic_coefs, cubic_t0, hd_start, hd_end = fit_handdrawn_cubic(daily_summary)
@@ -796,12 +769,10 @@ function buildTooltip(day, isSnap, pointHtml) {
     panel_last_day  = int((daily_summary['date'].iloc[-1] - js_epoch).days)
     daily_dates_idx = ((daily_summary['date'] - js_epoch).dt.days).astype(int).values
 
-    for i, name in enumerate(group_names):
-        r = i // 4 + 1
-        c = i % 4 + 1
+    for i, name in enumerate(present):
+        r = i // n_cols + 1
+        c = i % n_cols + 1
         sub = elig[elig['group'] == name]
-        if len(sub) == 0:
-            continue
         anchor = bin_anchors[name]
 
         # 1. Project races to this anchor (β_short and β_long applied
@@ -978,10 +949,13 @@ function buildTooltip(day, isSnap, pointHtml) {
         y_lo_sub = y_min - y_pad
         y_hi_sub = y_max + y_pad
 
-        ticks, labels = (
-            time_ticks_at_interval(y_lo_sub, y_hi_sub, PANEL_TICK_SEC[name])
-            if name in PANEL_TICK_SEC
-            else auto_time_ticks(y_lo_sub, y_hi_sub, target_count=7))
+        # Per-bin ticks adapt to that distance's own time spread (short
+        # distances span seconds, the marathon spans minutes) — replaces the
+        # old hand-tuned per-bin interval table.
+        # target=9 lands Max's bins on his chosen densities (800m 5s · Mile 15s
+        # · 3000m 60s · 5K 120s) while leaving 400m/10K/HM/Marathon unchanged,
+        # and adapts the interval to any other profile's per-bin spread.
+        ticks, labels = nice_time_ticks(y_lo_sub, y_hi_sub, target=9)
         fig2.update_xaxes(
             **yearly_x_axis_kwargs(x_lo_sub, x_hi_sub, max_labels=5),
             row=r, col=c)
@@ -1012,7 +986,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         hovermode='closest',
         margin=dict(t=40, l=70, r=200, b=60),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02))
-    fig2.update_xaxes(title_text='Date', row=2)
+    fig2.update_xaxes(title_text='Date', row=n_rows)
 
     out2 = os.path.join(args.out_dir, 'race_pace_by_distance.html')
 

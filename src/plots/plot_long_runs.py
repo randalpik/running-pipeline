@@ -19,13 +19,14 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.shared.plot_window import daily_floor, pad_range
 from src.shared.workouts import load_cs, project_long_runs
 from src.shared.cs_projection import load_cs_outputs, cs_line_at_anchor
 from src.plotting import widgets
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            right_margin_for_anchored_box,
+                            right_margin_for_anchored_box, route_paren,
                             sec_to_mss, GRID, CAT_COLORS, CS_LINE, rgba,
-                            yearly_x_axis_kwargs)
+                            yearly_x_axis_kwargs, nice_time_ticks)
 
 # Width of the distance-gradient box (#lr-gradient); also used to size margin.r.
 # Holds a 160px gradient bar with 10px horizontal padding + 1px border per side.
@@ -55,14 +56,8 @@ def _y_safe(arr):
             else float(v) for v in arr]
 
 
-def _route_paren(display_name, city_state):
-    parts = [str(x).strip() for x in (display_name, city_state)
-             if pd.notna(x) and str(x).strip()]
-    return f' ({", ".join(parts)})' if parts else ''
-
-
 def long_run_hover(r):
-    title = f"Long run{_route_paren(r.get('display_name'), r.get('city_state'))}"
+    title = f"Long run{route_paren(r.get('display_name'), r.get('city_state'))}"
     pace_sec = float(r['recovery_pace_sec_per_mi'])
     parts = [
         f"<b>{title}</b>",
@@ -75,13 +70,19 @@ def long_run_hover(r):
 def main():
     cs, epoch = load_cs()
     lr = project_long_runs(cs, epoch)
+    # Drop implausibly-slow "long runs": these are trail runs / hikes the watch
+    # recorded as ordinary runs (Trail Run not selected at start), not running
+    # long runs. Real easy long runs for these athletes top out ~10 min/mi;
+    # there's a clean gap before the artifacts (13–28 min/mi), so 12:00 cleanly
+    # separates them.
+    lr = lr[lr['recovery_pace_sec_per_mi'].astype(float) <= 12 * 60].copy()
     if lr.empty:
         raise SystemExit('No long runs to plot.')
 
     # CS reference curves at HM and marathon. cs_line_at_anchor returns total
     # time in seconds; convert to pace (min/mi) for display.
     daily_summary, beta_long, d_thresh, _ = load_cs_outputs(str(DATA_DIR), '')
-    daily_plot = daily_summary[daily_summary['date'] >= pd.Timestamp('2016-01-01')].copy()
+    daily_plot = daily_summary[daily_summary['date'] >= daily_floor()].copy()
 
     hm_dist_m, mar_dist_m = 21097.5, 42195.0
     t_hm  = cs_line_at_anchor(daily_plot, hm_dist_m, beta_long, d_thresh)
@@ -129,10 +130,22 @@ def main():
     ))
 
     # ---------- layout ----------
-    # Absolute pace axis: 4:30–8:30 min/mi (descending = faster up).
-    y_min, y_max = 4.5, 8.5
-    tickvals = [4.5 + 0.25 * k for k in range(int((y_max - y_min) / 0.25) + 1)]
-    ticktext = [sec_to_mss(v * 60) for v in tickvals]
+    # Absolute pace axis (descending = faster up): closest 30s (0.5 min/mi)
+    # marks enclosing all plotted data — the two CS reference curves and the
+    # long-run markers. Data-driven so it fits each profile (Max's data already
+    # spans the former fixed 4:30–8:30 bounds, so his axis is unchanged).
+    _ys = np.concatenate([
+        np.asarray(mar_pace_min, dtype=float),
+        np.asarray(hm_pace_min, dtype=float),
+        np.asarray(pace_min.values, dtype=float),
+    ])
+    _ys = _ys[np.isfinite(_ys)]
+    _lo, _hi = (float(_ys.min()), float(_ys.max())) if len(_ys) else (4.5, 8.5)
+    # target=16 reproduces the former 15 s/mi spacing over Max's ~4:30-8:30
+    # span; adapts the interval to any profile's range.
+    _ticks_sec, ticktext = nice_time_ticks(_lo * 60, _hi * 60, target=16)
+    tickvals = [t / 60.0 for t in _ticks_sec]
+    y_min, y_max = tickvals[0], tickvals[-1]
 
     apply_default_layout(
         fig,
@@ -143,8 +156,7 @@ def main():
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     font=dict(size=11)),
         xaxis=yearly_x_axis_kwargs(
-            pd.Timestamp('2016-01-01'),
-            pd.Timestamp(lr['date'].max()) + pd.Timedelta(days=30),
+            *pad_range(daily_floor(), lr['date'].max()),
             title='Date',
         ),
         yaxis=dict(title='Pace (min/mi)',
@@ -179,8 +191,7 @@ def main():
 
     # ---------- cursor-tooltip payload ----------
     js_epoch = pd.Timestamp('1970-01-01')
-    plot_start = pd.Timestamp('2016-01-01')
-    plot_end   = pd.Timestamp(lr['date'].max()) + pd.Timedelta(days=30)
+    plot_start, plot_end = pad_range(daily_floor(), lr['date'].max())
     all_days   = pd.date_range(plot_start, plot_end, freq='D')
 
     # Per-day HM and marathon CS pace (min/mi) for the smooth-mode tooltip.

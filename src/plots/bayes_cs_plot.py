@@ -38,10 +38,11 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.shared.plot_window import pad_range, first_race_date
 from src.shared.cs_projection import load_cs_outputs, project_races_to_5k_pace
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             sec_to_mss, sec_to_mss_full, SURFACES, rgba, GRID,
-                            yearly_x_axis_kwargs)
+                            yearly_x_axis_kwargs, nice_time_ticks)
 
 
 DEFAULT_IN_DIR = str(DATA_DIR)
@@ -95,7 +96,12 @@ def main():
     # key (date, distance_m) — see bayes_cs_fit.py.
     excl_path = os.path.join(args.in_dir, f'bayes_cs_auto_exclusions{suffix}.csv')
     if os.path.exists(excl_path):
-        excl_df = pd.read_csv(excl_path, parse_dates=['date'])
+        try:
+            excl_df = pd.read_csv(excl_path, parse_dates=['date'])
+        except pd.errors.EmptyDataError:
+            # The fit writes a header-less file when there are 0 exclusions
+            # (e.g. a profile with very few races) — nothing to exclude.
+            excl_df = pd.DataFrame()
         if len(excl_df):
             excl_keys = set(zip(excl_df['date'].dt.date,
                                 excl_df['distance_m'].astype(int)))
@@ -110,14 +116,20 @@ def main():
               f"plot will show all hard-eligible races")
 
     # ---------- truncate to plotting window + project races to 5K-equivalent ----------
-    # The CS plot truncates to >= 2013-06-01; pre-2013 has very few datapoints
-    # and huge uncertainty. project_races_to_5k_pace handles XC pre-correction
-    # (matches the fit) and the β_long un-bias for distances > d_thresh internally;
-    # see cs_projection.py for the rationale and formulas.
-    summary_plot = (daily_summary[daily_summary['date'] >= '2013-06-01']
+    # Left bound: the Max profile is a hardcoded exception — pinned at
+    # 2013-06-01 (his pre-2013 races are sparse with huge uncertainty). Every
+    # other profile starts at its first race. project_races_to_5k_pace handles
+    # XC pre-correction (matches the fit) and the β_long un-bias for distances
+    # > d_thresh internally; see cs_projection.py for the rationale and formulas.
+    if os.environ.get('RP_PROFILE', 'max') == 'max':
+        window_start = pd.Timestamp('2013-06-01')
+    else:
+        fr = first_race_date()
+        window_start = fr if fr is not None else pd.Timestamp(daily_summary['date'].min())
+    summary_plot = (daily_summary[daily_summary['date'] >= window_start]
                     .copy().reset_index(drop=True))
-    elig_plot = elig[elig['date'] >= '2013-06-01'].copy()
-    print(f'Plot window: {len(summary_plot)} daily points')
+    elig_plot = elig[elig['date'] >= window_start].copy()
+    print(f'Plot window: {len(summary_plot)} daily points (from {window_start.date()})')
 
     elig_plot = project_races_to_5k_pace(
         elig_plot, summary_plot, beta_long_med, d_thresh_long,
@@ -205,17 +217,27 @@ def main():
             meta={'snap_eligible': True}))
 
     # ---------- layout ----------
-    y_min, y_max = 4.50, 8.00
-    ytick_vals = [4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0]
-    ytick_txt = [sec_to_mss(v * 60) for v in ytick_vals]
+    # Y-bounds + ticks enclosing the plotted data — the CS median line and the
+    # race diamonds (the point estimates the axis is sized for; the 95% band
+    # may extend past the edges for sparse fits). nice_time_ticks adapts the
+    # interval to the data span; target=7 reproduces the former 30s spacing
+    # over Max's ~4:30-8:00 range and adapts to any profile's range.
+    _ys = np.concatenate([
+        summary_plot['cs_pace_med'].to_numpy(dtype=float),
+        elig_plot['pace_norm_min'].to_numpy(dtype=float),
+    ])
+    _ys = _ys[np.isfinite(_ys)]
+    _lo, _hi = (float(_ys.min()), float(_ys.max())) if len(_ys) else (4.50, 8.00)
+    _ticks_sec, ytick_txt = nice_time_ticks(_lo * 60, _hi * 60, target=7)
+    ytick_vals = [t / 60.0 for t in _ticks_sec]
+    y_min, y_max = ytick_vals[0], ytick_vals[-1]
 
     apply_default_layout(
         fig,
         margin=dict(t=20, l=70, r=200, b=60),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02, groupclick='toggleitem'),
         xaxis=yearly_x_axis_kwargs(
-            pd.Timestamp('2013-06-01'),
-            summary_plot['date'].iloc[-1],
+            *pad_range(window_start, summary_plot['date'].iloc[-1]),
             title='Date',
         ),
         yaxis=dict(title='Pace (min/mi)', range=[y_max, y_min],
