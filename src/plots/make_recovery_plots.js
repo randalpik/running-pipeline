@@ -149,10 +149,16 @@
   document.querySelectorAll('#norm-filter input[type=checkbox]').forEach(function (cb) {
     cb.addEventListener('change', update);
   });
-  document.getElementById('nf-norm-all').addEventListener('click', function () { setGroup('norm', true); });
-  document.getElementById('nf-norm-none').addEventListener('click', function () { setGroup('norm', false); });
-  document.getElementById('nf-hide-all').addEventListener('click', function () { setGroup('filter', true); });
-  document.getElementById('nf-hide-none').addEventListener('click', function () { setGroup('filter', false); });
+  // null-safe: a data-aware profile may omit the norm or filter section
+  // entirely, so the corresponding All/None buttons won't exist.
+  function bindClick(id, fn) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('click', fn);
+  }
+  bindClick('nf-norm-all', function () { setGroup('norm', true); });
+  bindClick('nf-norm-none', function () { setGroup('norm', false); });
+  bindClick('nf-hide-all', function () { setGroup('filter', true); });
+  bindClick('nf-hide-none', function () { setGroup('filter', false); });
 
   // Tooltip rendering is handled by the smart spikeline scaffold (see
   // src/plotting/_scaffold/cursor_tooltip.js); this overlay only owns the

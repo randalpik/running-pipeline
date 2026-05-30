@@ -27,7 +27,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60   # multi-profile build (Max Drive + Maddy Coros); fit runs cover both
     env:
       PYTHONUNBUFFERED: "1"
     steps:
@@ -72,6 +72,13 @@ jobs:
             data/bayes_cs_summary.csv
             data/bayes_cs_params.csv
             data/bayes_cs_auto_exclusions.csv
+            data/profiles/maddy/coros_current_log.csv
+            data/profiles/maddy/coros_token.json
+            data/profiles/maddy/city_coords.csv
+            data/profiles/maddy/details
+            data/profiles/maddy/bayes_cs_summary.csv
+            data/profiles/maddy/bayes_cs_params.csv
+            data/profiles/maddy/bayes_cs_auto_exclusions.csv
           key: pipeline-state-v1-${{ github.run_id }}
           restore-keys: |
             pipeline-state-v1-
@@ -119,15 +126,21 @@ jobs:
           printf '%s' "$GCP_SA_JSON" > "$RUNNER_TEMP/sa.json"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> "$GITHUB_ENV"
 
-      - name: Run pipeline
+      - name: Build all profiles
+        # Multi-profile orchestrator: builds Max (Drive) + Maddy (Coros),
+        # renders each profile's plots, writes the profile-switcher shell, and
+        # stages into site/dist (Max -> root, Maddy -> profiles/maddy/). The
+        # coros test profile is hidden via prod=False + RP_PRODUCTION. Maddy's
+        # Coros sync is incremental and her CS fit is cached (see cache step).
+        env:
+          COROS2_EMAIL: ${{ secrets.COROS2_EMAIL }}
+          COROS2_PASSWORD: ${{ secrets.COROS2_PASSWORD }}
+          RP_PRODUCTION: "1"
         run: |
           flags=()
           [ "${{ steps.cfg.outputs.historical }}" = "true" ] && flags+=(--historical)
           [ "${{ steps.cfg.outputs.fit }}" = "true" ] && flags+=(--fit)
-          ./scripts/run_pipeline.sh "${flags[@]}"
-
-      - name: Generate plots
-        run: ./scripts/run_plots.sh
+          python scripts/build_profiles.py "${flags[@]}"
 
       - name: Save pipeline state cache
         # Save a fresh cache entry under a unique key after every successful
@@ -142,13 +155,14 @@ jobs:
             data/bayes_cs_summary.csv
             data/bayes_cs_params.csv
             data/bayes_cs_auto_exclusions.csv
+            data/profiles/maddy/coros_current_log.csv
+            data/profiles/maddy/coros_token.json
+            data/profiles/maddy/city_coords.csv
+            data/profiles/maddy/details
+            data/profiles/maddy/bayes_cs_summary.csv
+            data/profiles/maddy/bayes_cs_params.csv
+            data/profiles/maddy/bayes_cs_auto_exclusions.csv
           key: pipeline-state-v1-${{ github.run_id }}
-
-      - name: Stage site/dist
-        run: |
-          mkdir -p site/dist
-          cp -R output/* site/dist/
-          rm -rf site/dist/debug
 
       - uses: actions/setup-node@v4
         with:

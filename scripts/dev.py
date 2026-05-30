@@ -60,8 +60,20 @@ def write_index():
 
     Delegates to src.plots.build_shell. No-op when unchanged so that
     livereload's watch on output/*.html doesn't bounce in a loop.
+
+    The dev server roots at output/, so it also serves any sub-profile built
+    under output/profiles/<id>/. We list those (plus the default) in the
+    profile switcher so the dropdown shows up and navigates in dev exactly as
+    in prod — url_base (/profiles/<id>/) matches the on-disk layout.
     """
-    _build_shell_write_index(OUTPUT_DIR, include_admin=False)
+    from src.profiles import PROFILES, default_profile
+    dflt = default_profile()
+    switcher = [(dflt.id, dflt.label, dflt.url_base)]
+    for p in PROFILES:
+        if not p.default and (p.output_dir / "index.html").exists():
+            switcher.append((p.id, p.label, p.url_base))
+    _build_shell_write_index(OUTPUT_DIR, include_admin=False,
+                             profiles=switcher, current_id=dflt.id)
 
 
 def rebuild_all():

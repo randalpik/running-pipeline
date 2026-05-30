@@ -95,11 +95,13 @@ from plotly.subplots import make_subplots
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.shared.plot_window import daily_floor, pad_range
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            sec_to_mss, FG,
+                            sec_to_mss, FG, route_label,
                             CS_LINE, CS_LINE_WIDTH, TREND_LINE, TREND_WIDTH,
                             GRID, gaussian_rolling_trend,
-                            yearly_x_axis_kwargs)
+                            yearly_x_axis_kwargs, nice_time_ticks,
+                            nice_time_interval, time_ticks_at_interval)
 from src.plotting import widgets
 from src.shared.paths import DEBUG_DIR
 from src.shared.cs_projection import load_cs_outputs
@@ -238,7 +240,7 @@ def main():
     daily = daily.sort_values('date').reset_index(drop=True)
     # Drop the pre-2016 race-addition stubs the world map uses; recovery
     # plots stay anchored to the 2016+ logging era.
-    daily = daily[daily['date'] >= pd.Timestamp('2016-01-01')].reset_index(drop=True)
+    daily = daily[daily['date'] >= daily_floor()].reset_index(drop=True)
 
     print(f'Loading races.csv from {args.races}...')
     races = pd.read_csv(args.races, parse_dates=['date'])
@@ -291,7 +293,12 @@ def main():
     rec['workout_snow_only'] = workout_snow & ~cond_excluded
 
     # Partner-run detection
-    rec['partners_clean'] = rec['partners'].astype(str).str.strip().str.lower()
+    # fillna('') before astype(str): pandas 3.0's astype(str) leaves NaN as NaN
+    # (not the string 'nan'), which would fall outside NULL_PARTNERS and flag
+    # every blank-partner run as a partner run — catastrophic for a profile
+    # with no partners data at all (the whole fit gets pruned away).
+    rec['partners_clean'] = (rec['partners'].fillna('')
+                             .astype(str).str.strip().str.lower())
     rec['is_partner_run'] = ~rec['partners_clean'].isin(NULL_PARTNERS)
 
     # Outlier detection — leave-one-out 28-day rolling mean of recovery
@@ -456,18 +463,8 @@ def main():
             parts.append(f"Temp: {row['temp_c']:.0f}°C")
         loc = row.get('location')
         if pd.notna(loc) and str(loc) != 'nan':
-            disp_raw = row.get('display_name')
-            cs_raw = row.get('city_state')
-            disp = (str(disp_raw).strip()
-                    if pd.notna(disp_raw) and str(disp_raw).strip() else None)
-            cs = (str(cs_raw).strip()
-                  if pd.notna(cs_raw) and str(cs_raw).strip() else None)
-            if disp:
-                label = f"{disp}, {cs}" if cs else disp
-            elif cs:
-                label = cs
-            else:
-                label = str(loc)
+            # Shared dedup formatter (watch profiles: display_name == city_state).
+            label = route_label(row.get('display_name'), row.get('city_state')) or str(loc)
             parts.append(f"<i>{label}</i>")
         if row.get('is_bad_cond'):
             if row.get('workout_snow_only'):
@@ -610,18 +607,25 @@ def main():
     ), row=1, col=2)
 
     # ---------- axes ----------
-    x_lo = rec['date'].min() - pd.Timedelta(days=30)
-    x_hi = rec['date'].max() + pd.Timedelta(days=30)
+    # Small (≈ constant-pixel) pad rather than a fixed 30 days, so edge points
+    # aren't clipped without a big empty month at short (6-month) scales.
+    x_lo, x_hi = pad_range(rec['date'].min(), rec['date'].max())
 
-    left_y_lo = max(180, np.floor(rec['recovery_pace_sec_per_mi'].quantile(0.001) / 30) * 30 - 30)
-    left_y_hi = min(720, np.ceil(rec['recovery_pace_sec_per_mi'].quantile(0.999) / 30) * 30 + 30)
-    left_ticks = list(range(int(left_y_lo), int(left_y_hi) + 1, 30))
+    # Absolute-pace axis: nice ticks over the central 99.8% of recovery paces,
+    # clamped to a sane [3:00, 12:00] window. target=7 → the former 30s spacing
+    # over Max's span, adapting the interval to any profile's range.
+    _llo = max(180.0, float(rec['recovery_pace_sec_per_mi'].quantile(0.001)))
+    _lhi = min(720.0, float(rec['recovery_pace_sec_per_mi'].quantile(0.999)))
+    left_ticks, _ = nice_time_ticks(_llo, _lhi, target=7)
+    left_y_lo, left_y_hi = left_ticks[0], left_ticks[-1]
 
+    # Residual axis (signed): same density via the shared interval picker.
     res_lo = float(rec['residual_raw'].quantile(0.005))
     res_hi = float(rec['residual_raw'].quantile(0.995))
-    right_y_lo = np.floor(res_lo / 30) * 30 - 30
-    right_y_hi = np.ceil(res_hi / 30) * 30 + 30
-    right_ticks = list(range(int(right_y_lo), int(right_y_hi) + 1, 30))
+    _riv = nice_time_interval(res_lo, res_hi, target=7)
+    right_ticks, _ = time_ticks_at_interval(res_lo, res_hi, _riv)
+    right_ticks = [int(round(t)) for t in right_ticks]
+    right_y_lo, right_y_hi = right_ticks[0], right_ticks[-1]
 
     for col in (1, 2):
         fig.update_xaxes(**yearly_x_axis_kwargs(x_lo, x_hi),
@@ -687,8 +691,8 @@ def main():
     # the snapped point's day directly (so trend rows reflect that exact
     # day) and skips the date header + "Nearest run" caption.
     js_epoch = pd.Timestamp('1970-01-01')
-    plot_start = pd.Timestamp(rec['date'].min().normalize() - pd.Timedelta(days=30))
-    plot_end   = pd.Timestamp(rec['date'].max().normalize() + pd.Timedelta(days=30))
+    plot_start = x_lo.normalize()
+    plot_end   = x_hi.normalize()
     grid_dates = pd.date_range(plot_start, plot_end, freq='D')
     grid_day_idx = ((grid_dates - js_epoch).days).astype(int)
 
@@ -837,7 +841,8 @@ function buildTooltip(day, isSnap, pointHtml) {
                 int(rec['is_outlier_loo'].sum()),
                 int(rec['is_pruned'].sum()),
                 qualifying_routes, route_col_map, route_counts,
-                global_mean_residual)
+                global_mean_residual,
+                available_norm=_available_norm_factors(rec, qualifying_routes))
         ),
         overlay_js_files=[_RECOVERY_JS],
         extra_head_css=(
@@ -872,10 +877,34 @@ function buildTooltip(day, isSnap, pointHtml) {
         print(f'Wrote {betas_csv} ({len(betas_df)} routes)')
 
 
+def _available_norm_factors(rec, qualifying_routes):
+    """Which normalization factors actually have data to subtract.
+
+    A factor is available when its per-row contribution column carries a finite
+    non-zero value somewhere — i.e. toggling it would actually move points. This
+    is what drives the data-aware UI: a watch profile with no partners, one
+    location, etc. simply doesn't show checkboxes that would do nothing.
+    """
+    def has_signal(col):
+        if col not in rec.columns:
+            return False
+        v = rec[col].to_numpy(dtype=float)
+        v = v[np.isfinite(v)]
+        return bool(len(v) and np.any(np.abs(v) > 1e-9))
+    return {
+        'era':           has_signal('contrib_era'),
+        'temp':          has_signal('contrib_temp'),
+        'route':         len(qualifying_routes) > 0,
+        'recent_effort': has_signal('contrib_quality'),
+        'time_of_day':   has_signal('contrib_tod'),
+    }
+
+
 def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
                             n_bad_cond, n_partner_runs, n_outliers, n_pruned_unique,
                             qualifying_routes, route_col_map,
-                            route_counts, global_mean_residual):
+                            route_counts, global_mean_residual,
+                            available_norm=None):
     """Right-sidebar UI. 4 normalization toggles + 3 visibility toggles.
 
     Normalization order MUST match customdata channel order:
@@ -890,74 +919,89 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
     """
     q_betas = [betas['fat_marathon'], betas['fat_race_short']]
 
-    factors_norm = [
+    # Only show factors/filters that have data — a checkbox that can't change
+    # anything (no partners logged, a single location, no bad-condition days)
+    # is omitted rather than shown dead.
+    av = available_norm or {}
+    factors_norm = [(k, label) for (k, label) in (
         ('era',           'Era trend'),
         ('temp',          'Temperature'),
         ('route',         'Route'),
         ('recent_effort', 'Recent race'),
         ('time_of_day',   'Time of day'),
-    ]
+    ) if av.get(k, True)]
     norm_rows = widgets.checkbox_rows(
         factors_norm, data_attr='factor', checked=False
     ).replace('data-factor=', 'data-mode="norm" data-factor=')
 
-    filter_items = [
-        ('hide_bad_cond', 'Hide bad conditions', f'({n_bad_cond})'),
-        ('hide_partner',  'Hide non-solo',       f'({n_partner_runs})'),
-        ('hide_outlier',  'Hide outliers',       f'({n_outliers})'),
-    ]
+    filter_items = [(k, label, f'({c})') for (k, label, c) in (
+        ('hide_bad_cond', 'Hide bad conditions', n_bad_cond),
+        ('hide_partner',  'Hide non-solo',       n_partner_runs),
+        ('hide_outlier',  'Hide outliers',       n_outliers),
+    ) if c > 0]
     filter_rows = widgets.checkbox_rows(
         filter_items, data_attr='factor', checked=False
     ).replace('data-factor=', 'data-mode="filter" data-factor=')
 
-    routes_by_beta = sorted(qualifying_routes,
-                            key=lambda r: betas[route_col_map[r]])
-    route_table = widgets.table(
-        ('Route', 'n', 'β'),
-        [(r, int(route_counts[r]), f'{betas[route_col_map[r]]:+.2f}')
-         for r in routes_by_beta],
-        align=('left', 'left', 'right'),
-    )
-
-    details_body = (
-        widgets.detail_row(
+    # Coefficient details, only for factors that are actually shown.
+    detail_rows = []
+    if av.get('era', True):
+        detail_rows.append(widgets.detail_row(
             'Era trend',
-            f'residual panel only; centers around {global_mean_residual:+.0f} s/mi')
-        + widgets.detail_row(
+            f'residual panel only; centers around {global_mean_residual:+.0f} s/mi'))
+    if av.get('temp', True):
+        detail_rows.append(widgets.detail_row(
             'Temperature',
             f'β = {betas["temp_centered"]:+.2f} sec/mi per °C '
-            f'from {int(TEMP_REFERENCE_C)}°C')
-        + widgets.detail_row(
+            f'from {int(TEMP_REFERENCE_C)}°C'))
+    if av.get('recent_effort', True):
+        detail_rows.append(widgets.detail_row(
             'Recent race',
             f'(exponential decay): marathon {q_betas[0]:+.1f} '
             f'(τ={FATIGUE_TAU_DAYS["marathon"]:.0f}d), '
             f'short race {q_betas[1]:+.1f} '
-            f'(τ={FATIGUE_TAU_DAYS["race_short"]:.0f}d)')
-        + widgets.detail_row(
+            f'(τ={FATIGUE_TAU_DAYS["race_short"]:.0f}d)'))
+    if av.get('time_of_day', True):
+        detail_rows.append(widgets.detail_row(
             'Time of day',
             f'β = {betas["tod_is_pm"]:+.2f} sec/mi for afternoon/late '
-            '(vs early/morning)')
-        + widgets.detail_row('Route offsets', f'(n ≥ {MIN_ROUTE_N}):')
-        + route_table
+            '(vs early/morning)'))
+    if av.get('route', True) and qualifying_routes:
+        routes_by_beta = sorted(qualifying_routes,
+                                key=lambda r: betas[route_col_map[r]])
+        detail_rows.append(widgets.detail_row('Route offsets', f'(n ≥ {MIN_ROUTE_N}):'))
+        detail_rows.append(widgets.table(
+            ('Route', 'n', 'β'),
+            [(r, int(route_counts[r]), f'{betas[route_col_map[r]]:+.2f}')
+             for r in routes_by_beta],
+            align=('left', 'left', 'right')))
+
+    details_body = (
+        ''.join(detail_rows)
         + widgets.noteworthy(
             'Sleep cycles, run distance, shoes, rain and wind were tested '
             'and excluded as non-factors. Non-race quality efforts were '
             'also found to have no detectable next-day pace effect.')
     )
 
+    parts = []
+    if factors_norm:
+        parts += [
+            widgets.title('Normalize'),
+            widgets.subtitle("Subtract each factor's modeled contribution."),
+            widgets.button_row([('nf-norm-all', 'All'), ('nf-norm-none', 'None')]),
+            norm_rows,
+        ]
+    if filter_items:
+        if parts:
+            parts.append(widgets.divider())
+        parts += [
+            widgets.title('Hide from chart'),
+            widgets.button_row([('nf-hide-all', 'All'), ('nf-hide-none', 'None')]),
+            filter_rows,
+        ]
     body = (
-        widgets.title('Normalize')
-        + widgets.subtitle("Subtract each factor's modeled contribution.")
-        + widgets.button_row([
-            ('nf-norm-all', 'All'), ('nf-norm-none', 'None'),
-        ])
-        + norm_rows
-        + widgets.divider()
-        + widgets.title('Hide from chart')
-        + widgets.button_row([
-            ('nf-hide-all', 'All'), ('nf-hide-none', 'None'),
-        ])
-        + filter_rows
+        ''.join(parts)
         + '\n<details><summary>Coefficient details</summary>\n'
         + details_body
         + '\n</details>\n'

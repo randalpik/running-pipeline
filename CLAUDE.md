@@ -4,6 +4,8 @@ Operational guidance for Claude Code working in this repo. For project-level con
 
 This is a personal running-data pipeline: parsers and transformations turning daily training logs into analysis-ready CSVs and HTML plots. Owner: Max.
 
+> **People — pronouns (non-negotiable):** **Maddy uses they/them.** Maddy is Max's partner and the second dashboard runner (the `maddy` profile). Always use they/them when referring to Maddy, in prose, code comments, and commit messages. Never she/her or he/him.
+
 ## Working agreements
 
 **Zero tolerance for unsupported facts.** Before stating any date, number, count, or quote, verify it against current tool output or a current-context file. Memory of earlier-in-session content is not a valid source. Voice uncertainty explicitly ("I think X, let me check") rather than asserting. When the request is ambiguous (numbered lists, references like "do 1 and 3"), ask before guessing — the cost of being wrong is higher than the cost of one clarifying exchange.
@@ -56,7 +58,9 @@ As of April 2026, zero-mile days are pruned and `is_rest` is dropped. Schema:
 
 `date, year, month, day_of_year, dow, miles, minutes, pace_sec_per_mi, temp_c, sleep_cycles, weather, conditions, wind, time_of_day, shoes, location, weight_lbs, surface, partners, workout_raw, run_type, recovery_pace_sec_per_mi, quality_distance_m, quality_pace_sec_per_mi, quality_segment_type, num_races, schema_year_era, source_file` + join cols `display_name, city_state, elev_per_mile, altitude, terrain_type`.
 
-Pre-2016 race additions also produce stub daily rows (`source_file=snapshot:additions`, mileage from `distance_m / 1609.344`) so cities Max only ever raced at — Maple Valley, Carnation 2008-2015 — surface on the world map. Plots that filter by date keep their 2016+ left bound; the world map is the only consumer that actually uses pre-2016 data.
+Pre-2016 race additions also produce stub daily rows (`source_file=snapshot:additions`, mileage from `distance_m / 1609.344`) so cities Max only ever raced at — Maple Valley, Carnation 2008-2015 — surface on the world map.
+
+Plot date floors are **data-derived per profile**, not hardcoded (see `src/shared/plot_window.py`): daily-centric plots start at the first non-race daily entry (`daily_floor()`), race/fitness plots ~1 month before the first race (`race_floor()`). For Max this lands daily plots at 2016 (his only pre-2016 rows are race stubs) and race plots at ~2008; for a watch profile starting 2020 the axes begin in 2020. The world map is the only consumer of pre-2016 data. Two **Max-specific carve-outs stay hardcoded** because they encode a hand-estimated early-career fitness curve, not data: the Fitness/`cs_timeline` 2013-06 cutoff, and the race plots' `handdrawn_start=2008-04-01` dotted CS curve (both harmlessly clip off-screen for later-starting profiles).
 
 `races.csv` is the post-adjustment truth for race rows. `race_seq=1` rows back-propagate `city_state` and `surface` into the corresponding daily row.
 

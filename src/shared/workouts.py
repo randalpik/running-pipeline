@@ -19,6 +19,7 @@ on top). Workouts plot keeps all rows.
 """
 from __future__ import annotations
 
+import os
 import re
 
 import numpy as np
@@ -34,9 +35,25 @@ CS_PATH       = DATA_DIR / 'bayes_cs_summary.csv'
 
 # ---------- pipeline parameters ----------
 TAU = 210.0
+# Max's hand-tuned long-run distance slice + internal two-bin split. These are
+# a Max-specific exception (his years of long runs span ~15–25 mi). Other
+# profiles use long_slice_bounds()'s permissive fallback — see below.
 LONG_FLOOR      = 15.1
 LONG_CEIL       = 25.3
 LR_INTERNAL_BIN = 21.0
+
+
+def long_slice_bounds():
+    """[floor, ceil] miles for the long-run model, per profile.
+
+    Max keeps his hand-tuned slice (LONG_FLOOR/LONG_CEIL). Every other profile
+    gets a permissive automated fallback: anything already classified 'long'
+    (>90 min from the watch) stays in slice and lands in a single bin, until
+    there's enough history to tune real bounds and a multi-bin split.
+    """
+    if os.environ.get('RP_PROFILE', 'max') == 'max':
+        return LONG_FLOOR, LONG_CEIL
+    return 0.0, float('inf')
 
 # Route-agnostic elevation cost coefficient for hill_cont 5K-equivalent
 # projection on the Workouts plot. Subtracts time saved by climbing (sec) =
@@ -190,7 +207,8 @@ def project_long_runs(cs, epoch):
 
     snow_w = lr['workout_raw'].astype(str).str.contains('snow', case=False, na=False)
     snow_c = lr['conditions'].astype(str).str.contains('snow', case=False, na=False)
-    out_of_slice = ~lr['miles'].between(LONG_FLOOR, LONG_CEIL)
+    floor, ceil = long_slice_bounds()
+    out_of_slice = ~lr['miles'].between(floor, ceil)
 
     lr['excluded_reason'] = None
     lr.loc[out_of_slice, 'excluded_reason'] = 'long_out_of_slice'
@@ -240,8 +258,17 @@ def project_hill_continuous(cs, epoch):
     """
     d = pd.read_csv(DAILY_PATH, parse_dates=['date'])
     h = d[d['run_type'] == 'hill_cont'].copy()
-
-    h[['session_min', 'nreps', 'loop']] = h.apply(_parse_hc, axis=1)
+    if h.empty:
+        # No hill-continuous sessions (e.g. a watch profile). A 0-row
+        # apply(axis=1) returns a column-less frame, so seed the parsed columns
+        # explicitly; the rest of the function then computes on empty and
+        # returns the full column schema (incl. excluded_reason) that callers
+        # like plot_training_quality require.
+        h['session_min'] = pd.Series(dtype=float)
+        h['nreps'] = pd.Series(dtype=float)
+        h['loop'] = pd.Series(dtype=object)
+    else:
+        h[['session_min', 'nreps', 'loop']] = h.apply(_parse_hc, axis=1)
     h = h.dropna(subset=['session_min', 'nreps', 'loop']).copy()
 
     # distance_m: prefer HC_LOOPS hardcoded constant, fall back to snapshot.

@@ -37,6 +37,7 @@ from plotly.subplots import make_subplots
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.shared.plot_window import daily_floor
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             FG, FG_DIM, GRID,
                             yearly_x_axis_kwargs)
@@ -54,6 +55,7 @@ WEIGHT_INTERP_MAX_GAP = 7
 
 N_ENVELOPE_STRIPS = 40        # vertical gradient resolution per subplot
 ENVELOPE_X_STRIDE = 4         # x stride for strip traces (smoothed data, no visual loss)
+ENVELOPE_UPSAMPLE = 8         # sub-daily x resolution for short profiles (kills strip-edge verticals)
 ENVELOPE_ALPHA = 1.0          # fully opaque
 STRIP_OVERLAP_FRAC = 0.005    # small overlap to prevent hairline AA gaps
 
@@ -183,6 +185,40 @@ def _strip_polygon(dates_list, lo_arr, hi_arr):
     return xs, ys
 
 
+def upsample_envelope(dates, lo_smooth, hi_smooth, factor):
+    """Resample the smooth envelope edges onto a `factor`x-finer x-grid by
+    linear interpolation between daily points.
+
+    The gradient is drawn as horizontal color strips; each strip switches on
+    where its y-band first falls under the envelope. Sampled only at daily x,
+    a steep one-day rise makes several strips switch on at the *same* x, and
+    their vertical closing edges stack into a visible vertical riser. On a
+    finer grid each band-crossing lands at its true x, so those risers spread
+    into diagonals — the edge becomes straight lines between points, no
+    verticals. NaN gaps (weight's >7d stretches) are preserved: a fine point
+    is NaN whenever either bracketing daily point is NaN, so gaps never bridge.
+    """
+    # Day offsets from the start — robust to the index's datetime resolution
+    # (ns/us/s); reconstructing via raw epoch ints would mis-scale otherwise.
+    day0 = dates[0]
+    o = ((dates - day0) / np.timedelta64(1, 'D')).to_numpy(dtype=np.float64)
+    fine_o = np.linspace(o[0], o[-1], (len(dates) - 1) * factor + 1)
+    fine_dates = day0 + pd.to_timedelta(fine_o, unit='D')
+
+    def up(s):
+        v = s.to_numpy(dtype=np.float64)
+        finite = np.isfinite(v)
+        if finite.all():
+            out = np.interp(fine_o, o, v)
+        else:
+            out = np.interp(fine_o, o[finite], v[finite])
+            idx = np.clip(np.searchsorted(o, fine_o), 1, len(o) - 1)
+            out[~finite[idx - 1] | ~finite[idx]] = np.nan
+        return pd.Series(out, index=fine_dates)
+
+    return fine_dates, up(lo_smooth), up(hi_smooth)
+
+
 def add_envelope_strips(fig, dates, lo_smooth, hi_smooth, anchors,
                           n_strips, x_stride, row_i, alpha):
     """Add n_strips Scatter traces forming a gradient-filled envelope.
@@ -256,13 +292,34 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--daily', default=DEFAULT_DAILY)
     ap.add_argument('--out-dir', default=DEFAULT_OUT)
-    ap.add_argument('--start', default=START_DATE)
+    ap.add_argument('--start', default=None,
+                    help='Left date bound (default: first non-race daily entry)')
     args = ap.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
-    full = load_series(args.daily, args.start)
+    start = args.start or str(daily_floor().date())
+    full = load_series(args.daily, start)
     dates = full.index
     miles_max = float(full['miles'].max())
+
+    # Envelope x-stride: daily for short ranges (the 4-day stride stairsteps
+    # visibly on a few-month profile like a new watch import), 4-day beyond
+    # 1000 days where the difference is imperceptible and traces stay light.
+    short = len(dates) <= 1000
+    x_stride = 1 if short else ENVELOPE_X_STRIDE
+
+    def env_smooth(s):
+        # Smooth the rolling min/max envelope edges. The min/max are plateau
+        # step functions (an extreme persists across RANGE_WINDOW), which on a
+        # dense decade-wide axis reads smooth but on a short (few-month) axis
+        # shows as visible stair treads. For short profiles, widen the window
+        # and use a gaussian kernel (round corners, no boxcar facets); dense
+        # profiles keep the original 7-day boxcar exactly (Max unchanged).
+        if not short:
+            return smooth_series(s, RANGE_SMOOTH)
+        w = max(RANGE_SMOOTH, round(len(dates) * 0.12))
+        return s.rolling(w, min_periods=1, center=True,
+                         win_type='gaussian').mean(std=max(2.0, w / 3))
 
     metrics: list[dict[str, Any]] = [
         dict(key='volume', label='Daily volume', unit='mi',
@@ -293,8 +350,16 @@ def main():
                       (170.0, '#E89535')]),
     ]
 
+    # Drop metrics with no data so an empty trend doesn't take up a subplot —
+    # e.g. a watch-import profile has no sleep or weight to populate. Volume is
+    # always present (rest days are 0, not null), so at least one row remains.
+    metrics = [m for m in metrics if m['series'].notna().any()]
+    dropped = {'sleep', 'temp', 'weight', 'volume'} - {m['key'] for m in metrics}
+    if dropped:
+        print(f"[trends] no data for {sorted(dropped)} — omitting those subplots")
+
     fig: go.Figure = make_subplots(
-        rows=4, cols=1, shared_xaxes=True,
+        rows=len(metrics), cols=1, shared_xaxes=True,
         vertical_spacing=0.03,
         subplot_titles=[
             f"{m['label']} ({MA_WINDOW[m['key']]}-day trend, min-max gradient)"
@@ -322,8 +387,8 @@ def main():
             hi_raw = hi_raw.where(valid, other=np.nan)
             ma = ma.where(valid, other=np.nan)
 
-        lo_smooth = smooth_series(lo_raw, RANGE_SMOOTH)
-        hi_smooth = smooth_series(hi_raw, RANGE_SMOOTH)
+        lo_smooth = env_smooth(lo_raw)
+        hi_smooth = env_smooth(hi_raw)
 
         # Re-mask post-smoothing — the rolling mean's min_periods=1 can
         # spread valid neighbours back into the gap.
@@ -331,10 +396,19 @@ def main():
             lo_smooth = lo_smooth.where(valid, other=np.nan)
             hi_smooth = hi_smooth.where(valid, other=np.nan)
 
-        # Envelope as gradient strip stack.
+        # Envelope as gradient strip stack. Short profiles render on a
+        # sub-daily x-grid so strip band-crossings become diagonals, not
+        # stacked verticals (see upsample_envelope); dense profiles stride.
+        if short:
+            ev_dates, ev_lo, ev_hi = upsample_envelope(
+                dates, lo_smooth, hi_smooth, ENVELOPE_UPSAMPLE)
+            ev_stride = 1
+        else:
+            ev_dates, ev_lo, ev_hi = dates, lo_smooth, hi_smooth
+            ev_stride = x_stride
         add_envelope_strips(
-            fig, dates, lo_smooth, hi_smooth, m['anchors'],
-            N_ENVELOPE_STRIPS, ENVELOPE_X_STRIDE, row_i, ENVELOPE_ALPHA)
+            fig, ev_dates, ev_lo, ev_hi, m['anchors'],
+            N_ENVELOPE_STRIPS, ev_stride, row_i, ENVELOPE_ALPHA)
 
         # Trendline (pure white for contrast against gradient envelope).
         add_trendline(fig, dates, ma, row_i)
@@ -360,7 +434,7 @@ def main():
         payload_ma[m['key']] = _round_arr(ma)
 
     # Yearly gridlines — shared helper, standard tick styling.
-    fig.update_xaxes(**yearly_x_axis_kwargs(args.start, str(dates.max().date())))
+    fig.update_xaxes(**yearly_x_axis_kwargs(start, str(dates.max().date())))
 
     apply_default_layout(
         fig,
@@ -372,7 +446,7 @@ def main():
     fig.update_annotations(font=dict(color=FG, size=13))
 
     epoch = pd.Timestamp('1970-01-01')
-    first_day = int((pd.Timestamp(args.start) - epoch).days)
+    first_day = int((pd.Timestamp(start) - epoch).days)
     last_day = first_day + len(dates) - 1
 
     payload = {
@@ -383,7 +457,12 @@ def main():
         'ma': payload_ma,
         'ma_window': MA_WINDOW,
         'range_window': RANGE_WINDOW,
+        # Only the metrics actually plotted, in row order — the tooltip JS
+        # iterates this rather than a fixed list so omitted trends don't break it.
+        'metrics': [m['key'] for m in metrics],
     }
+
+    shown = ', '.join(m['label'].lower() for m in metrics)
 
     out_path = os.path.join(args.out_dir, 'qualitative_trends.html')
     render_plot(
@@ -391,7 +470,7 @@ def main():
         title_slug='qualitative_trends',
         page_title='Volume / temp / weight',
         title='Miscellaneous Trends',
-        subtitle='Mileage, temperature, and weight: moving-average trendlines '
+        subtitle=f'{shown[:1].upper()}{shown[1:]}: moving-average trendlines '
                  'with 14-day rolling min-max envelopes',
         cursor_tooltip=CursorTooltip(
             payload=payload,
@@ -428,7 +507,9 @@ function buildTooltip(day) {
   if (idx < 0 || idx >= P.n_days) return '';
 
   var DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  var metricKeys   = ['volume', 'temp', 'sleep', 'weight'];
+  // Only the metrics actually plotted (set by the builder); iterating a fixed
+  // list would dereference P.ma[<omitted>] and throw.
+  var metricKeys   = P.metrics || ['volume', 'temp', 'sleep', 'weight'];
   var metricLabels = {volume: 'Avg. volume', temp: 'Avg. temp',
                       sleep: 'Avg. sleep', weight: 'Avg. weight'};
   var metricUnits  = {volume: 'mi', temp: '°C', sleep: 'hr', weight: 'lbs'};

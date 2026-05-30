@@ -15,18 +15,22 @@ cd "$(dirname "$0")/.."
 
 diagnostics=0
 verbose=0
+no_shell=0
+keep_going=0
 
 for arg in "$@"; do
   case "$arg" in
     --diagnostics|-d) diagnostics=1 ;;
     --verbose|-v)     verbose=1 ;;
+    --no-shell)       no_shell=1 ;;
+    --keep-going)     keep_going=1 ;;
     --help)
       sed -n '2,11p' "$0"
       exit 0
       ;;
     *)
       echo "Unknown argument: $arg" >&2
-      echo "Usage: $0 [--diagnostics|-d] [--verbose|-v]" >&2
+      echo "Usage: $0 [--diagnostics|-d] [--verbose|-v] [--no-shell] [--keep-going]" >&2
       exit 2
       ;;
   esac
@@ -35,12 +39,20 @@ done
 diag_flag=()
 [[ $diagnostics -eq 1 ]] && diag_flag+=(--diagnostics)
 
+# quiet_step: hide a plot's output unless --verbose. On failure, dump the log;
+# with --keep-going (used for sparse non-default profiles) a failed plot is
+# skipped — its HTML simply won't exist, so the shell auto-hides that tab —
+# rather than aborting the whole build.
 quiet_step() {
   local label="$1"; shift
   echo "==> $label"
   local t0=$SECONDS
   if [[ $verbose -eq 1 ]]; then
-    "$@"
+    if ! "$@"; then
+      echo "FAILED: $label" >&2
+      [[ $keep_going -eq 1 ]] && { echo "    (skipped, --keep-going)"; return 0; }
+      exit 1
+    fi
   else
     local tmplog
     tmplog=$(mktemp)
@@ -48,6 +60,7 @@ quiet_step() {
       echo "FAILED: $label" >&2
       cat "$tmplog" >&2
       rm -f "$tmplog"
+      [[ $keep_going -eq 1 ]] && { echo "    (skipped, --keep-going)"; return 0; }
       exit 1
     fi
     rm -f "$tmplog"
@@ -65,7 +78,11 @@ quiet_step "make_race_plots"         python src/plots/make_race_plots.py
 quiet_step "make_geography_plot"     python src/plots/make_geography_plot.py
 quiet_step "make_world_map"          python src/plots/make_world_map.py
 quiet_step "dashboard"               python src/plots/dashboard.py
-quiet_step "shell (with admin tab)"  python src/plots/build_shell.py --admin
+# The profile-aware orchestrator (build_profiles.py) builds the shell itself
+# with the profile switcher; --no-shell skips this single-profile default.
+if [[ $no_shell -eq 0 ]]; then
+  quiet_step "shell (with admin tab)"  python src/plots/build_shell.py --admin
+fi
 
 echo
-echo "All plots written to output/."
+echo "All plots written to ${RP_OUTPUT_DIR:-output}/."

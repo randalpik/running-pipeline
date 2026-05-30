@@ -13,6 +13,31 @@ def _is_missing(s) -> bool:
     return s is None or (isinstance(s, float) and math.isnan(s))
 
 
+def route_label(display_name, city_state) -> str:
+    """Join display_name + city_state into one ', '-separated label, dropping
+    blanks/NaN and deduplicating identical parts.
+
+    Shared by every plot's hover/legend so the watch-import case (no route
+    names, so display_name == city_state == 'City, ST') renders 'City, ST'
+    once instead of 'City, ST, City, ST'. Single source of truth — fix it here,
+    not per tab.
+    """
+    parts = []
+    for x in (display_name, city_state):
+        if _is_missing(x):
+            continue
+        s = str(x).strip()
+        if s and s.lower() != 'nan' and s not in parts:
+            parts.append(s)
+    return ', '.join(parts)
+
+
+def route_paren(display_name, city_state) -> str:
+    """``route_label`` wrapped as ' (…)' for inline append, or '' if empty."""
+    lbl = route_label(display_name, city_state)
+    return f' ({lbl})' if lbl else ''
+
+
 def sec_to_mss(s) -> str:
     """Format seconds as ``M:SS`` or ``H:MM:SS``.
 

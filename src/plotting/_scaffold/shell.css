@@ -48,6 +48,24 @@ html, body {
 body.has-admin #tabbar .tab.admin-only { display: none; }
 body.has-admin #tabbar.show-admin .tab.admin-only { display: block; }
 
+/* Profile switcher: pushed to the right edge of the tab bar. Changing it
+   navigates the whole shell to the selected profile's site root. Only
+   rendered when more than one profile exists. */
+#tabbar .profile-switch {
+  display: flex; align-items: center;
+  margin-left: auto;
+  padding: 0 8px 0 12px;
+  border-left: 1px solid #2a2a2a;
+  white-space: nowrap;
+}
+#tabbar .profile-switch select {
+  background: #1a1a1a; color: #eee;
+  border: 1px solid #333; border-radius: 4px;
+  font: inherit; font-size: 13px;
+  padding: 2px 6px; cursor: pointer;
+}
+#tabbar .profile-switch select:hover { border-color: #93f; }
+
 #frame-wrap {
   position: absolute; left: 0; right: 0;
   top: 36px; bottom: 0;

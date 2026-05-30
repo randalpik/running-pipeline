@@ -41,6 +41,7 @@ from src.shared.paths import DATA_DIR
 
 from running_log_parser import (
     DAILY_COLUMNS,
+    RACE_SEGMENT_COLUMNS,
     ingest_year_standard_csv,
     build_race_segments,
     apply_race_rules,
@@ -183,14 +184,23 @@ def main():
                    help="Ignore any local snapshot and fetch a fresh one from Drive")
     p.add_argument("--no-fetch", action="store_true",
                    help="Fail if no local snapshot is found (skip Drive auto-fetch)")
+    p.add_argument("--no-historical", action="store_true",
+                   help="Build from the snapshot's current_log alone, with no "
+                        "frozen historical layer, ingesting every year present "
+                        "in the log. Used by non-Max profiles (e.g. Coros watch "
+                        "import) whose entire history lives in the current_log.")
     args = p.parse_args()
 
     # ---------- resolve inputs ----------
-    historical = args.historical or find_snapshot([DEFAULT_HISTORICAL])
-    if not historical:
-        print(f"ERROR: historical_daily.csv not found. Pass --historical PATH or "
-              f"place at {DEFAULT_HISTORICAL}", file=sys.stderr)
-        sys.exit(1)
+    # --no-historical builds from the current_log alone (every year it
+    # contains); otherwise we require the frozen historical_daily.csv.
+    historical = None
+    if not args.no_historical:
+        historical = args.historical or find_snapshot([DEFAULT_HISTORICAL])
+        if not historical:
+            print(f"ERROR: historical_daily.csv not found. Pass --historical PATH "
+                  f"or place at {DEFAULT_HISTORICAL}", file=sys.stderr)
+            sys.exit(1)
 
     # Snapshot resolution:
     #   1. --snapshot PATH (explicit, always wins)
@@ -254,15 +264,30 @@ def main():
     print()
 
     # ---------- load historical ----------
-    hist = pd.read_csv(historical, parse_dates=["date"])
-    hist["date"] = hist["date"].dt.date
-    print(f"[build] loaded {len(hist)} historical rows "
-          f"({hist['year'].min()}-{hist['year'].max()})")
+    if historical:
+        hist = pd.read_csv(historical, parse_dates=["date"])
+        hist["date"] = hist["date"].dt.date
+        print(f"[build] loaded {len(hist)} historical rows "
+              f"({hist['year'].min()}-{hist['year'].max()})")
+    else:
+        hist = pd.DataFrame(columns=DAILY_COLUMNS)
+        print("[build] --no-historical: building from current_log alone")
 
-    # ---------- parse current-year CSV ----------
-    current_rows = ingest_year_standard_csv(current_log_df, current_year)
+    # ---------- parse current-log CSV ----------
+    # Ingest every distinct year present in the current_log. In the normal
+    # (Max) build the log is a single current year atop frozen historical, so
+    # this is just that one year; for --no-historical profiles (Coros) the log
+    # spans its whole multi-year history.
+    log_years = sorted({pd.Timestamp(d).year for d in current_log_df["date"]
+                        if pd.notna(d) and str(d).strip()}) if len(current_log_df) else []
+    if not args.no_historical and current_year not in log_years:
+        log_years.append(current_year)   # tolerate an empty current-year log
+    current_rows = []
+    for yr in log_years:
+        current_rows.extend(ingest_year_standard_csv(current_log_df, yr))
     current_df = pd.DataFrame(current_rows, columns=DAILY_COLUMNS)
-    print(f"[build] parsed {len(current_df)} rows from current-year snapshot")
+    print(f"[build] parsed {len(current_df)} rows from current_log "
+          f"(years {log_years or '—'})")
 
     overlap = set(hist["year"].unique()) & set(current_df["year"].unique())
     if overlap:
@@ -276,7 +301,10 @@ def main():
 
     # ---------- build races from daily ----------
     race_dicts = build_race_segments(daily.to_dict("records"))
-    races = pd.DataFrame(race_dicts)
+    # Always carry the full column set so the no-races case (e.g. a watch-only
+    # profile) still no-ops cleanly through the apply/adjustment/summary steps
+    # below instead of failing on a column-less DataFrame.
+    races = pd.DataFrame(race_dicts, columns=RACE_SEGMENT_COLUMNS)
     print(f"[build] extracted {len(races)} race segments from logs")
 
     # ---------- additions ----------
@@ -390,6 +418,31 @@ def main():
                     n_ll += int(fill_mask.sum())
         print(f"[historical] applied {n_entries}/{len(historical_df)} entr(ies); "
               f"city_state set on {n_cs}, location set on {n_ll} non-race row(s)")
+
+    # ---------- reconcile race-date daily rows to run_type='race' ----------
+    # races.csv is the truth for what happened on a race date. A daily row on
+    # a race date that the parser left as a non-race type is the race itself,
+    # not a separate workout or recovery run — most visibly for watch-import
+    # profiles, where a race surfaces only as that day's run/track activity
+    # (e.g. a track 5K the importer coded as a continuous fartlek). Retype it
+    # to 'race' and clear its quality/recovery classification so it's never
+    # decomposed as a workout or counted as recovery; the race effort is
+    # carried by races.csv, and the daily row keeps its mileage as the day's
+    # total. No-op for logs that already mark race days as races (e.g. Max's).
+    if len(races):
+        race_dates = set(pd.to_datetime(
+            races.loc[races["race_seq"] == 1, "date"]).dt.date.astype(str))
+        d_dates = pd.to_datetime(daily["date"]).dt.date.astype(str)
+        retype = d_dates.isin(race_dates) & (daily["run_type"] != "race")
+        n_retype = int(retype.sum())
+        if n_retype:
+            daily.loc[retype, "run_type"] = "race"
+            for col in ("quality_distance_m", "quality_pace_sec_per_mi",
+                        "quality_segment_type", "recovery_pace_sec_per_mi"):
+                if col in daily.columns:
+                    daily.loc[retype, col] = None
+            print(f"[reconcile] retyped {n_retype} race-date daily row(s) "
+                  f"to 'race' (race is the day's effort, not a workout)")
 
     # ---------- back-propagate race city_state + surface to daily ----------
     # races.csv holds the post-adjustment ground truth for race-day location

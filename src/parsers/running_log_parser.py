@@ -749,6 +749,17 @@ def ingest_year_standard_csv(df_or_path, year, source_file=None):
 
 # ---------- race segment construction ----------
 
+# Columns of a race-segment dict (the order build_race_segments emits them).
+# Used to construct a well-formed empty races frame when a profile has no
+# races at all, so downstream apply/adjustment/summary steps no-op instead of
+# failing on a column-less DataFrame.
+RACE_SEGMENT_COLUMNS = [
+    "date", "year", "race_seq", "fatigued", "distance_m", "time_sec",
+    "pace_sec_per_mi", "location", "temp_c", "weather", "conditions", "shoes",
+    "surface", "event", "note", "surface_source", "workout_raw", "source_file",
+]
+
+
 def build_race_segments(daily_rows):
     """Given a list of daily row dicts, return a list of race segment dicts.
 

@@ -12,6 +12,7 @@ dashboard's no-Plotly path).
 """
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import numpy as np
@@ -46,7 +47,12 @@ def fit_long_run_model(lr_in):
     lr_in = lr_in.copy()
     lr_in['route'] = lr_in['location'].where(
         lr_in['location'].isin(qualifying_routes), 'other')
-    lr_in['bin'] = np.where(lr_in['miles'] < LR_INTERNAL_BIN, 'lr_lo', 'lr_hi')
+    # Max splits long runs into two distance bins (lr_lo/lr_hi); other profiles
+    # keep a single bin until there's enough history to support a split.
+    if os.environ.get('RP_PROFILE', 'max') == 'max':
+        lr_in['bin'] = np.where(lr_in['miles'] < LR_INTERNAL_BIN, 'lr_lo', 'lr_hi')
+    else:
+        lr_in['bin'] = 'lr_hi'
 
     # Treatment encoding with explicit reference categories. 'lr_hi' is the
     # bin reference (alphabetically first); 'other' is the route reference

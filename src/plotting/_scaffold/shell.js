@@ -142,6 +142,14 @@
     b.addEventListener('click', function () { activate(b.dataset.slug); });
   });
 
+  // Profile switcher: navigate the whole shell to the chosen profile's root.
+  var profileSelect = bar.querySelector('.profile-switch select');
+  if (profileSelect) {
+    profileSelect.addEventListener('change', function () {
+      if (profileSelect.value) window.location.assign(profileSelect.value);
+    });
+  }
+
   function cycle(direction) {
     var visible = slugs.filter(visBySlug);
     var idx = visible.indexOf(activeSlug);

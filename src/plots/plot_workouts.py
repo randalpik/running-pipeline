@@ -25,13 +25,14 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.shared.plot_window import daily_floor
 from src.shared.workouts import (
     load_cs,
     project_workouts, project_hill_continuous, project_hill_reps,
 )
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            sec_to_mss, fmt_min, CAT_COLORS, GRID, CS_LINE,
-                            SURFACES, yearly_x_axis_kwargs)
+                            sec_to_mss, fmt_min, route_paren, CAT_COLORS, GRID,
+                            CS_LINE, SURFACES, yearly_x_axis_kwargs, nice_time_ticks)
 
 
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -53,21 +54,18 @@ HILL_CONT_COLOR = CAT_COLORS['hill_lc']
 HILL_REP_COLOR  = CAT_COLORS['hill_rep']
 
 
-def _route_paren(display_name, city_state):
-    parts = [str(x).strip() for x in (display_name, city_state)
-             if pd.notna(x) and str(x).strip()]
-    return f' ({", ".join(parts)})' if parts else ''
-
-
 def _y_safe(arr):
     return [None if (v is None or (isinstance(v, float) and np.isnan(v)))
             else float(v) for v in arr]
 
 
-def workout_hover(r):
+def workout_hover(r, single_type=False):
     cat = r['category']
-    title = f"<b>{CAT_LABEL.get(cat, cat)}</b>"
-    title += _route_paren(r.get('display_name'), r.get('city_state'))
+    # When the dataset has a single workout type (e.g. a watch profile's
+    # continuous fartleks), present it generically as "Workout".
+    label = 'Workout' if single_type else CAT_LABEL.get(cat, cat)
+    title = f"<b>{label}</b>"
+    title += route_paren(r.get('display_name'), r.get('city_state'))
     xc_note = f' <span style="color:{SURFACES["XC"]}">(XC-corrected)</span>' if r.get('xc_corrected') else ''
     rep_count = int(r['rep_count'])
     rep_dist = int(r['rep_dist'])
@@ -89,7 +87,7 @@ def workout_hover(r):
 
 def hill_cont_hover(r):
     title = (f"<b>Continuous hills</b>"
-             f"{_route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}")
+             f"{route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}")
     nreps = int(r['nreps'])
     loops_word = 'loop' if nreps == 1 else 'loops'
     ft_gained = int(round(float(r.get('ft_gained') or 0)))
@@ -107,7 +105,7 @@ def hill_cont_hover(r):
 
 def hill_rep_hover(r):
     title = (f"<b>{CAT_LABEL['hill_rep']}</b>"
-             f"{_route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}")
+             f"{route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}")
     rep_count = int(r['rep_count'])
     reps_word = 'rep' if rep_count == 1 else 'reps'
     rt = float(r['rep_time_min'])
@@ -184,7 +182,7 @@ def main():
     fig = go.Figure()
 
     # Gold CS-implied 5K reference curve (same color/style as other tabs).
-    cs_plot = cs[cs['date'] >= pd.Timestamp('2016-01-01')]
+    cs_plot = cs[cs['date'] >= daily_floor()]
     fig.add_trace(go.Scatter(
         x=cs_plot['date'], y=_y_safe(cs_plot['p5k_implied_min'].values),
         mode='lines', name='CS-implied 5K',
@@ -195,21 +193,35 @@ def main():
     # Workouts: one trace per category. Identical styling regardless of
     # excluded_reason — pruned sessions are visually indistinguishable from
     # in-scope sessions.
+    #
+    # Single-type collapse: when the dataset has exactly one workout/hill
+    # category (the watch continuous-fartlek case), present it generically as
+    # one "Workout" legend line with no group header. The underlying category
+    # (and its CS analysis) is unchanged — only the display label.
+    present_cats = [c for c in ['interval', 'tempo', 'rep', 'continuous_fartlek']
+                    if not workouts[workouts['category'] == c].empty]
+    n_legend = (len(present_cats)
+                + (1 if len(hills_c) else 0)
+                + (1 if (not hills_r.empty
+                         and len(hills_r.dropna(subset=['p5k_track_min']))) else 0))
+    single_type = n_legend == 1
     for cat in ['interval', 'tempo', 'rep', 'continuous_fartlek']:
         sub = workouts[workouts['category'] == cat]
         if sub.empty:
             continue
-        cd = [workout_hover(r) for _, r in sub.iterrows()]
+        cd = [workout_hover(r, single_type) for _, r in sub.iterrows()]
         fig.add_trace(go.Scatter(
             x=sub['date'], y=_y_safe(sub['p5k_display_min'].values),
             mode='markers',
-            name=f'{CAT_LABEL[cat]} (n={len(sub)})',
+            name=(f'Workout (n={len(sub)})' if single_type
+                  else f'{CAT_LABEL[cat]} (n={len(sub)})'),
             marker=dict(color=CAT_COLORS[cat], size=7,
                         line=dict(color='rgba(255,255,255,0.4)', width=0.5),
                         opacity=0.85),
             customdata=cd,
             hoverinfo='skip',
-            legendgroup='workouts', legendgrouptitle_text='Workouts',
+            legendgroup='workouts',
+            legendgrouptitle_text='' if single_type else 'Workouts',
             meta={'snap_eligible': True},
         ))
 
@@ -250,7 +262,8 @@ def main():
     # ---------- layout ----------
     # 5K-equivalent pace axis range derived from the actual data so the
     # slowest workouts aren't clipped. Includes CS line, all marker positions,
-    # and the TQ track. 10 sec/mi padding on each side; ticks every 10 sec/mi.
+    # and the TQ track. target=14 reproduces the former 10 s/mi spacing over
+    # Max's ~2:15 span and adapts the interval to any profile's range.
     y_candidates = []
     y_candidates.extend(cs_plot['p5k_implied_min'].dropna().tolist())
     y_candidates.extend(workouts['p5k_display_min'].dropna().tolist())
@@ -258,11 +271,10 @@ def main():
         y_candidates.extend(hills_c['p5k_display_min'].dropna().tolist())
     if not hills_r.empty:
         y_candidates.extend(hills_r['p5k_track_min'].dropna().tolist())
-    pad_min = 10.0 / 60  # 10 sec/mi padding
-    y_min = float(np.floor((min(y_candidates) - pad_min) * 6.0)) / 6.0  # round down to 10 sec
-    y_max = float(np.ceil((max(y_candidates) + pad_min) * 6.0)) / 6.0   # round up to 10 sec
-    tickvals = [y_min + i * (10/60) for i in range(int(round((y_max - y_min) * 6)) + 1)]
-    ticktext = [sec_to_mss(v * 60) for v in tickvals]
+    _ticks_sec, ticktext = nice_time_ticks(
+        min(y_candidates) * 60, max(y_candidates) * 60, target=14)
+    tickvals = [t / 60.0 for t in _ticks_sec]
+    y_min, y_max = tickvals[0], tickvals[-1]
 
     apply_default_layout(
         fig,
@@ -271,7 +283,7 @@ def main():
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     groupclick='toggleitem', font=dict(size=11)),
         xaxis=yearly_x_axis_kwargs(
-            pd.Timestamp('2016-01-01'),
+            daily_floor(),
             pd.Timestamp(workouts['date'].max()) + pd.Timedelta(days=30),
             title='Date',
         ),
@@ -284,7 +296,7 @@ def main():
     # ---------- cursor-tooltip payload ----------
     # Smooth mode shows date + CS pace; snap mode shows the session details.
     js_epoch = pd.Timestamp('1970-01-01')
-    plot_start = pd.Timestamp('2016-01-01')
+    plot_start = daily_floor()
     plot_end   = pd.Timestamp(workouts['date'].max()) + pd.Timedelta(days=30)
     all_days   = pd.date_range(plot_start, plot_end, freq='D')
 

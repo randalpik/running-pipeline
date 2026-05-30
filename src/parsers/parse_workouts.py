@@ -110,10 +110,16 @@ def reclassify_fartlek(total_m, has_zero_rest):
     return None
 
 
-def decompose(daily_df):
+def decompose(daily_df, continuous_fartlek_only=False):
     """
     Filter quality workouts, decompose each row.
     Returns (decomposed_df, pruned_df).
+
+    continuous_fartlek_only: for watch-import profiles whose only quality
+    coding is a single continuous fartlek (no rep structure is ever recorded),
+    any no-rest fartlek >=4000m is classified continuous_fartlek rather than
+    being reclassified into intervals by distance. Matches the importer's
+    contract that it never emits interval/rep workouts.
     """
     # Filter on run_type, not quality_segment_type: pre-March 2016 tempos use
     # a per-rep "Nx800t/30s@2:53" format the parser can't extract qd/qp from,
@@ -172,10 +178,14 @@ def decompose(daily_df):
 
         # ---------- continuous_fartlek: 6400-10000m with no positive rest signal ----------
         # Either explicit "0:00 rest/mi" or no rest annotation at all.
+        # In continuous-fartlek-only mode (watch profiles) the upper band is
+        # dropped and the floor lowered to 4000m, so a continuous track effort
+        # the importer coded as a fartlek is never split into intervals below.
         no_rest_annotation = explicit_rest_per_mile is None
+        cf_lo, cf_hi = (4000, 10**9) if continuous_fartlek_only else (6400, 10000)
         if (rtype == 'fartlek'
                 and (has_zero_rest or no_rest_annotation)
-                and total_m and 6400 <= total_m <= 10000):
+                and total_m and cf_lo <= total_m <= cf_hi):
             results.append({
                 'date': dt, 'type': 'continuous_fartlek',
                 'rep_dist': int(total_m), 'rep_count': 1,
@@ -259,7 +269,12 @@ def decompose(daily_df):
             'pace_per_mile': pace_per_mile, 'rest_per_mile': rest_per_mile,
         })
 
-    return pd.DataFrame(results), pd.DataFrame(pruned)
+    # Explicit columns so an empty result (a profile with no quality workouts,
+    # e.g. a watch import of all easy runs) is still a well-formed frame the
+    # caller can sort/write rather than a column-less DataFrame.
+    decomp_cols = ['date', 'type', 'rep_dist', 'rep_count',
+                   'pace_per_mile', 'rest_per_mile']
+    return pd.DataFrame(results, columns=decomp_cols), pd.DataFrame(pruned)
 
 
 def main():
@@ -269,6 +284,10 @@ def main():
                         'failed to decompose) into output/debug/. Off by '
                         'default — the file is informational and not '
                         'consumed by anything downstream.')
+    p.add_argument('--continuous-fartlek-only', action='store_true',
+                   help='Watch-import profiles: classify every no-rest fartlek '
+                        '>=4000m as continuous_fartlek, never splitting into '
+                        'intervals by distance.')
     args = p.parse_args()
 
     src = DATA_DIR / 'daily.csv'
@@ -278,7 +297,8 @@ def main():
         )
     print(f'Source: {src}')
     daily = pd.read_csv(src)
-    decomposed, pruned = decompose(daily)
+    decomposed, pruned = decompose(
+        daily, continuous_fartlek_only=args.continuous_fartlek_only)
 
     decomposed = decomposed.sort_values('date').reset_index(drop=True)
     pruned = pruned.sort_values('date').reset_index(drop=True) if len(pruned) else pruned
