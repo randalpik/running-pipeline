@@ -53,8 +53,11 @@ FILTER_BINS = [
 ]
 
 PRE_2016_VERIFIED_MILES = 1419
-SHOE_GAP_DAYS = 180  # 6 months for the training-shoe mileage cutoff
 TRAINING_SHOE_RUN_THRESHOLD = 3  # consecutive recovery runs to qualify
+# The current pair's mileage block ends once this many recovery runs in a row
+# use a different shoe. Counting *runs* (not days) means a no-running gap can't
+# split a pair, and it works whether or not asterisks disambiguate the model.
+SHOE_BLOCK_DIFF_RUNS = 14
 
 # Short-distance correction matching make_race_plots.py — track distances
 # below 800m get stretched because the CS+D' model under-predicts time
@@ -179,7 +182,8 @@ def compute_stats(daily, races, now_utc):
     rec = rec.dropna(subset=['shoes_clean']).sort_values('date').reset_index(drop=True)
     training_shoe = _find_training_shoe(rec)
     if training_shoe is not None:
-        training_miles = _shoe_mileage_with_gap(daily, training_shoe, last_log_date)
+        training_miles = _current_shoe_block_miles(
+            daily, rec, training_shoe, last_log_date)
     else:
         training_miles = None
 
@@ -226,27 +230,33 @@ def _find_training_shoe(rec):
     return None
 
 
-def _shoe_mileage_with_gap(daily, shoe, last_log_date):
-    """Sum miles for the given shoe walking backwards from last_log_date,
-    stopping when last_seen - row.date > SHOE_GAP_DAYS (i.e. we've crossed
-    a 6-month gap during which this shoe wasn't worn — we're in a previous
-    physical pair's era)."""
+def _current_shoe_block_miles(daily, rec, shoe, last_log_date):
+    """Miles on the *current physical pair* of `shoe`.
+
+    Walk recovery runs latest-first (`rec` is sorted ascending with a
+    `shoes_clean` column). The current block extends back until we hit
+    SHOE_BLOCK_DIFF_RUNS recovery runs in a row in a different shoe — counting
+    runs, not days, so a stretch of not running never splits a pair. Then sum
+    every daily mile in `shoe` from the block's first day through the last log
+    date, which naturally excludes earlier pairs of the same model."""
+    block_start = None
+    diff_streak = 0
+    for r in rec.iloc[::-1].itertuples(index=False):
+        if r.shoes_clean == shoe:
+            diff_streak = 0
+            block_start = r.date.date() if hasattr(r.date, 'date') else r.date
+        else:
+            diff_streak += 1
+            if diff_streak >= SHOE_BLOCK_DIFF_RUNS:
+                break
+    if block_start is None:
+        return 0.0
     df = daily.copy()
     df['shoes_clean'] = df['shoes'].map(scrub_asterisk)
-    df = df[df['date'] <= pd.Timestamp(last_log_date)].sort_values(
-        'date', ascending=False).reset_index(drop=True)
-    total = 0.0
-    last_seen = None
-    for row in df.itertuples(index=False):
-        miles = float(row.miles) if not pd.isna(row.miles) else 0.0
-        rdate = row.date.date() if hasattr(row.date, 'date') else row.date
-        if row.shoes_clean == shoe:
-            total += miles
-            last_seen = rdate
-        else:
-            if last_seen is not None and (last_seen - rdate).days > SHOE_GAP_DAYS:
-                break
-    return total
+    mask = ((df['shoes_clean'] == shoe)
+            & (df['date'] >= pd.Timestamp(block_start))
+            & (df['date'] <= pd.Timestamp(last_log_date)))
+    return float(df.loc[mask, 'miles'].sum())
 
 
 def _find_racing_shoe(races):
