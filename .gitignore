@@ -13,7 +13,3 @@ site/node_modules/
 site/dist/*
 !site/dist/login.html
 !site/dist/admin.html
-
-# pronoun-guard
-scripts/pronoun_guard.py
-.pronoun_guard.log

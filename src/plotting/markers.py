@@ -26,6 +26,34 @@ def pr_marker(base_size):
     )
 
 
+# Plotly renders the 'diamond' symbol at radius (size/2)*1.3 — it up-scales
+# diamonds ~1.3× vs circles for visual parity — so a diamond's half-width is
+# 0.65*size, NOT size/2. 'circle' (and most others) use radius size/2.
+PLOTLY_DIAMOND_SCALE = 1.3
+
+
+def marker_half_px(base_size, *, symbol='diamond', ringed=False, line_width=0.0):
+    """Half the RENDERED width (px) of a marker — for axis edge-padding so the
+    leftmost/rightmost markers aren't clipped.
+
+    Accounts for the Plotly diamond up-scale (see ``PLOTLY_DIAMOND_SCALE``): a
+    diamond's half-width is ``0.65*size``, a circle's is ``size/2``. The
+    marker's own outline (``line_width``) straddles the path, so half of it sits
+    outside the symbol on each side.
+
+    ``ringed=True`` sizes for the PR overlay ring instead — diameter
+    ``base_size + PR_RING_PADDING`` with a ``PR_LINE_WIDTH`` outline. The
+    leftmost race marker is always a PR, so on race plots its ring is what must
+    clear the edge.
+    """
+    if ringed:
+        size, line = base_size + PR_RING_PADDING, PR_LINE_WIDTH
+    else:
+        size, line = base_size, line_width
+    scale = PLOTLY_DIAMOND_SCALE if symbol == 'diamond' else 1.0
+    return size / 2.0 * scale + line / 2.0
+
+
 # Surfaces excluded from PR eligibility. Downhill races (net-downhill,
 # course-aided) project to absurdly fast 5K-equivalents that would
 # dominate the running-min sequence and invalidate every subsequent

@@ -19,14 +19,14 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import daily_floor, pad_range
+from src.shared.plot_window import daily_floor, axis_pad_entry
 from src.shared.workouts import load_cs, project_long_runs
 from src.shared.cs_projection import load_cs_outputs, cs_line_at_anchor
 from src.plotting import widgets
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box, route_paren,
                             sec_to_mss, GRID, CAT_COLORS, CS_LINE, rgba,
-                            yearly_x_axis_kwargs, nice_time_ticks)
+                            yearly_x_axis_kwargs, nice_time_ticks, marker_half_px)
 
 # Width of the distance-gradient box (#lr-gradient); also used to size margin.r.
 # Holds a 160px gradient bar with 10px horizontal padding + 1px border per side.
@@ -147,6 +147,11 @@ def main():
     tickvals = [t / 60.0 for t in _ticks_sec]
     y_min, y_max = tickvals[0], tickvals[-1]
 
+    # Tight date range (first daily run → last long run); the half-marker pixel
+    # gutter is added at render time by axis_pad.js and re-applied on resize.
+    lr_lo, lr_hi = daily_floor(), lr['date'].max()
+    axis_pad_lr = [axis_pad_entry(lr_lo, lr_hi, marker_half_px(8, symbol='circle', line_width=0.5))]
+
     apply_default_layout(
         fig,
         margin=dict(t=20, l=70,
@@ -155,10 +160,7 @@ def main():
         hovermode=False,
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     font=dict(size=11)),
-        xaxis=yearly_x_axis_kwargs(
-            *pad_range(daily_floor(), lr['date'].max()),
-            title='Date',
-        ),
+        xaxis=yearly_x_axis_kwargs(lr_lo, lr_hi, title='Date'),
         yaxis=dict(title='Pace (min/mi)',
                    range=[y_max, y_min],
                    tickmode='array', tickvals=tickvals, ticktext=ticktext,
@@ -191,7 +193,7 @@ def main():
 
     # ---------- cursor-tooltip payload ----------
     js_epoch = pd.Timestamp('1970-01-01')
-    plot_start, plot_end = pad_range(daily_floor(), lr['date'].max())
+    plot_start, plot_end = lr_lo, lr_hi
     all_days   = pd.date_range(plot_start, plot_end, freq='D')
 
     # Per-day HM and marathon CS pace (min/mi) for the smooth-mode tooltip.
@@ -299,6 +301,7 @@ function buildTooltip(day, isSnap, pointHtml) {
             last_day=last_day,
         ),
         overlay_html=overlay_html,
+        axis_pad=axis_pad_lr,
     )
     print(f'Wrote {OUT_HTML}  ({len(lr)} long runs, '
           f'miles {miles.min():.1f}–{miles.max():.1f})')

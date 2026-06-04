@@ -4,7 +4,9 @@ Operational guidance for Claude Code working in this repo. For project-level con
 
 This is a personal running-data pipeline: parsers and transformations turning daily training logs into analysis-ready CSVs and HTML plots. Owner: Max.
 
-> **People — pronouns (non-negotiable):** **Maddy uses they/them.** Maddy is Max's partner and the second dashboard runner (the `maddy` profile). Always use they/them when referring to Maddy, in prose, code comments, and commit messages. Never she/her or he/him.
+> **People — pronouns (non-negotiable):** **Maddy uses they/them.** Maddy is Max's partner and the second dashboard runner (the `maddy` profile).
+>
+> The rule is a **bright line, not a substitution exercise**: emit **zero gendered third-person pronouns for Maddy** — never she/her or he/him — in prose, code comments, and commit messages, **including when discussing this rule itself**. Default to the name ("Maddy", "Maddy's") or they/them. In dense technical passages — where the lapse reliably happens, because attention is on the substance and the pronoun fires reflexively — prefer the proper noun and restructure sentences to avoid third-person pronouns for people entirely. Treat any pronoun token next to "Maddy" as a stop-and-check before emitting it. This is binary: a gendered pronoun for Maddy is a clean failure, full stop. (There is no longer a Stop-hook guard for this — it was removed as ineffective; correctness is on the generation, not a backstop.)
 
 ## Working agreements
 

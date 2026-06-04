@@ -13,7 +13,7 @@ from .axes import (thin_yearly_ticks, yearly_x_axis_kwargs,
                    nice_time_interval, time_ticks_at_interval, nice_time_ticks,
                    TIME_LADDER)
 from .markers import (
-    pr_marker, is_pr_eligible,
+    pr_marker, is_pr_eligible, marker_half_px,
     PR_EXCLUDED_SURFACES, PR_LEGEND_NAME, PR_LEGEND_RANK,
     PR_LINE_WIDTH, PR_RING_PADDING, PR_LINE_COLOR,
 )
@@ -31,7 +31,7 @@ __all__ = [
     'route_label', 'route_paren',
     'thin_yearly_ticks', 'yearly_x_axis_kwargs',
     'nice_time_interval', 'time_ticks_at_interval', 'nice_time_ticks', 'TIME_LADDER',
-    'pr_marker', 'is_pr_eligible',
+    'pr_marker', 'is_pr_eligible', 'marker_half_px',
     'PR_EXCLUDED_SURFACES', 'PR_LEGEND_NAME', 'PR_LEGEND_RANK',
     'PR_LINE_WIDTH', 'PR_RING_PADDING', 'PR_LINE_COLOR',
     'GAP_BREAK_DAYS', 'adaptive_gauss_smoother', 'gaussian_rolling_trend',

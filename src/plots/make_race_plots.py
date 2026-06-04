@@ -39,14 +39,14 @@ from plotly.subplots import make_subplots
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import pad_range, first_race_date
+from src.shared.plot_window import data_span, axis_pad_entry
 from src.shared.cs_projection import (load_cs_outputs, project_races_to_5k_pace,
                                        cs_line_at_anchor, cubic_at_anchor)
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box,
                             sec_to_mss, sec_to_mss_full,
                             SURFACES, CS_LINE, CS_LINE_WIDTH, GRID,
-                            pr_marker, is_pr_eligible,
+                            pr_marker, is_pr_eligible, marker_half_px,
                             PR_LEGEND_NAME, PR_LEGEND_RANK,
                             yearly_x_axis_kwargs, nice_time_ticks)
 from src.plotting import widgets
@@ -563,16 +563,22 @@ def main():
     elig['filter_bin']   = elig['distance_m'].apply(classify_filter_bin)
     elig['hover']        = elig.apply(build_hover, axis=1)
 
-    # X-axis range: from the first race to today, with a small (≈pixel) pad so
-    # the first/last race markers aren't clipped — no big empty left margin.
-    _today = pd.Timestamp(dt.date.today())
-    _fr = first_race_date()
-    x_lo, x_hi = pad_range(_fr if _fr is not None else _today, _today)
+    # X-axis range: the TIGHT data span (union of races + daily runs, so it
+    # tracks the latest run, never just the last race). The visible gutter that
+    # keeps the first/last diamond from clipping is added in pixels at render
+    # time by _scaffold/axis_pad.js and re-applied on resize. The CS line is
+    # drawn over the full (margin-extended) summary and clipped at these bounds,
+    # so it always reaches both edges.
+    x_lo, x_hi = data_span()
+    ALL_MARKER = 9
+    # Leftmost diamond is the first race — always a PR — so size the gutter for
+    # the PR ring (the widest thing on the axis).
+    axis_pad_all = [axis_pad_entry(x_lo, x_hi, marker_half_px(ALL_MARKER, ringed=True))]
 
     # ---------- plot 1: all races, single panel, with distance-filter checkboxes ----------
     fig1 = go.Figure()
     add_cs_line_blended(fig1, daily_summary, elig['date'])
-    add_race_traces_filterable(fig1, elig, marker_size=9)
+    add_race_traces_filterable(fig1, elig, marker_size=ALL_MARKER)
     add_pr_overlay_filterable(fig1, elig, value_col='pace_norm_min')
 
     # Data-driven y-bounds from the plotted race paces (the markers the axis
@@ -703,6 +709,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         ),
         overlay_html=filter_ui,
         overlay_js_files=[_FILTER_JS],
+        axis_pad=axis_pad_all,
     )
     print(f'Wrote {out1}')
 
