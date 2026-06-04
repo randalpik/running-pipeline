@@ -22,6 +22,7 @@ _SCAFFOLD_DIR = Path(__file__).resolve().parent / '_scaffold'
 _BASE_CSS = (_SCAFFOLD_DIR / 'base.css').read_text()
 _CURSOR_TOOLTIP_JS = (_SCAFFOLD_DIR / 'cursor_tooltip.js').read_text()
 _OVERLAY_ANCHOR_JS = (_SCAFFOLD_DIR / 'overlay_anchor.js').read_text()
+_AXIS_PAD_JS = (_SCAFFOLD_DIR / 'axis_pad.js').read_text()
 
 # Tiny iframe-side script: forward Alt+ArrowLeft/Right to the host shell so
 # tab cycling keeps working when focus is inside the plot. Skipped when the
@@ -122,6 +123,7 @@ def render_plot(
     overlay_js_files: Optional[list] = None,
     extra_head_css: str = '',
     extra_head_css_files: Optional[list] = None,
+    axis_pad: Optional[list] = None,
     plotly_config: Optional[dict] = None,
 ) -> Path:
     """Write ``fig`` as a self-contained HTML document at ``out_path``.
@@ -165,6 +167,14 @@ def render_plot(
         ``extra_head_css``. Use for plot-specific rules that don't
         generalize into shared ``_scaffold/base.css`` (e.g. geography's
         legend tree).
+    axis_pad : list[dict] | None
+        Opt-in pixel-accurate x-axis edge padding. Each dict is
+        ``{'axis': 'xaxis', 'loMs': int, 'hiMs': int, 'halfPx': float}``
+        where ``loMs``/``hiMs`` are the TIGHT data range as epoch-ms and
+        ``halfPx`` is half the widest edge marker (so edge diamonds aren't
+        clipped). Set the figure's axis range to the same tight ``[loMs, hiMs]``;
+        the injected ``_scaffold/axis_pad.js`` converts ``halfPx`` to a date
+        delta from the rendered pixel width and re-pads on window resize.
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,6 +216,11 @@ def render_plot(
             )
     if cursor_tooltip is not None:
         body_pre_close_parts.append(_render_cursor_tooltip(cursor_tooltip))
+    if axis_pad:
+        body_pre_close_parts.append(
+            f'<script>\nwindow.__PLOT_AXIS_PAD = {json.dumps(axis_pad)};\n'
+            f'{_AXIS_PAD_JS}\n</script>'
+        )
 
     body_pre_close = '\n'.join(body_pre_close_parts)
 

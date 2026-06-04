@@ -95,9 +95,9 @@ from plotly.subplots import make_subplots
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import daily_floor, pad_range
+from src.shared.plot_window import daily_floor, axis_pad_entry
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            sec_to_mss, FG, route_label,
+                            sec_to_mss, FG, route_label, marker_half_px,
                             CS_LINE, CS_LINE_WIDTH, TREND_LINE, TREND_WIDTH,
                             GRID, gaussian_rolling_trend,
                             yearly_x_axis_kwargs, nice_time_ticks,
@@ -270,10 +270,21 @@ def main():
     # Recovery subset
     rec = daily[daily['run_type'] == 'recovery'].copy()
     rec = rec.dropna(subset=['recovery_pace_sec_per_mi'])
-    rec = rec.merge(cs_summary[['date', 'cs_pace_sec']], on='date', how='left')
-    rec = rec.dropna(subset=['cs_pace_sec'])
     rec = rec.sort_values('date').reset_index(drop=True)
-    print(f'  {len(rec)} recovery days with valid pace and CS')
+    # CS belief at each run's date via np.interp, which HOLDS the endpoint value
+    # beyond the CS summary's range — the same extrapolation add_cs() uses for
+    # every other plot. A run is therefore never dropped for lack of an exact
+    # CS-date match, so recovery stays current even if the Bayesian fit is
+    # stale. With the fit now spanning the full run history (bayes_cs_fit grid),
+    # the lookup is in-range in the common case; the hold-last is the safety net
+    # that previously caused recent runs to vanish (when this was a merge+dropna).
+    _epoch = pd.Timestamp('1970-01-01')
+    rec['cs_pace_sec'] = np.interp(
+        (rec['date'] - _epoch).dt.days.to_numpy(),
+        (cs_summary['date'] - _epoch).dt.days.to_numpy(),
+        cs_summary['cs_pace_sec'].values,
+    )
+    print(f'  {len(rec)} recovery days with valid pace')
 
     # Features (sleep_centered and miles_centered are intentionally NOT computed)
     rec['temp_centered'] = rec['temp_c'] - TEMP_REFERENCE_C
@@ -449,8 +460,16 @@ def main():
     rec['contrib_era'] = rec['era_trend'].fillna(global_mean_residual) - global_mean_residual
 
     # ---------- build figure ----------
-    cs_for_plot = cs_summary[(cs_summary['date'] >= rec['date'].min()) &
-                              (cs_summary['date'] <= rec['date'].max())].copy()
+    # Daily CS reference series across the full recovery range, hold-last
+    # extrapolated past the summary's end (np.interp) so the CS line and the JS
+    # per-day grid cover recent runs even if the fit ended before the last run.
+    cs_grid = pd.date_range(rec['date'].min(), rec['date'].max(), freq='D')
+    cs_for_plot = pd.DataFrame({
+        'date': cs_grid,
+        'cs_pace_sec': np.interp((cs_grid - _epoch).days.to_numpy(),
+                                 (cs_summary['date'] - _epoch).dt.days.to_numpy(),
+                                 cs_summary['cs_pace_sec'].values),
+    })
 
     def build_hover(row):
         # Per-run HTML for the smart-spikeline scaffold's snap mode and the
@@ -607,9 +626,13 @@ def main():
     ), row=1, col=2)
 
     # ---------- axes ----------
-    # Small (≈ constant-pixel) pad rather than a fixed 30 days, so edge points
-    # aren't clipped without a big empty month at short (6-month) scales.
-    x_lo, x_hi = pad_range(rec['date'].min(), rec['date'].max())
+    # Tight data range; the half-marker pixel gutter (so edge dots aren't
+    # clipped) is added at render time by axis_pad.js and re-applied on resize.
+    # Both panels share the date axis, so pad xaxis and xaxis2 alike.
+    x_lo, x_hi = rec['date'].min(), rec['date'].max()
+    _rec_half_px = marker_half_px(4.5, symbol='circle')
+    axis_pad_rec = [axis_pad_entry(x_lo, x_hi, _rec_half_px, axis='xaxis'),
+                    axis_pad_entry(x_lo, x_hi, _rec_half_px, axis='xaxis2')]
 
     # Absolute-pace axis: nice ticks over the central 99.8% of recovery paces,
     # clamped to a sane [3:00, 12:00] window. target=7 → the former 30s spacing
@@ -845,6 +868,7 @@ function buildTooltip(day, isSnap, pointHtml) {
                 available_norm=_available_norm_factors(rec, qualifying_routes))
         ),
         overlay_js_files=[_RECOVERY_JS],
+        axis_pad=axis_pad_rec,
         extra_head_css=(
             # Suppress Plotly's built-in hover label — recovery has
             # hoverlabel-configured traces that would otherwise double

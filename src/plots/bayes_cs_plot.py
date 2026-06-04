@@ -38,11 +38,11 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import pad_range, first_race_date
+from src.shared.plot_window import data_span, first_race_date, axis_pad_entry
 from src.shared.cs_projection import load_cs_outputs, project_races_to_5k_pace
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             sec_to_mss, sec_to_mss_full, SURFACES, rgba, GRID,
-                            yearly_x_axis_kwargs, nice_time_ticks)
+                            yearly_x_axis_kwargs, nice_time_ticks, marker_half_px)
 
 
 DEFAULT_IN_DIR = str(DATA_DIR)
@@ -130,6 +130,14 @@ def main():
                     .copy().reset_index(drop=True))
     elig_plot = elig[elig['date'] >= window_start].copy()
     print(f'Plot window: {len(summary_plot)} daily points (from {window_start.date()})')
+
+    # X-axis bounds: left at the (possibly hardcoded) window_start, right at the
+    # latest logged run (data_span union), so the axis tracks current data — not
+    # the last race, not the margin-extended fit grid. The CS line/band is drawn
+    # over the full margin-extended summary and clipped here, so it reaches the
+    # right edge; the pixel gutter (half a race diamond) is added by axis_pad.js.
+    x_lo = window_start
+    _, x_hi = data_span()
 
     elig_plot = project_races_to_5k_pace(
         elig_plot, summary_plot, beta_long_med, d_thresh_long,
@@ -236,10 +244,7 @@ def main():
         fig,
         margin=dict(t=20, l=70, r=200, b=60),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02, groupclick='toggleitem'),
-        xaxis=yearly_x_axis_kwargs(
-            *pad_range(window_start, summary_plot['date'].iloc[-1]),
-            title='Date',
-        ),
+        xaxis=yearly_x_axis_kwargs(x_lo, x_hi, title='Date'),
         yaxis=dict(title='Pace (min/mi)', range=[y_max, y_min],
                    tickmode='array', tickvals=ytick_vals, ticktext=ytick_txt,
                    showgrid=True, gridcolor=GRID))
@@ -367,6 +372,9 @@ function buildTooltip(day, isSnap, pointHtml) {
             first_day=first_day,
             last_day=last_day,
         ),
+        # Race diamonds here are not PR-ringed (only the Races plot rings them);
+        # size the gutter for the bare size-8 diamond and its 0.3px outline.
+        axis_pad=[axis_pad_entry(x_lo, x_hi, marker_half_px(8, line_width=0.3))],
     )
     print(f"Wrote {out_html}")
 

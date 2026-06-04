@@ -48,9 +48,11 @@ import arviz as az
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, DEBUG_DIR
+from src.shared.plot_window import pad_range
 
 
 DEFAULT_RACES   = str(DATA_DIR / 'races.csv')
+DEFAULT_DAILY   = str(DATA_DIR / 'daily.csv')
 DEFAULT_OUT_DIR = str(DATA_DIR)
 
 
@@ -261,6 +263,10 @@ def main():
     p = argparse.ArgumentParser(description=(__doc__ or '').split('\n\n')[0])
     p.add_argument('--races', default=DEFAULT_RACES,
                    help=f'Path to races.csv (default: {DEFAULT_RACES})')
+    p.add_argument('--daily', default=DEFAULT_DAILY,
+                   help=f'Path to daily.csv (default: {DEFAULT_DAILY}). Used '
+                        'only to extend the inference grid to cover the latest '
+                        'logged run (not just the latest race).')
     p.add_argument('--out-dir', default=DEFAULT_OUT_DIR,
                    help=f'Output directory (default: {DEFAULT_OUT_DIR})')
     p.add_argument('--grid-step', type=int, default=7,
@@ -364,8 +370,25 @@ def main():
         print(f"XC pre-correction disabled (--xc-correction 0); {n_xc} XC races kept as-is")
 
     # ---------- inference grid ----------
-    first_d = elig['date'].min()
-    last_d  = max(elig['date'].max(), dt.date.today())
+    # Span the UNION of eligible-race dates and daily-run dates, padded ~2% on
+    # each side. This (a) covers every logged run — not just the last race — so
+    # the CS posterior is defined wherever a recovery/quality run exists, and
+    # (b) extends a little past both data ends so downstream plots can draw the
+    # CS line all the way to their axis edges. The HSGP long-trend extrapolates
+    # cleanly into the margin (see the model boundary comment below).
+    span_lo = pd.Timestamp(elig['date'].min())
+    span_hi = pd.Timestamp(elig['date'].max())
+    if os.path.exists(args.daily):
+        daily_df = pd.read_csv(args.daily, parse_dates=['date'])
+        if len(daily_df):
+            span_lo = min(span_lo, pd.Timestamp(daily_df['date'].min()))
+            span_hi = max(span_hi, pd.Timestamp(daily_df['date'].max()))
+    else:
+        print(f"WARNING: daily CSV not found at {args.daily}; "
+              f"grid spans eligible races only.", file=sys.stderr)
+    pad_lo, pad_hi = pad_range(span_lo, span_hi, 0.02)
+    first_d = pad_lo.date()
+    last_d  = pad_hi.date()
     grid_dates = []
     d = first_d
     while d <= last_d:

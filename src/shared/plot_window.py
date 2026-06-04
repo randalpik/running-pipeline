@@ -42,6 +42,41 @@ def pad_range(lo, hi, frac: float = 0.02):
     return lo - pad, hi + pad
 
 
+def data_span(daily=None, races=None):
+    """``(min, max)`` Timestamps over the **union** of daily and race dates.
+
+    The authoritative data range for a profile: the earliest and latest date
+    appearing in *either* ``daily.csv`` or ``races.csv``. Race/fitness plots use
+    this so their x-range tracks the latest *run* (not the latest race — a
+    profile that hasn't raced recently must not get stuck), and the CS fit uses
+    it so the model grid covers every logged run. Either frame may be passed
+    pre-loaded (profile paths); ``None`` reads the default ``data/`` files like
+    :func:`daily_floor` / :func:`first_race_date`.
+    """
+    if daily is None:
+        daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
+    if races is None:
+        path = DATA_DIR / 'races.csv'
+        races = pd.read_csv(path, parse_dates=['date']) if path.exists() else None
+    dates = [daily['date']]
+    if races is not None and len(races):
+        dates.append(races['date'])
+    alld = pd.concat(dates)
+    return pd.Timestamp(alld.min()), pd.Timestamp(alld.max())
+
+
+def axis_pad_entry(lo, hi, half_px, axis='xaxis'):
+    """One ``render_plot(axis_pad=[...])`` entry from a TIGHT ``[lo, hi]`` date
+    range and a half-marker pixel pad. ``loMs``/``hiMs`` are epoch-ms (what the
+    ``_scaffold/axis_pad.js`` resize handler reads). Set the figure's axis range
+    to this same tight ``[lo, hi]``; the JS adds the pixel gutter at render time.
+    """
+    return {'axis': axis,
+            'loMs': int(pd.Timestamp(lo).value // 1_000_000),
+            'hiMs': int(pd.Timestamp(hi).value // 1_000_000),
+            'halfPx': float(half_px)}
+
+
 def first_race_date(races=None):
     """Earliest race date (Timestamp), or None if there are no races."""
     if races is None:

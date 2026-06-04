@@ -24,6 +24,27 @@ python scripts/dev.py                        # http://localhost:5500
 
 `scripts/dev.py` watches `src/plots/*.py` and reruns only the affected plot on save (plus any plots that import a changed shared helper). Edits to `src/plotting/**` or `data/*.csv` rerun everything.
 
+## Profiles (multi-runner builds)
+
+`scripts/run_pipeline.sh` builds **only the default profile** (Max, sourced from Drive). Additional runners — e.g. Maddy (Coros) — are built by `scripts/build_profiles.py`, which routes each profile to its own data source, renders its plots, and stages it under `site/dist/profiles/<id>/`. Profiles are declared in `src/profiles.py`.
+
+```bash
+# Build one profile end-to-end (data sync → dataset → plots → stage)
+python scripts/build_profiles.py --only maddy            # reuse cached CS fit
+python scripts/build_profiles.py --only maddy --fit      # also rerun the Bayesian CS fit
+python scripts/build_profiles.py --fit                   # every profile, with fit
+```
+
+Coros profiles need their watch credentials in the environment (`COROS2_EMAIL` / `COROS2_PASSWORD` for Maddy — see `src/profiles.py`) and the race-sheet sync needs the Drive service account (`GOOGLE_APPLICATION_CREDENTIALS`); without them the profile is skipped cleanly.
+
+To **re-run only the CS fit** for one profile against its existing local data — no Drive/Coros sync, no credentials, useful for verifying a model change — point the fit at that profile's data dir:
+
+```bash
+RP_DATA_DIR=data/profiles/maddy python src/models/bayes_cs_fit.py
+```
+
+It reads that dir's `races.csv` + `daily.csv` and writes its `bayes_cs_*.csv` back into it. `RP_DATA_DIR` / `RP_OUTPUT_DIR` reroute every script per profile (see `src/shared/paths.py`), so the same flag works for plots too (e.g. `RP_DATA_DIR=data/profiles/maddy RP_OUTPUT_DIR=output/profiles/maddy python src/plots/make_recovery_plots.py`).
+
 ## Repo layout
 
 ```
