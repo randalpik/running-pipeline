@@ -679,7 +679,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         model_rows += [
             ('temp, per °C (ref 12)',
              f'{lr_fit.cov_coefs["temp_centered"]:+.2f}'),
-            (f'marathon fatigue, peak ({lr_fit.fatigue_ratio:.2g}× short)',
+            (f'marathon fatigue, peak',
              f'{lr_fit.cov_coefs["fat_marathon"]:+.1f}'),
             ('short-race fatigue, peak',
              f'{lr_fit.cov_coefs["fat_race_short"]:+.1f}'),
@@ -690,7 +690,8 @@ function buildTooltip(day, isSnap, pointHtml) {
             widgets.title('Long-run model (sec/mi)')
             + widgets.subtitle(
                 f'intercept {lr_fit.intercept:+.1f} at '
-                f'{lr_fit.elev_ref:.0f} ft/mi, sea level')
+                f'{lr_fit.elev_ref:.0f} ft/mi, sea level; '
+                f'marathon fatigue pinned at {lr_fit.fatigue_ratio:.2f}× short race')
             + widgets.table(('Term', 'β'), model_rows,
                             align=('left', 'right'))
         ),

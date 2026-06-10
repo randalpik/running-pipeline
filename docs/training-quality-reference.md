@@ -25,13 +25,30 @@ sits next to CS without feeding back into it.
 - **No β_long anywhere.** β_long encodes max-effort long-distance fade,
   doesn't apply to sub-max efforts. Including it would inflate fitness
   implications beyond what the data demonstrates.
-- **Long-run scope is `[12.0, 25.3]` miles; distance carries no model
-  term (June 2026).** The floor was lowered from 15.1 in June 2026: the
-  residual cliff sits at ~12 mi (sub-12 labeled-long runs — the 2016–17
-  subjective "long" days — run ~90 s/mi off CS, while 12–15 mi runs at
-  ~40-55 s/mi match same-era in-slice runs), and the 12–15.1 band adds
-  ~88 runs concentrated in the otherwise near-empty 2017–2019 years.
-  The upper bound trims the small-n marathon-distance fade regime. The 21mi internal bin's
+- **Long-run scope is `duration ≥ 80 min AND miles < 26.2`, global
+  across profiles; distance carries no model term (June 2026).** The
+  bounds deliberately mix units because they encode different
+  mechanisms. The floor is physiological — a run is "long" once
+  fueling/hydration become a real concern, which onsets by duration
+  regardless of pace — and the residual cliff is razor-sharp at 80 min
+  (median raw_resid ~95–105 s/mi below, ~15–42 above; holds within-era,
+  so it's not a fitness-mix artifact). The ceiling encodes training
+  purpose: a non-race run at marathon distance or beyond is an endurance
+  event or informal sub-max time trial, not marathon race prep — true
+  regardless of run time, which is why it's distance, not a time cap
+  that would bias toward fast runners (20 mi at 9:00/mi is 180 min of
+  textbook prep). The ceiling makes the app's marathon-focused-runner
+  assumption explicit (already implicit in fatigue categories, the
+  dashboard 20 mi card, the CS marathon-pace curve). Strict `< 26.2`
+  against logged miles — training marathons are logged as exactly 26.2;
+  don't derive the cap from 42195 m (= 26.219 mi). This superseded two
+  short-lived June 2026 distance slices ([15.1, 25.3], then [12.0,
+  25.3]); on Max's data the time floor and the distance floor at 12
+  select near-identical sets (the cliff is the same population) and the
+  fits are statistically indistinguishable. The earlier floor analysis:
+  sub-cliff labeled-long runs are 2016–17 subjective "long" days, and
+  the cliff-to-15.1 band added ~88 runs concentrated in the otherwise
+  near-empty 2017–2019 years. The 21mi internal bin's
   coefficient collapsed from ~+20 to +3.5 when route dummies were
   removed (it was mostly route/era mix), and a fresh sweep under the
   physical model found bin@21 *worse*
@@ -131,13 +148,14 @@ Per workout (in the plot pipeline):
 
 ### Stage 3 — Long run projection
 
-Filter: `run_type == 'long'` AND `miles ∈ [12.0, 25.3]`. The slice replaces
-the earlier `miles ≥ 20` cutoff: lower bound separates honest long-run
-effort from shorter mid-week aerobic work (the residual cliff sits at
-~12 mi — see "Decisions locked in"); upper bound trims the small-n
-marathon-distance fade regime that would otherwise need its own bin.
-Out-of-scope long runs aren't displayed in the plot and don't feed the
-smoother.
+Filter: `run_type == 'long'` AND `duration ≥ 80 min` AND `miles < 26.2`
+(`LONG_MIN_MINUTES` / `LONG_CEIL_MILES` in `workouts.py`, global across
+profiles; duration = pace × miles, the same quantity the projection
+uses). The time floor separates honest long-run effort from shorter
+aerobic work at the fueling threshold; the distance ceiling excludes
+marathon-distance-plus endurance events that aren't race prep — see
+"Decisions locked in" for both rationales. Out-of-scope long runs
+aren't displayed in the plot and don't feed the smoother.
 
 Per in-scope long run:
 1. `t_run = recovery_pace_sec_per_mi · miles` (seconds)

@@ -2,7 +2,7 @@
 plot_long_runs.py — Qualitative "every long run" plot at absolute pace.
 
 Shows every `run_type == 'long'` session — including those outside the TQ
-model's [LONG_FLOOR, LONG_CEIL] slice — at absolute pace (no 5K-equivalent
+model's [LONG_MIN_MINUTES, LONG_CEIL_MILES) slice — at absolute pace (no 5K-equivalent
 projection, no per-route correction). Two CS-derived reference curves give
 the equivalent half-marathon and marathon paces from the model: how fast a
 given fitness predicts you could run those distances.

@@ -9,7 +9,8 @@ both consumers can share the same upstream pipeline.
 Excluded reasons used:
     - 'snow'              : snow in workout_raw or conditions
     - 'rep_anaerobic'     : type == 'rep' (Training drops; Workouts shows w/ offset)
-    - 'long_out_of_slice' : long run with miles outside [LONG_FLOOR, LONG_CEIL]
+    - 'long_out_of_slice' : long run under LONG_MIN_MINUTES or at/over
+                            LONG_CEIL_MILES
     - 'hc_rep_hybrid'     : 2016-09 hybrid 'hc/rep' sessions
     - 'hc_loop_other'     : hill_cont on a loop outside HC_LOOPS (n<7)
 
@@ -19,7 +20,6 @@ on top). Workouts plot keeps all rows.
 """
 from __future__ import annotations
 
-import os
 import re
 
 import numpy as np
@@ -35,27 +35,30 @@ CS_PATH       = DATA_DIR / 'bayes_cs_summary.csv'
 
 # ---------- pipeline parameters ----------
 TAU = 210.0
-# Max's hand-tuned long-run distance slice; other profiles use
-# long_slice_bounds()'s permissive fallback — see below. The floor sits at
-# the residual cliff: labeled-long runs under ~12 mi (2016–17 subjective
-# "long" days) run ~90 s/mi off CS vs ~40-55 for 12–15 mi, which behave
-# like same-era in-slice long runs. Lowered 15.1 → 12.0 in June 2026 to
-# pull in ~88 runs concentrated in the sparse 2017–2019 years.
-LONG_FLOOR = 12.0
-LONG_CEIL  = 25.3
-
-
-def long_slice_bounds():
-    """[floor, ceil] miles for the long-run model, per profile.
-
-    Max keeps his hand-tuned slice (LONG_FLOOR/LONG_CEIL). Every other profile
-    gets a permissive automated fallback: anything already classified 'long'
-    (>90 min from the watch) stays in slice and lands in a single bin, until
-    there's enough history to tune real bounds and a multi-bin split.
-    """
-    if os.environ.get('RP_PROFILE', 'max') == 'max':
-        return LONG_FLOOR, LONG_CEIL
-    return 0.0, float('inf')
+# Global long-run slice (June 2026, replacing the per-profile distance
+# slice). The two bounds deliberately mix units because they encode
+# different mechanisms:
+#
+# Floor — TIME. A run becomes "long" once fueling/hydration become a real
+# concern, which onsets by duration regardless of pace. Empirically the
+# residual cliff is razor-sharp at 80 min (median raw_resid ~95-105 s/mi
+# below, ~15-42 above) and holds within-era, so it isn't a fitness-mix
+# artifact. Duration = recovery_pace_sec_per_mi × miles / 60, the same
+# quantity the 5K-equivalent projection uses.
+#
+# Ceiling — DISTANCE, strict less-than. Filters endurance events that
+# aren't marathon race prep: a non-race run at marathon distance or
+# beyond is at most an informal sub-max time trial, regardless of how
+# long it takes. This hardcodes the app's marathon-focused-runner
+# assumption (already implicit in MARATHON_DISTANCE_M fatigue categories,
+# the dashboard's 20mi card, the CS marathon-pace curve). A time ceiling
+# would instead bias toward fast runners — a 20 mi prep run at 9:00/mi is
+# 180 min of textbook marathon prep. NOTE: compare against the LOGGED
+# miles value with the log's rounding convention (training marathons are
+# logged as exactly 26.2); deriving the cap from 42195 m (= 26.219 mi)
+# would wrongly admit them.
+LONG_MIN_MINUTES = 80.0
+LONG_CEIL_MILES  = 26.2
 
 # Route-agnostic elevation cost coefficient for hill_cont 5K-equivalent
 # projection on the Workouts plot. Subtracts time saved by climbing (sec) =
@@ -209,8 +212,8 @@ def project_long_runs(cs, epoch):
 
     snow_w = lr['workout_raw'].astype(str).str.contains('snow', case=False, na=False)
     snow_c = lr['conditions'].astype(str).str.contains('snow', case=False, na=False)
-    floor, ceil = long_slice_bounds()
-    out_of_slice = ~lr['miles'].between(floor, ceil)
+    dur_min = lr['recovery_pace_sec_per_mi'] * lr['miles'] / 60.0
+    out_of_slice = (dur_min < LONG_MIN_MINUTES) | (lr['miles'] >= LONG_CEIL_MILES)
 
     lr['excluded_reason'] = None
     lr.loc[out_of_slice, 'excluded_reason'] = 'long_out_of_slice'
