@@ -22,6 +22,8 @@ from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import daily_floor, axis_pad_entry
 from src.shared.workouts import load_cs, project_long_runs
 from src.shared.cs_projection import load_cs_outputs, cs_line_at_anchor
+from src.shared.recovery_model import (fit_recovery_model,
+                                       transferable_contributions)
 from src.plotting import widgets
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box, route_paren,
@@ -35,6 +37,7 @@ GRADIENT_BOX_WIDTH = 182
 
 OUTPUT_DIR.mkdir(exist_ok=True)
 OUT_HTML = str(OUTPUT_DIR / 'long_runs.html')
+_LR_JS = Path(__file__).resolve().parent / 'plot_long_runs.js'
 
 # Distance gradient: 3-stop blue → purple → magenta for high contrast across
 # the long-run distance range. cmin/cmax are computed from the dataset's
@@ -93,6 +96,25 @@ def main():
     pace_min = lr['recovery_pace_sec_per_mi'].astype(float) / 60.0
     miles    = lr['miles'].astype(float)
 
+    # ---------- recovery-model normalization (transferable factors) ----------
+    # Betas come from the recovery fit (shared module — the same fit the
+    # Recovery tab renders), applying only the transferable per-day factors:
+    # temperature, recent-race fatigue, time of day. Route and era stay out
+    # (recovery route betas don't transfer to long-run effort; era is a
+    # recovery-residual track). The fit input mirrors make_recovery_plots:
+    # logging-era daily rows + races.csv + the CS summary.
+    daily_all = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
+    daily_all = daily_all.sort_values('date')
+    daily_all = daily_all[daily_all['date'] >= daily_floor()].reset_index(drop=True)
+    races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
+    rec_fit = fit_recovery_model(daily_all, races, daily_summary, verbose=False)
+    norm_adj = None
+    if rec_fit is not None:
+        adj = transferable_contributions(lr, rec_fit.betas, rec_fit.quality_dates)
+        # Omit a dead checkbox (profile where every adjustment is ~0).
+        if np.abs(adj).max() > 0.05:
+            norm_adj = adj
+
     # ---------- figure ----------
     fig = go.Figure()
 
@@ -126,7 +148,9 @@ def main():
         ),
         customdata=cd,
         hoverinfo='skip',
-        meta={'snap_eligible': True},
+        meta={'role': 'long_runs',
+              'snap_eligible': True,
+              'raw_y': _y_safe(pace_min.values)},
     ))
 
     # ---------- layout ----------
@@ -186,10 +210,23 @@ def main():
         f'font-size:10.5px;color:#aaa"><span>{miles_min_int}</span>'
         f'<span>{miles_max_int}</span></div>'
     )
+    norm_section = ''
+    if norm_adj is not None:
+        norm_section = (
+            widgets.divider()
+            + widgets.checkbox_rows([('normalize', 'Normalize')],
+                                    data_attr='lrnorm', checked=False)
+            + widgets.subtitle('Subtract modeled temp, recent-race and '
+                               'time-of-day effects (recovery-fit betas).')
+        )
     overlay_html = widgets.sidebar(
-        'lr-gradient', body=gradient_bar,
+        'lr-gradient', body=gradient_bar + norm_section,
         compact=True, width_px=GRADIENT_BOX_WIDTH,
     )
+    if norm_adj is not None:
+        overlay_html = (widgets.js_globals(
+            {'LR_NORM_ADJ': [round(float(v), 2) for v in norm_adj]})
+            + '\n' + overlay_html)
 
     # ---------- cursor-tooltip payload ----------
     js_epoch = pd.Timestamp('1970-01-01')
@@ -203,9 +240,12 @@ def main():
     mar_per_day = np.interp(days_2016, daily_days, mar_pace_min)
 
     sessions = []
-    for _, r in lr.iterrows():
-        sessions.append({'day': int((r['date'] - js_epoch).days),
-                         'html': long_run_hover(r)})
+    for i, (_, r) in enumerate(lr.iterrows()):
+        s = {'day': int((r['date'] - js_epoch).days),
+             'html': long_run_hover(r)}
+        if norm_adj is not None:
+            s['adj'] = round(float(norm_adj[i]), 1)
+        sessions.append(s)
     sessions.sort(key=lambda s: s['day'])
 
     first_day = int((all_days[0]  - js_epoch).days)
@@ -282,6 +322,13 @@ function buildTooltip(day, isSnap, pointHtml) {
       html += '<div class="tt-section-title">Nearest long run [' + lbl + ']</div>';
     }
     html += (isSnap && pointHtml ? pointHtml : run.html);
+    if (window.__lrNormOn && run && run.adj != null) {
+      // Shift applied to the point by the Normalize toggle: y = raw − adj.
+      var sh = -run.adj;
+      html += '<div class="tt-row"><span>Norm adj</span><b>' +
+              (sh >= 0 ? '+' : '−') + Math.abs(Math.round(sh)) +
+              ' s/mi</b></div>';
+    }
     html += '</div>';
   }
   return html;
@@ -301,6 +348,7 @@ function buildTooltip(day, isSnap, pointHtml) {
             last_day=last_day,
         ),
         overlay_html=overlay_html,
+        overlay_js_files=[_LR_JS],
         axis_pad=axis_pad_lr,
     )
     print(f'Wrote {OUT_HTML}  ({len(lr)} long runs, '
