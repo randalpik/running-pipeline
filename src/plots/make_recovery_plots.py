@@ -84,7 +84,6 @@ import argparse
 import datetime as dt
 import json
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -105,6 +104,9 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
 from src.plotting import widgets
 from src.shared.paths import DEBUG_DIR
 from src.shared.cs_projection import load_cs_outputs
+from src.shared.recovery_model import (fit_recovery_model, TEMP_REFERENCE_C,
+                                       FATIGUE_TAU_DAYS, MIN_ROUTE_N,
+                                       QUALITY_CATS)
 
 _PLOTS_DIR = Path(__file__).resolve().parent
 _RECOVERY_JS = _PLOTS_DIR / 'make_recovery_plots.js'
@@ -116,98 +118,18 @@ DEFAULT_RACES  = str(DATA_DIR / 'races.csv')
 DEFAULT_OUT    = str(OUTPUT_DIR)
 
 
-# ---------- conditions / pruning excluded from fit ----------
-# Time-of-day binary indicator. Recovery pace runs ~4.5 sec/mi slower in
-# the early/morning window than the afternoon/late window (p<1e-13 in
-# fully-normalized residuals), driven by overnight fueling state and
-# joint stiffness. Encoded as 1 = PM (afternoon|late), 0 = AM (early|
-# morning). `early` (n≈30) and `late` (n≈90) are too sparse to keep as
-# their own levels; their means align with morning and afternoon
-# respectively to within their CIs.
-TOD_PM_VALUES = {'afternoon', 'late'}
+# Model constants and the fit itself live in src/shared/recovery_model.py
+# (shared with the Long Runs plot's normalization toggle). What stays here
+# is presentation-only.
 
-EXCLUDED_CONDITIONS = {'snow', 'icy'}
-
-# Workout-string snow detection. Catches "[2\" snow]" and similar annotations
-# in workout_raw that the conditions field missed.
-SNOW_IN_WORKOUT_RE = re.compile(r'\bsnow\b', re.IGNORECASE)
-
-# Partner-run detection: any partners entry that isn't blank/solo/none counts
-# as a non-solo run. Partner runs are a different population (HS team easy
-# days, the occasional Maddy run) — their pace targets and route choices
-# differ from solo recovery, and including them inflates within-period
-# variance. They're pruned from the fit alongside snow/ice/inside.
-NULL_PARTNERS = {'', 'nan', 'solo', 'none'}
-
-# Outlier detection: residual from leave-one-out 28-day local mean exceeds
-# OUTLIER_THRESHOLD_SEC. Catches "clearly something happened" days
-# (travel/jet-lag, illness, extreme post-marathon fatigue) that no feature
-# in the model is set up to capture. ±45 prunes ~16 of ~2,200 eligible
-# rows (Apr 2026); about 3σ on the LOO residual distribution.
-OUTLIER_THRESHOLD_SEC      = 45.0
-OUTLIER_WINDOW_HALF_DAYS   = 14
-OUTLIER_MIN_NEIGHBORS      = 5
-
-
-# ---------- model parameters ----------
-TEMP_REFERENCE_C       = 12.0
-# Recent-race fatigue uses exponential decay: contribution = exp(−t/τ) at
-# day t post-race, fitted via OLS for amplitude. Per-category τ in days,
-# from empirical curve fits on days-since-last-race vs marathon-revealed
-# residual (see April 2026 analysis).
-FATIGUE_TAU_DAYS = {'marathon': 6.0, 'race_short': 5.0}
 # Hover threshold — only show the "Recent race" line if within this many
 # days of the most recent race. Cosmetic only; doesn't affect the model.
 FATIGUE_HOVER_DAYS = 14
-ERA_WINDOW_HALF_DAYS   = 182
-ERA_WINDOW_MIN_POINTS  = 30
-MIN_ROUTE_N            = 13
-MARATHON_DISTANCE_M    = 42000
-
 
 TREND_SMOOTH_SIGMA_DAYS = 28  # Gaussian σ; FWHM ≈ 66d, ~95% mass within ±56d
 
 
 # ---------- helpers ----------
-
-def days_since(daily, source_dates_sorted):
-    if not source_dates_sorted:
-        return np.full(len(daily), np.nan)
-    sd = np.array([d.value for d in source_dates_sorted])
-    out = []
-    for d in daily['date']:
-        idx = np.searchsorted(sd, d.value, side='left')
-        if idx == 0:
-            out.append(np.nan)
-        else:
-            prev = pd.Timestamp(int(sd[idx - 1]))
-            out.append((d - prev).days)
-    return np.array(out, dtype=float)
-
-
-def centered_rolling_mean(target_dates, source_dates, source_values,
-                           half_days, min_points):
-    target_ms = np.array([d.value // 10**6 for d in target_dates])
-    source_ms = np.array([d.value // 10**6 for d in source_dates])
-    source_v = np.asarray(source_values, dtype=float)
-    half_ms = half_days * 86_400_000
-
-    out = np.full(len(target_ms), np.nan)
-    lo = hi = 0
-    n_src = len(source_ms)
-    for i, t in enumerate(target_ms):
-        while lo < n_src and source_ms[lo] < t - half_ms:
-            lo += 1
-        while hi < n_src and source_ms[hi] <= t + half_ms:
-            hi += 1
-        if hi - lo >= min_points:
-            out[i] = source_v[lo:hi].mean()
-    return out
-
-
-def sanitize_route(name):
-    s = re.sub(r'[^a-z0-9]+', '_', str(name).lower()).strip('_')
-    return f'rt_{s}'
 
 def signed_sec(s):
     """Plot-local signed-seconds formatter — emits ``+30`` / ``-30`` (no
@@ -249,215 +171,17 @@ def main():
     cs_summary, beta_long, d_thresh, xc = load_cs_outputs(args.in_dir, args.tag)
     cs_summary['cs_pace_sec'] = cs_summary['cs_pace_med'] * 60.0
 
-    # Quality-day categorization
-    marathon_dates = set(races.loc[races['distance_m'] >= MARATHON_DISTANCE_M,
-                                    'date'].tolist())
-
-    def categorize_quality(row):
-        if row['run_type'] == 'race':
-            return 'marathon' if row['date'] in marathon_dates else 'race_short'
-        if row['run_type'] == 'long':
-            return 'long'
-        return None
-    daily['quality_category'] = daily.apply(categorize_quality, axis=1)
-
-    QUALITY_CATS = ['marathon', 'race_short']
-    for cat in QUALITY_CATS:
-        cat_dates = sorted(daily.loc[daily['quality_category']==cat,
-                                       'date'].tolist())
-        daily[f'dsq_{cat}'] = days_since(daily, cat_dates)
-
-    # Recovery subset
-    rec = daily[daily['run_type'] == 'recovery'].copy()
-    rec = rec.dropna(subset=['recovery_pace_sec_per_mi'])
-    rec = rec.sort_values('date').reset_index(drop=True)
-    # CS belief at each run's date via np.interp, which HOLDS the endpoint value
-    # beyond the CS summary's range — the same extrapolation add_cs() uses for
-    # every other plot. A run is therefore never dropped for lack of an exact
-    # CS-date match, so recovery stays current even if the Bayesian fit is
-    # stale. With the fit now spanning the full run history (bayes_cs_fit grid),
-    # the lookup is in-range in the common case; the hold-last is the safety net
-    # that previously caused recent runs to vanish (when this was a merge+dropna).
+    res = fit_recovery_model(daily, races, cs_summary)
+    if res is None:
+        raise SystemExit('Not enough recovery data to fit the model; '
+                         'no recovery plot written.')
+    rec = res.rec
+    betas, intercept = res.betas, res.intercept
+    r2_detrended, r2_raw = res.r2_detrended, res.r2_raw
+    qualifying_routes = res.qualifying_routes
+    route_col_map, route_counts = res.route_col_map, res.route_counts
+    global_mean_residual = res.global_mean_residual
     _epoch = pd.Timestamp('1970-01-01')
-    rec['cs_pace_sec'] = np.interp(
-        (rec['date'] - _epoch).dt.days.to_numpy(),
-        (cs_summary['date'] - _epoch).dt.days.to_numpy(),
-        cs_summary['cs_pace_sec'].values,
-    )
-    print(f'  {len(rec)} recovery days with valid pace')
-
-    # Features (sleep_centered and miles_centered are intentionally NOT computed)
-    rec['temp_centered'] = rec['temp_c'] - TEMP_REFERENCE_C
-    rec['residual_raw'] = rec['recovery_pace_sec_per_mi'] - rec['cs_pace_sec']
-
-    # Time-of-day binary indicator: 1 for PM (afternoon/late), 0 for AM
-    # (early/morning). Recovery rows have 100% TOD coverage; missing or
-    # unknown values fall to 0 (AM baseline).
-    tod_clean = rec['time_of_day'].astype(str).str.strip().str.lower()
-    rec['tod_is_pm'] = tod_clean.isin(TOD_PM_VALUES).astype(float)
-
-    rec['conditions_clean'] = rec['conditions'].astype(str).str.strip().str.lower()
-    cond_excluded = rec['conditions_clean'].isin(EXCLUDED_CONDITIONS)
-    workout_snow = rec['workout_raw'].fillna('').astype(str).apply(
-        lambda w: bool(SNOW_IN_WORKOUT_RE.search(w)))
-    rec['is_bad_cond'] = cond_excluded | workout_snow
-    rec['workout_snow_only'] = workout_snow & ~cond_excluded
-
-    # Partner-run detection
-    # fillna('') before astype(str): pandas 3.0's astype(str) leaves NaN as NaN
-    # (not the string 'nan'), which would fall outside NULL_PARTNERS and flag
-    # every blank-partner run as a partner run — catastrophic for a profile
-    # with no partners data at all (the whole fit gets pruned away).
-    rec['partners_clean'] = (rec['partners'].fillna('')
-                             .astype(str).str.strip().str.lower())
-    rec['is_partner_run'] = ~rec['partners_clean'].isin(NULL_PARTNERS)
-
-    # Outlier detection — leave-one-out 28-day rolling mean of recovery
-    # pace. The neighbor pool (the source of "normal" pace) is restricted
-    # to rows that are neither bad-cond nor partner-run, so the local
-    # baseline reflects typical solo recovery state. The LOO residual is
-    # computed for EVERY recovery row, so a bad-cond or partner-run day
-    # can also receive the outlier flag if its pace is anomalous against
-    # the clean local mean. This means the three flags overlap, and a
-    # single point can be in multiple classes.
-    neighbor_mask = ~rec['is_bad_cond'] & ~rec['is_partner_run']
-    rec['loo_resid'] = np.nan
-    if neighbor_mask.sum() > 0:
-        nbr_dates_ms = np.array(
-            [d.value // 10**6 for d in rec.loc[neighbor_mask, 'date']])
-        nbr_pace = rec.loc[neighbor_mask, 'recovery_pace_sec_per_mi'].to_numpy()
-        all_dates_ms = np.array([d.value // 10**6 for d in rec['date']])
-        all_pace = rec['recovery_pace_sec_per_mi'].to_numpy()
-        in_pool = neighbor_mask.to_numpy()
-        half_ms = OUTLIER_WINDOW_HALF_DAYS * 86_400_000
-        loo_resid = np.full(len(rec), np.nan)
-        for i, d_ms in enumerate(all_dates_ms):
-            lo = np.searchsorted(nbr_dates_ms, d_ms - half_ms, side='left')
-            hi = np.searchsorted(nbr_dates_ms, d_ms + half_ms, side='right')
-            n_in = hi - lo
-            if in_pool[i]:
-                # Leave one out: this row IS a neighbor of itself.
-                if n_in < OUTLIER_MIN_NEIGHBORS + 1:
-                    continue
-                local_mean = (nbr_pace[lo:hi].sum() - all_pace[i]) / (n_in - 1)
-            else:
-                # Bad-cond / partner row — not in pool, no leave-out needed.
-                if n_in < OUTLIER_MIN_NEIGHBORS:
-                    continue
-                local_mean = nbr_pace[lo:hi].mean()
-            loo_resid[i] = all_pace[i] - local_mean
-        rec['loo_resid'] = loo_resid
-    rec['is_outlier_loo'] = (
-        rec['loo_resid'].abs() > OUTLIER_THRESHOLD_SEC).fillna(False)
-
-    # Combined "pruned from fit" flag — drives both OLS exclusion and the
-    # three independent visibility toggles on the chart. Flags are NOT
-    # mutually exclusive; a single row can have more than one set.
-    rec['is_pruned'] = (rec['is_bad_cond']
-                       | rec['is_partner_run']
-                       | rec['is_outlier_loo'])
-
-    # Outlier breakdown by which other flags also apply
-    n_outlier_clean = int((rec['is_outlier_loo']
-                           & ~rec['is_bad_cond']
-                           & ~rec['is_partner_run']).sum())
-    n_outlier_bad = int((rec['is_outlier_loo'] & rec['is_bad_cond']).sum())
-    n_outlier_partner = int((rec['is_outlier_loo'] & rec['is_partner_run']).sum())
-    print(f'  pruned from fit: {rec["is_pruned"].sum()} unique '
-          f'({rec["is_bad_cond"].sum()} bad-cond '
-          f'[{cond_excluded.sum()} cond + {workout_snow.sum()} workout-snow], '
-          f'{rec["is_partner_run"].sum()} partner-runs, '
-          f'{rec["is_outlier_loo"].sum()} outliers '
-          f'[{n_outlier_clean} clean + {n_outlier_bad} also bad-cond + '
-          f'{n_outlier_partner} also partner])')
-
-    for cat in QUALITY_CATS:
-        tau = FATIGUE_TAU_DAYS[cat]
-        rec[f'fat_{cat}'] = np.exp(-rec[f'dsq_{cat}'].fillna(np.inf) / tau)
-
-    # Qualifying routes
-    route_counts = (rec.loc[~rec['is_pruned'], 'location']
-                     .dropna().value_counts())
-    qualifying_routes = (route_counts[route_counts >= MIN_ROUTE_N]
-                         .index.tolist())
-    qualifying_routes = sorted(qualifying_routes,
-                                key=lambda x: -route_counts[x])
-    print(f'\nQualifying routes (n >= {MIN_ROUTE_N}): {len(qualifying_routes)}')
-
-    route_col_map = {r: sanitize_route(r) for r in qualifying_routes}
-    for r in qualifying_routes:
-        rec[route_col_map[r]] = (rec['location'] == r).astype(float)
-
-    # Era trend
-    pool = rec[~rec['is_pruned']].copy()
-    rec['era_trend'] = centered_rolling_mean(
-        rec['date'].tolist(),
-        pool['date'].tolist(),
-        pool['residual_raw'].values,
-        ERA_WINDOW_HALF_DAYS,
-        ERA_WINDOW_MIN_POINTS,
-    )
-    rec['residual_detrended'] = rec['residual_raw'] - rec['era_trend']
-
-    # Global mean residual — used to center era contributions so toggling
-    # era_trend doesn't collapse points to zero.
-    global_mean_residual = float(pool['residual_raw'].mean())
-    print(f'  global mean residual: {global_mean_residual:+.2f} sec/mi '
-          f'(reference for era-detrended view; computed on non-pruned pool)')
-
-    # OLS fit
-    base_features = (['temp_centered']
-                     + [f'fat_{c}' for c in QUALITY_CATS]
-                     + ['tod_is_pm'])
-    route_features = [route_col_map[r] for r in qualifying_routes]
-    feature_cols = base_features + route_features
-
-    rec_fit = rec[~rec['is_pruned']].dropna(
-        subset=feature_cols + ['residual_detrended']).copy()
-
-    X = rec_fit[feature_cols].to_numpy().astype(float)
-    y = rec_fit['residual_detrended'].to_numpy().astype(float)
-    X_int = np.hstack([np.ones((len(X), 1)), X])
-    coef, *_ = np.linalg.lstsq(X_int, y, rcond=None)
-    intercept = float(coef[0])
-    betas = {f: float(b) for f, b in zip(feature_cols, coef[1:])}
-
-    yhat = X_int @ coef
-    ss_res = float(np.sum((y - yhat) ** 2))
-    ss_tot = float(np.sum((y - y.mean()) ** 2))
-    r2_detrended = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
-
-    raw_y = rec_fit['residual_raw'].to_numpy()
-    raw_yhat = rec_fit['era_trend'].to_numpy() + yhat
-    ss_res_raw = float(np.sum((raw_y - raw_yhat) ** 2))
-    ss_tot_raw = float(np.sum((raw_y - raw_y.mean()) ** 2))
-    r2_raw = 1 - ss_res_raw / ss_tot_raw if ss_tot_raw > 0 else 0.0
-
-    print(f'\nOLS results (n={len(rec_fit)}):')
-    print(f'  R² on detrended:    {r2_detrended:.3f}')
-    print(f'  R² on raw residual: {r2_raw:.3f}')
-    print(f'  intercept: {intercept:+.2f}')
-    print(f'\n  Per-day factors:')
-    for f in base_features:
-        print(f'    {f:18s}  β = {betas[f]:+.3f}')
-    print(f'\n  Route offsets (vs unspecified-location baseline):')
-    for r in qualifying_routes:
-        b = betas[route_col_map[r]]
-        print(f'    {r:25s}  β = {b:+.2f}')
-    # ---------- per-point contributions (4 channels) ----------
-    rec['contrib_temp'] = betas['temp_centered'] * rec['temp_centered'].fillna(0)
-    rec['contrib_quality'] = sum(
-        betas[f'fat_{c}'] * rec[f'fat_{c}'].fillna(0) for c in QUALITY_CATS)
-    rec['contrib_tod'] = betas['tod_is_pm'] * rec['tod_is_pm'].fillna(0)
-
-    def route_contrib(loc):
-        if loc in qualifying_routes:
-            return betas[route_col_map[loc]]
-        return 0.0
-    rec['contrib_route'] = rec['location'].apply(route_contrib)
-
-    # Era contribution centered on global mean
-    rec['contrib_era'] = rec['era_trend'].fillna(global_mean_residual) - global_mean_residual
 
     # ---------- build figure ----------
     # Daily CS reference series across the full recovery range, hold-last
@@ -858,7 +582,7 @@ function buildTooltip(day, isSnap, pointHtml) {
             widgets.js_globals({'TREND_SIGMA_DAYS': TREND_SMOOTH_SIGMA_DAYS})
             + '\n'
             + build_normalization_ui(
-                betas, intercept, r2_detrended, r2_raw, len(rec_fit),
+                betas, intercept, r2_detrended, r2_raw, res.n_fit,
                 int(rec['is_bad_cond'].sum()),
                 int(rec['is_partner_run'].sum()),
                 int(rec['is_outlier_loo'].sum()),

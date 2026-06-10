@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import daily_floor
 from src.shared.workouts import (
-    LONG_FLOOR, LONG_CEIL, LR_INTERNAL_BIN, TAU,
+    TAU,
     load_cs, project_long_runs,
 )
 from src.shared.long_run_model import fit_long_run_model
@@ -349,32 +349,41 @@ def compute_race_predictions(daily_summary, beta_long, d_thresh):
 
 
 # ----- Workout Pace Predictions -----
-def _bin_residuals(lr_in_aug):
-    """Return {'lr_lo': mean_raw_resid, 'lr_hi': mean_raw_resid} where the
-    mean is over long runs that are (a) on a qualifying route — i.e.
-    ``route != 'other'`` (have a route beta) — and (b) not flagged as
-    outliers by the iterative MAD prune.
+# Recency weighting for the long-run prediction ground. 365d half-life
+# balances "current era's effort policy" against sample size (effective
+# n ≈ 60, vs 12 at a 90d half-life); the June 2026 sanity check showed
+# 90/180/365d half-lives all land within 2 s/mi, so the choice isn't
+# load-bearing.
+LR_PRED_HALFLIFE_DAYS = 365
+# Distance the card's long-run pace is projected to (and labeled as).
+LR_PRED_MILES = 20
 
-    This empirical mean captures the per-bin residual on routes Max
-    actually runs in each bin, including the route-mix skew (e.g. lr_lo
-    runs on belle meade/greenway pull lr_lo's mean down).
+
+def _long_run_residual(lr_in_aug):
+    """Recency-weighted (exponential, ``LR_PRED_HALFLIFE_DAYS`` half-life)
+    mean raw_resid over non-outlier long runs on familiar routes
+    (``route != 'other'``). Distance-unconditioned: the former lr_lo/lr_hi
+    empirical means differed by 0.3 s/mi (June 2026 sanity check) — the
+    per-bin split contributed nothing — while recency moves the estimate
+    ~+7 s/mi (current-era long runs sit further off CS than the all-time
+    mean).
+
+    None when there's no usable history: a 0 residual would collapse the
+    long-run prediction onto the bare CS curve (i.e. ~interval pace) — far
+    too fast. Callers omit the prediction instead of fabricating one.
     """
     keep = lr_in_aug[~lr_in_aug['is_outlier']]
-    # Max grounds the residual on qualifying routes (route != 'other') so the
-    # route-mix skew is captured. Other profiles have no route betas yet —
-    # every run is 'other' — so requiring a qualifying route would drop them
-    # all; use every non-outlier long run instead.
+    # Max grounds the residual on familiar routes so the route-mix skew is
+    # captured. Other profiles have no repeated routes yet — every run is
+    # 'other' — so requiring one would drop them all; use every non-outlier
+    # long run instead.
     if os.environ.get('RP_PROFILE', 'max') == 'max':
         keep = keep[keep['route'] != 'other']
-    out = {}
-    for b in ('lr_lo', 'lr_hi'):
-        sub = keep[keep['bin'] == b]
-        # None (not 0.0) when a bin has no long runs: a 0 residual would mean
-        # "no slowdown vs CS pace", collapsing the long-run prediction onto the
-        # bare CS curve (i.e. ~interval pace) — far too fast. Callers omit the
-        # prediction instead of fabricating one.
-        out[b] = float(sub['raw_resid'].mean()) if len(sub) else None
-    return out
+    if keep.empty:
+        return None
+    age_days = (keep['date'].max() - keep['date']).dt.days.astype(float)
+    w = np.exp(-np.log(2) * age_days / LR_PRED_HALFLIFE_DAYS)
+    return float((w * keep['raw_resid']).sum() / w.sum())
 
 
 def compute_workout_predictions(daily_summary, lr_in_aug):
@@ -400,10 +409,10 @@ def compute_workout_predictions(daily_summary, lr_in_aug):
     t_far = (d_far - dp) / cs_mps
     pace_fartlek = t_far * 1609.344 / d_far
 
-    # --- Long runs: empirical mean raw_resid filtered to qualifying-route,
-    #     non-pruned long runs in each bin. Treat that mean as the expected
-    #     5K-equivalent pace residual; project from CS to the workout distance.
-    bin_resid = _bin_residuals(lr_in_aug)
+    # --- Long runs: recency-weighted mean raw_resid over familiar-route,
+    #     non-pruned long runs. Treat it as the expected 5K-equivalent pace
+    #     residual; project from CS to the card's distance.
+    lr_resid = _long_run_residual(lr_in_aug)
 
     def project_long(miles, resid_sec_per_mi):
         d = miles * 1609.344
@@ -413,14 +422,14 @@ def compute_workout_predictions(daily_summary, lr_in_aug):
         t_d = (d - dp) / cs_mps_lr
         return t_d * 1609.344 / d
 
-    pace_long_24 = (project_long(24, bin_resid['lr_hi'])
-                    if bin_resid['lr_hi'] is not None else None)
+    pace_long = (project_long(LR_PRED_MILES, lr_resid)
+                 if lr_resid is not None else None)
 
     return {
         'intervals_6x1600': pace_intervals,
         'fartlek_8000':     pace_fartlek,
-        'long_24':          pace_long_24,
-        '_debug':           bin_resid,
+        'long':             pace_long,
+        '_debug':           {'lr_resid': lr_resid},
     }
 
 
@@ -508,9 +517,10 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
         ('Fartlek (8000m continuous):', fmt_pace_per_mi(workout_preds['fartlek_8000'])),
     ]
     # Long-run prediction needs an empirical slowdown residual; omit it when
-    # the profile has no qualifying long-run history (see _bin_residuals).
-    if workout_preds['long_24'] is not None:
-        wp_rows.append(('Long (24 miles):', fmt_pace_per_mi(workout_preds['long_24'])))
+    # the profile has no long-run history (see _long_run_residual).
+    if workout_preds['long'] is not None:
+        wp_rows.append((f'Long ({LR_PRED_MILES} miles):',
+                        fmt_pace_per_mi(workout_preds['long'])))
     workout_html = ''.join(
         f'<div class="stat-label">{label}</div>'
         f'<div class="stat-value"><b>{value}</b></div>'
@@ -608,9 +618,9 @@ def main():
     daily_summary, beta_long, d_thresh, _xc = load_cs_outputs(str(DATA_DIR))
 
     # Long-run model fit (in-slice runs, not snow). We need the augmented
-    # frame (with `route`, `bin`, `is_outlier`) to compute empirical bin
-    # residuals on qualifying routes — the model fit itself is only used
-    # here for its outlier flags.
+    # frame (with `route` and `is_outlier`) for the recency-weighted
+    # long-run residual on familiar routes — the model fit itself is only
+    # used here for its outlier flags.
     cs, epoch = load_cs()
     lr_all = project_long_runs(cs, epoch)
     lr_in = lr_all[lr_all['excluded_reason'].isna()].copy()

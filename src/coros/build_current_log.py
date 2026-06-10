@@ -4,7 +4,7 @@ Each Coros activity is one workout; the running log is one row per day. So we
 extract the fields we trust from every Run / Track Run, group by local date,
 and synthesize a ``workout_raw`` string the existing parser understands:
 
-  - single run, moving >90 min        -> ``long@<m:ss>``
+  - single run, moving >80 min        -> ``long@<m:ss>``
   - single run otherwise              -> ``rec@<m:ss>``
   - day containing a Track Run        -> ``<wu>j, <track_m>f@<m:ss>, <cd>j``
     (runs before/after the track = warmup/cooldown jogs; the track run is
@@ -141,7 +141,7 @@ def _workout_raw(runs: list[Activity]) -> str | None:
             parts.append(f"{cd}j")
         return ", ".join(parts)
 
-    # no track run: recovery, or long if any single run's moving time > 90 min
+    # no track run: recovery, or long if any single run's moving time > 80 min
     total_m = sum(a.distance_m for a in runs)
     total_s = sum(a.moving_s for a in runs)
     pace = _fmt_pace(total_s, total_m)

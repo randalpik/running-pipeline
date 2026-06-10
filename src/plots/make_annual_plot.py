@@ -4,7 +4,8 @@ Every year with daily.csv data becomes one trace on a yearless calendar
 x-axis (each date is mapped onto dummy leap year 2000 so Feb 29 has a
 slot and month boundaries align across years). A toggle switches between:
 
-  - Cumulative: per-year running total of miles, one dot per run day.
+  - Cumulative: per-year running total of miles, one dot per logged day
+                (run days, plus races.csv-only days at race distance).
   - Average:    28-day centered moving average of daily miles, drawn as
                 a line per year. The average is computed contiguously
                 across the whole logging span (zero-filled calendar, so
@@ -38,6 +39,7 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
 from src.plotting import widgets
 
 DEFAULT_DAILY = str(DATA_DIR / 'daily.csv')
+DEFAULT_RACES = str(DATA_DIR / 'races.csv')
 DEFAULT_OUT = str(OUTPUT_DIR)
 
 _PLOTS_DIR = Path(__file__).resolve().parent
@@ -93,9 +95,9 @@ def build_cumulative(miles_by_date, years):
     Returns (cum_x, cum_y, cum_doy): marker coordinates (one per run day,
     x on the dummy calendar) plus a per-doy carry-forward array for the
     tooltip — every day from a year's first run onward holds the most
-    recent total. Non-final years extend their final total to Dec 31;
-    the final (possibly partial) year stays None past its last logged
-    date so the tooltip drops it there.
+    recent total. Every year — including the final, possibly partial one —
+    extends its last total to Dec 31, so the tooltip never goes empty past
+    a sparse profile's last logged date.
     """
     cum_x, cum_y, cum_doy = {}, {}, {}
     for y in years:
@@ -105,9 +107,8 @@ def build_cumulative(miles_by_date, years):
         arr = [None] * N_DOY
         for d, v in zip(season.index, cum_y[y]):
             arr[doy_index(d)] = v
-        fill_end = N_DOY if y != years[-1] else doy_index(season.index[-1]) + 1
         prev = None
-        for k in range(fill_end):
+        for k in range(N_DOY):
             if arr[k] is None:
                 arr[k] = prev
             else:
@@ -157,6 +158,7 @@ def build_legend_html(years, colors):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--daily', default=DEFAULT_DAILY)
+    ap.add_argument('--races', default=DEFAULT_RACES)
     ap.add_argument('--out-dir', default=DEFAULT_OUT)
     args = ap.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
@@ -169,6 +171,21 @@ def main():
 
     years = sorted(miles_by_date.index.year.unique().tolist())
     colors = annual_palette(len(years))
+
+    # Race days with no daily row (sparse profiles: a race logged via
+    # additions may never get a daily entry) still count toward the year's
+    # totals — same miles convention as the pre-2016 daily stubs
+    # (distance_m / 1609.344). Restricted to years daily already covers so
+    # race-only years don't sprout traces.
+    if os.path.exists(args.races):
+        races = pd.read_csv(args.races, parse_dates=['date'])
+        races['date'] = races['date'].dt.normalize()
+        race_miles = races.groupby('date')['distance_m'].sum() / 1609.344
+        race_only = race_miles[~race_miles.index.isin(miles_by_date.index)
+                               & race_miles.index.year.isin(years)]
+        if len(race_only):
+            miles_by_date = pd.concat(
+                [miles_by_date, race_only]).sort_index()
 
     cum_x, cum_y, cum_doy = build_cumulative(miles_by_date, years)
     avg_x, avg_y, avg_doy = build_average(miles_by_date, years)

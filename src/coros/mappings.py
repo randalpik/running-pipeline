@@ -29,7 +29,10 @@ SPORT_TRACK_RUN = 103
 RUN_SPORTS = {SPORT_RUN, SPORT_INDOOR_RUN, SPORT_TRAIL_RUN, SPORT_TRACK_RUN}
 
 # ---- classification thresholds ----
-LONG_RUN_MIN_SECONDS = 90 * 60   # moving time > 90 min => long run
+# Aligned with the long-run model's LONG_MIN_MINUTES (workouts.py): a run
+# is "long" once fueling/hydration become a real concern, ~80 min in
+# regardless of pace.
+LONG_RUN_MIN_SECONDS = 80 * 60   # moving time > 80 min => long run
 
 # ---- weather bins ----
 # Coros `weatherType` is the AccuWeather icon code (verified: weatherType N

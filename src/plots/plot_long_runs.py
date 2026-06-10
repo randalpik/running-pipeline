@@ -2,7 +2,7 @@
 plot_long_runs.py — Qualitative "every long run" plot at absolute pace.
 
 Shows every `run_type == 'long'` session — including those outside the TQ
-model's [LONG_FLOOR, LONG_CEIL] slice — at absolute pace (no 5K-equivalent
+model's [LONG_MIN_MINUTES, LONG_CEIL_MILES) slice — at absolute pace (no 5K-equivalent
 projection, no per-route correction). Two CS-derived reference curves give
 the equivalent half-marathon and marathon paces from the model: how fast a
 given fitness predicts you could run those distances.
@@ -22,6 +22,9 @@ from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import daily_floor, axis_pad_entry
 from src.shared.workouts import load_cs, project_long_runs
 from src.shared.cs_projection import load_cs_outputs, cs_line_at_anchor
+from src.shared.recovery_model import transferable_contributions
+from src.shared.long_run_model import (fit_long_run_model, load_quality_dates,
+                                       MIN_COV_N)
 from src.plotting import widgets
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box, route_paren,
@@ -35,6 +38,7 @@ GRADIENT_BOX_WIDTH = 182
 
 OUTPUT_DIR.mkdir(exist_ok=True)
 OUT_HTML = str(OUTPUT_DIR / 'long_runs.html')
+_LR_JS = Path(__file__).resolve().parent / 'plot_long_runs.js'
 
 # Distance gradient: 3-stop blue → purple → magenta for high contrast across
 # the long-run distance range. cmin/cmax are computed from the dataset's
@@ -93,6 +97,27 @@ def main():
     pace_min = lr['recovery_pace_sec_per_mi'].astype(float) / 60.0
     miles    = lr['miles'].astype(float)
 
+    # ---------- normalization (long-run-sourced covariates) ----------
+    # Betas come from the TQ long-run model (same fit plot_training_quality
+    # renders): temperature fit on the in-slice long runs, race fatigue as
+    # one fitted scale with the marathon/short contrast pinned from the
+    # recovery fit (see long_run_model docstring). Recovery-sourced
+    # amplitudes were tried and rejected (June 2026) — long runs are hit
+    # ~2.3× harder than recovery runs — and recovery's time-of-day effect
+    # is dead on long runs (see docs/training-quality-reference.md).
+    # Adjustments apply to every plotted run, including out-of-slice ones
+    # the fit itself excludes.
+    norm_adj = None
+    lr_in = lr[lr['excluded_reason'].isna()]
+    if len(lr_in) >= MIN_COV_N:
+        quality_dates = load_quality_dates()
+        _, lr_fit, _ = fit_long_run_model(lr_in.copy(), quality_dates)
+        if lr_fit.cov_coefs:
+            adj = transferable_contributions(lr, lr_fit.cov_coefs, quality_dates)
+            # Omit a dead checkbox (profile where every adjustment is ~0).
+            if np.abs(adj).max() > 0.05:
+                norm_adj = adj
+
     # ---------- figure ----------
     fig = go.Figure()
 
@@ -126,7 +151,9 @@ def main():
         ),
         customdata=cd,
         hoverinfo='skip',
-        meta={'snap_eligible': True},
+        meta={'role': 'long_runs',
+              'snap_eligible': True,
+              'raw_y': _y_safe(pace_min.values)},
     ))
 
     # ---------- layout ----------
@@ -186,10 +213,23 @@ def main():
         f'font-size:10.5px;color:#aaa"><span>{miles_min_int}</span>'
         f'<span>{miles_max_int}</span></div>'
     )
+    norm_section = ''
+    if norm_adj is not None:
+        norm_section = (
+            widgets.divider()
+            + widgets.checkbox_rows([('normalize', 'Normalize')],
+                                    data_attr='lrnorm', checked=False)
+            + widgets.subtitle('Subtract modeled temperature and '
+                               'recent-race effects (long-run-fit betas).')
+        )
     overlay_html = widgets.sidebar(
-        'lr-gradient', body=gradient_bar,
+        'lr-gradient', body=gradient_bar + norm_section,
         compact=True, width_px=GRADIENT_BOX_WIDTH,
     )
+    if norm_adj is not None:
+        overlay_html = (widgets.js_globals(
+            {'LR_NORM_ADJ': [round(float(v), 2) for v in norm_adj]})
+            + '\n' + overlay_html)
 
     # ---------- cursor-tooltip payload ----------
     js_epoch = pd.Timestamp('1970-01-01')
@@ -203,9 +243,12 @@ def main():
     mar_per_day = np.interp(days_2016, daily_days, mar_pace_min)
 
     sessions = []
-    for _, r in lr.iterrows():
-        sessions.append({'day': int((r['date'] - js_epoch).days),
-                         'html': long_run_hover(r)})
+    for i, (_, r) in enumerate(lr.iterrows()):
+        s = {'day': int((r['date'] - js_epoch).days),
+             'html': long_run_hover(r)}
+        if norm_adj is not None:
+            s['adj'] = round(float(norm_adj[i]), 1)
+        sessions.append(s)
     sessions.sort(key=lambda s: s['day'])
 
     first_day = int((all_days[0]  - js_epoch).days)
@@ -282,6 +325,15 @@ function buildTooltip(day, isSnap, pointHtml) {
       html += '<div class="tt-section-title">Nearest long run [' + lbl + ']</div>';
     }
     html += (isSnap && pointHtml ? pointHtml : run.html);
+    if (window.__lrNormOn && run && run.adj != null) {
+      // Shift applied to the point by the Normalize toggle: y = raw − adj.
+      // One decimal: adjustments are small (often < 5 s/mi), whole seconds
+      // would flatten most of them to +0.
+      var sh = -run.adj;
+      html += '<div class="tt-row"><span>Normalized adjustment</span><b>' +
+              (sh >= 0 ? '+' : '−') + Math.abs(sh).toFixed(1) +
+              ' s/mi</b></div>';
+    }
     html += '</div>';
   }
   return html;
@@ -301,6 +353,7 @@ function buildTooltip(day, isSnap, pointHtml) {
             last_day=last_day,
         ),
         overlay_html=overlay_html,
+        overlay_js_files=[_LR_JS],
         axis_pad=axis_pad_lr,
     )
     print(f'Wrote {OUT_HTML}  ({len(lr)} long runs, '

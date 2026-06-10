@@ -23,11 +23,10 @@ from src.shared.plot_window import daily_floor
 from src.shared.workouts import (
     load_cs, add_cs,
     project_workouts, project_long_runs, project_hill_continuous,
-    LONG_FLOOR, LONG_CEIL, LR_INTERNAL_BIN,
     WORKOUTS_PATH, DAILY_PATH, CS_PATH,
 )
 from src.shared.long_run_model import (
-    fit_long_run_model, MIN_ROUTE_N, PRUNE_SIGMA,
+    fit_long_run_model, PRUNE_SIGMA,
 )
 from src.plotting import widgets
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
@@ -66,8 +65,6 @@ GRID_FREQ          = '7D'
 CAT_LABEL = {
     'interval': 'Interval', 'tempo': 'Tempo', 'rep': 'Rep',
     'continuous_fartlek': 'Cont. fartlek',
-    'lr_lo': f'Long {LONG_FLOOR:g}–{LR_INTERNAL_BIN - 0.1:g}',
-    'lr_hi': f'Long {LR_INTERNAL_BIN:g}–{LONG_CEIL:g}',
     'hill_lc': 'Hill (lc)', 'hill_rc': 'Hill (rc)', 'hill_pwr1': 'Hill (pwr1)',
 }
 
@@ -81,7 +78,7 @@ def apply_offsets(workouts, hills=None) -> tuple:
     """Compute per-category median offsets across workouts (+ optional hills),
     return both frames augmented with offset/resid columns plus the offsets
     dict. Long runs are corrected by `fit_long_run_model` instead of pooled
-    here — their categories ('lr_lo'/'lr_hi') don't appear in this dict."""
+    here, so they don't appear in this dict."""
     parts = [workouts[['date', 'category', 'raw_resid']]]
     if hills is not None and len(hills):
         parts.append(hills[['date', 'category', 'raw_resid']])
@@ -192,28 +189,25 @@ def main():
     # with iterative MAD-based outlier prune. Outliers are dropped from the
     # figure entirely (not displayed); kept rows carry per-row model offset
     # and corrected residual.
-    print(f'\n--- Long-run model: raw_resid ~ bin + route, '
+    print(f'\n--- Long-run model: raw_resid ~ elev/altitude + temp/fatigue, '
           f'iterative MAD prune (sigma={PRUNE_SIGMA}) ---')
     long_runs, lr_fit, qualifying_routes = fit_long_run_model(long_runs)
     n_in = len(long_runs)
     n_out = int(long_runs['is_outlier'].sum())
     print(f'  In-scope long runs: {n_in}  ({n_out} pruned as outliers)')
-    print(f'  Qualifying routes (n>={MIN_ROUTE_N}): {len(qualifying_routes)}')
-    for r in qualifying_routes:
-        n_r = int((long_runs['route'] == r).sum())
-        beta = lr_fit.route_coefs.get(r, 0.0)
-        print(f'    {r:<22} n={n_r:<3d}  beta={beta:+6.2f}')
-    print(f'  Intercept (bin=lr_hi, route=other): {lr_fit.intercept:+6.2f}')
-    for b in ['lr_lo', 'lr_hi']:
-        bcoef = lr_fit.bin_coefs.get(b, 0.0)
-        n_b = int((long_runs['bin'] == b).sum())
-        print(f'  Bin {b} (n={n_b}): coef={bcoef:+6.2f}')
+    print(f'  Intercept (elev={lr_fit.elev_ref:.0f}ft/mi, sea level): '
+          f'{lr_fit.intercept:+6.2f}')
+    for c, b in lr_fit.phys_coefs.items():
+        tag = ' (pinned)' if c == 'elev_pm_c' else ''
+        print(f'  Phys {c:<16} beta={b:+6.2f}{tag}')
+    for c, b in lr_fit.cov_coefs.items():
+        print(f'  Cov {c:<16} beta={b:+6.2f}')
     print(f'  R^2 = {lr_fit.rsquared:.3f}   resid SD = {lr_fit.resid_sd:.2f} sec/mi   '
           f'(n_kept = {lr_fit.n_kept})')
     if n_out:
         print('  Outlier rows pruned:')
         for _, row in long_runs[long_runs['is_outlier']].iterrows():
-            print(f'    LR {row["date"].date()}  bin={row["bin"]:<5}  route={row["route"]:<22}  '
+            print(f'    LR {row["date"].date()}  route={row["route"]:<22}  '
                   f'raw={row["raw_resid"]:+6.1f}  corrected={row["corrected"]:+6.1f}  '
                   f'miles={row["miles"]:.1f}')
 
@@ -415,29 +409,24 @@ def main():
                         opacity=0.85),
             customdata=cd,
             hoverinfo='skip',
-            legendgroup='workouts',
-            legendgrouptitle_text='' if single_type else 'Workouts',
             meta={'snap_eligible': True, 'raw_y': raw_y, 'norm_y': norm_y},
         ))
 
-    # Long runs: one trace per bin
-    for cat in ['lr_lo', 'lr_hi']:
-        sub = long_runs[long_runs['category'] == cat]
-        if sub.empty:
-            continue
-        cd = [long_run_hover(r) for _, r in sub.iterrows()]
-        raw_y = _y_safe(sub['pos_min'].values)
-        norm_y = _y_safe(sub['pos_norm'].values)
+    # Long runs: single trace (distance carries no model coefficient and,
+    # as of June 2026, no legend split either).
+    if len(long_runs):
+        cd = [long_run_hover(r) for _, r in long_runs.iterrows()]
+        raw_y = _y_safe(long_runs['pos_min'].values)
+        norm_y = _y_safe(long_runs['pos_norm'].values)
         fig.add_trace(go.Scatter(
-            x=sub['date'], y=norm_y,
+            x=long_runs['date'], y=norm_y,
             mode='markers',
-            name=f'{CAT_LABEL[cat]} (n={len(sub)})',
-            marker=dict(color=CAT_COLORS[cat], size=7,
+            name=f'Long (n={len(long_runs)})',
+            marker=dict(color=CAT_COLORS['long'], size=7,
                         line=dict(color='rgba(255,255,255,0.4)', width=0.5),
                         opacity=0.85),
             customdata=cd,
             hoverinfo='skip',
-            legendgroup='long_runs', legendgrouptitle_text='Long runs',
             meta={'snap_eligible': True, 'raw_y': raw_y, 'norm_y': norm_y},
         ))
 
@@ -455,7 +444,6 @@ def main():
                         opacity=0.85),
             customdata=cd,
             hoverinfo='skip',
-            legendgroup='workouts', legendgrouptitle_text='Workouts',
             meta={'snap_eligible': True, 'raw_y': raw_y, 'norm_y': norm_y},
         ))
 
@@ -667,18 +655,8 @@ function buildTooltip(day, isSnap, pointHtml) {
         'ticktext': norm_ticktext,
         'title': 'Residual from CS (sec/mi)',
     }
-    # Routes sorted by beta (most negative first); n is per-route count in
-    # the kept set (post-prune), matching the recovery-plot convention.
-    route_n = long_runs['route'].value_counts().to_dict()
-    routes_by_beta = sorted(qualifying_routes,
-                            key=lambda r: lr_fit.route_coefs.get(r, 0.0))
-    route_rows_html = '\n'.join(
-        f'<tr><td>{r}</td><td style="text-align:right">{int(route_n.get(r, 0))}</td>'
-        f'<td style="text-align:right">{lr_fit.route_coefs.get(r, 0.0):+.1f}</td></tr>'
-        for r in routes_by_beta)
-
     # Normalize-to-CS toggle (small fixed pill in the upper-right area
-    # — distinct from the legend-anchored route table below).
+    # — distinct from the legend-anchored model table below).
     norm_toggle_html = (
         '<div id="tq-norm-toggle" class="rp-sidebar rp-sidebar-compact" '
         'style="right:60px; top:20px">'
@@ -686,22 +664,36 @@ function buildTooltip(day, isSnap, pointHtml) {
         '<input type="checkbox" id="tq-norm-cb" checked> Normalize to CS'
         '</label></div>'
     )
-    routes_table = widgets.table(
-        ('Route', 'n', 'β'),
-        [(r, int(route_n.get(r, 0)),
-          f'{lr_fit.route_coefs.get(r, 0.0):+.1f}')
-         for r in routes_by_beta],
-        align=('left', 'right', 'right'),
-    )
+    # Long-run model coefficients (physical route terms + covariates) —
+    # replaces the former per-route beta table (route dummies were
+    # era-confounded; see long_run_model docstring). Distance carries no
+    # term (June 2026 sweep).
+    model_rows = []
+    if 'elev_pm_c' in lr_fit.phys_coefs:
+        model_rows.append((f'elev, per ft/mi (ref {lr_fit.elev_ref:.0f})',
+                           f'{lr_fit.phys_coefs["elev_pm_c"]:+.2f}'))
+    if 'altitude_kft' in lr_fit.phys_coefs:
+        model_rows.append(('altitude, per 1000ft',
+                           f'{lr_fit.phys_coefs["altitude_kft"]:+.1f}'))
+    if lr_fit.cov_coefs:
+        model_rows += [
+            ('temp, per °C (ref 12)',
+             f'{lr_fit.cov_coefs["temp_centered"]:+.2f}'),
+            (f'marathon fatigue, peak',
+             f'{lr_fit.cov_coefs["fat_marathon"]:+.1f}'),
+            ('short-race fatigue, peak',
+             f'{lr_fit.cov_coefs["fat_race_short"]:+.1f}'),
+        ]
     routes_panel = widgets.sidebar(
         'tq-routes',
         body=(
-            widgets.title('Long-run route offsets')
+            widgets.title('Long-run model (sec/mi)')
             + widgets.subtitle(
-                f'vs. baseline (n &ge; {MIN_ROUTE_N}); '
-                f'intercept {lr_fit.intercept:+.1f}, '
-                f'lr_lo {lr_fit.bin_coefs.get("lr_lo", 0.0):+.1f}')
-            + routes_table
+                f'intercept {lr_fit.intercept:+.1f} at '
+                f'{lr_fit.elev_ref:.0f} ft/mi, sea level; '
+                f'marathon fatigue pinned at {lr_fit.fatigue_ratio:.2f}× short race')
+            + widgets.table(('Term', 'β'), model_rows,
+                            align=('left', 'right'))
         ),
         compact=True,
         width_px=ROUTES_BOX_WIDTH,
