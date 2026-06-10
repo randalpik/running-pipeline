@@ -23,6 +23,7 @@
   var ALWAYS_SNAP    = window.__TT_ALWAYS_SNAP === true;
   var SHOW_SPIKE     = window.__TT_SPIKE !== false;
   var SPIKE_FULL     = window.__TT_SPIKE_FULL_PLOT === true;
+  var SPIKE_SNAP_DAY = window.__TT_SPIKE_SNAP_DAY === true;
   var range          = window.__TT_RANGE || { firstDay: -Infinity, lastDay: Infinity };
 
   var tt    = document.querySelector('.rp-tooltip');
@@ -313,10 +314,17 @@
       var html = callBuilder(day, false, null, ctx);
       if (!html) { pending.show = false; schedule(); return; }
       var sb2 = SPIKE_FULL ? plotAreaBounds(pdiv) : sp;
+      // Day-quantized spike: place the line at the (clamped) day the
+      // tooltip describes instead of the free cursor pixel.
+      var spikeX = e.clientX;
+      if (SPIKE_SNAP_DAY) {
+        var dayPx = sp.xa.c2p(day * 86400000);
+        if (dayPx != null && !isNaN(dayPx)) spikeX = sp.left + dayPx;
+      }
       pending.html        = html;
       pending.x           = e.clientX;
       pending.y           = e.clientY;
-      pending.spikeX      = e.clientX;
+      pending.spikeX      = spikeX;
       pending.spikeTop    = sb2.top;
       pending.spikeHeight = sb2.bottom - sb2.top;
       pending.show        = true;

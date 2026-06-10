@@ -99,6 +99,11 @@ class CursorTooltip:
     should visually span every panel (e.g. qualitative_trends). Default
     is per-subplot clipping so multi-panel plots don't draw a spike
     across panels the cursor isn't currently in.
+
+    Set ``spike_snap_day=True`` to quantize the smooth-mode spike to the
+    day the tooltip describes (one position per calendar day) instead of
+    following the cursor pixel — use when the x-axis is day-granular and
+    a free-floating spike reads as false precision (e.g. annual).
     """
     payload: object = None
     build_js: str = ''
@@ -108,6 +113,7 @@ class CursorTooltip:
     snap_px: int = 30
     always_snap: bool = False
     spike_full_plot: bool = False
+    spike_snap_day: bool = False
 
 
 def render_plot(
@@ -263,6 +269,7 @@ def _render_cursor_tooltip(ct: CursorTooltip) -> str:
     spike_json = 'true' if ct.spike else 'false'
     always_snap_json = 'true' if ct.always_snap else 'false'
     spike_full_json = 'true' if ct.spike_full_plot else 'false'
+    spike_snap_day_json = 'true' if ct.spike_snap_day else 'false'
 
     return (
         '<div class="rp-tooltip"></div>\n'
@@ -274,6 +281,7 @@ def _render_cursor_tooltip(ct: CursorTooltip) -> str:
         f'window.__TT_SNAP_PX = {ct.snap_px};\n'
         f'window.__TT_ALWAYS_SNAP = {always_snap_json};\n'
         f'window.__TT_SPIKE_FULL_PLOT = {spike_full_json};\n'
+        f'window.__TT_SPIKE_SNAP_DAY = {spike_snap_day_json};\n'
         f'{ct.build_js}\n'
         f'{_CURSOR_TOOLTIP_JS}\n'
         '</script>\n'
