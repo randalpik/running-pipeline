@@ -3,6 +3,9 @@ __pycache__/
 .claude/
 pyrightconfig.json
 
+# local secrets (Coros credentials etc.) — CI uses GHA repo secrets instead
+.env
+
 data/
 output/
 

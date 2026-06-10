@@ -41,7 +41,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.parsers import snapshot as snap          # noqa: E402
 from src.plots.build_shell import write_index      # noqa: E402
 from src.profiles import PROFILES, get_profile     # noqa: E402
+from src.shared.env import load_env_file           # noqa: E402
 from src.shared.paths import REPO_ROOT             # noqa: E402
+
+load_env_file()
 
 SITE_DIST = REPO_ROOT / "site" / "dist"
 

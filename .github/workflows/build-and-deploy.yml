@@ -131,7 +131,7 @@ jobs:
         # renders each profile's plots, writes the profile-switcher shell, and
         # stages into site/dist (Max -> root, Maddy -> profiles/maddy/). The
         # coros test profile is hidden via prod=False + RP_PRODUCTION. Maddy's
-        # Coros sync is incremental and her CS fit is cached (see cache step).
+        # Coros sync is incremental and their CS fit is cached (see cache step).
         env:
           COROS2_EMAIL: ${{ secrets.COROS2_EMAIL }}
           COROS2_PASSWORD: ${{ secrets.COROS2_PASSWORD }}

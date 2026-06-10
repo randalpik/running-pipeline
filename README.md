@@ -35,7 +35,7 @@ python scripts/build_profiles.py --only maddy --fit      # also rerun the Bayesi
 python scripts/build_profiles.py --fit                   # every profile, with fit
 ```
 
-Coros profiles need their watch credentials in the environment (`COROS2_EMAIL` / `COROS2_PASSWORD` for Maddy — see `src/profiles.py`) and the race-sheet sync needs the Drive service account (`GOOGLE_APPLICATION_CREDENTIALS`); without them the profile is skipped cleanly.
+Coros profiles need their watch credentials in the environment (`COROS2_EMAIL` / `COROS2_PASSWORD` for Maddy — see `src/profiles.py`) and the race-sheet sync needs the Drive service account (`GOOGLE_APPLICATION_CREDENTIALS`); without them the profile is skipped cleanly. Locally, put credentials in the gitignored `.env` at the repo root (`KEY=VALUE` lines, loaded by `src/shared/env.py`; real environment variables take precedence) — CI supplies the same names via GHA repo secrets.
 
 To **re-run only the CS fit** for one profile against its existing local data — no Drive/Coros sync, no credentials, useful for verifying a model change — point the fit at that profile's data dir:
 
