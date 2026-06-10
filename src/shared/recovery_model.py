@@ -169,7 +169,9 @@ def tod_is_pm(df):
 def transferable_contributions(df, betas, quality_dates):
     """Per-row modeled pace contribution (sec/mi) of the transferable
     factors — temperature, recent-race fatigue, time of day — for any
-    daily-frame subset (e.g. long runs). Missing temp/TOD contribute 0.
+    daily-frame subset (e.g. long runs). Missing temp/TOD contribute 0,
+    as does any factor whose beta key is absent from ``betas`` (the TQ
+    long-run model passes a dict without ``tod_is_pm``, so TOD drops out).
     Subtracting the result from observed pace normalizes those factors out.
     """
     df = add_quality_features(df, quality_dates)

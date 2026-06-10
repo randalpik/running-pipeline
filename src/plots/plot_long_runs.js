@@ -1,10 +1,11 @@
 // Normalize toggle for the Long Runs plot.
 //
-// One checkbox subtracts the recovery model's transferable factor
-// contributions (temperature, recent-race fatigue, time of day) from each
-// long-run point's pace. Per-point adjustments arrive index-aligned with
-// the markers trace via window.__PLOT_LR_NORM_ADJ (sec/mi, positive =
-// modeled slower than baseline, so normalizing moves the point faster).
+// One checkbox subtracts the TQ long-run model's covariate contributions
+// (temperature, marathon/short-race fatigue — betas fit on the long runs
+// themselves) from each point's pace. Per-point adjustments arrive
+// index-aligned with the markers trace via window.__PLOT_LR_NORM_ADJ
+// (sec/mi, positive = modeled slower than baseline, so normalizing moves
+// the point faster).
 //
 // window.__lrNormOn mirrors the checkbox so the cursor-tooltip build_js
 // (which lives in plot_long_runs.py's payload, keyed by day) can show the

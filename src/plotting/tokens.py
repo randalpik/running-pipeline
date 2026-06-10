@@ -35,10 +35,8 @@ SURFACES = {
 # --- Training-quality categories (separate semantic axis from surfaces;
 #     do not unify with SURFACES). Palette mirrors the conditional-formatting
 #     scheme of the source running log (running_log_2025_cf.json) so plot and
-#     spreadsheet read consistently. Long runs get two shades of the log's
-#     purple (`long`=#D9D2E9): light for the in-slice low-mileage bin, dark
-#     for the high-mileage bin. Hills share one color since the plot uses a
-#     single combined trace. ---
+#     spreadsheet read consistently. Long runs and hills each share one color
+#     since the plot uses a single combined trace for each. ---
 CAT_COLORS = {
     # Tuned for visibility on the dark plot background (#1a1a1a) while still
     # tracking the log's CF hue families (yellow→tempo, gold→interval,
@@ -49,8 +47,7 @@ CAT_COLORS = {
     'tempo':              "#83CC1D",  # lime / yellow-green (separated from interval)
     'rep':                "#F38A12",  # carrot orange (CF peach → vivid)
     'continuous_fartlek': "#FF5643",  # warm orange (CF peach → vivid, distinct from rep)
-    'lr_lo':              '#B19CD9',  # lavender (CF light purple, more saturated)
-    'lr_hi':              '#674EA7',  # deep purple
+    'long':               '#674EA7',  # deep purple (CF purple family)
     'hill_lc':            '#3D85C6',  # saturated medium blue (CF light blue → vivid)
     'hill_rc':            '#3D85C6',
     'hill_pwr1':          '#3D85C6',

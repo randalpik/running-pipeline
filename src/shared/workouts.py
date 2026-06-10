@@ -35,12 +35,11 @@ CS_PATH       = DATA_DIR / 'bayes_cs_summary.csv'
 
 # ---------- pipeline parameters ----------
 TAU = 210.0
-# Max's hand-tuned long-run distance slice + internal two-bin split. These are
-# a Max-specific exception (his years of long runs span ~15–25 mi). Other
-# profiles use long_slice_bounds()'s permissive fallback — see below.
-LONG_FLOOR      = 15.1
-LONG_CEIL       = 25.3
-LR_INTERNAL_BIN = 21.0
+# Max's hand-tuned long-run distance slice. A Max-specific exception (his
+# years of long runs span ~15–25 mi); other profiles use
+# long_slice_bounds()'s permissive fallback — see below.
+LONG_FLOOR = 15.1
+LONG_CEIL  = 25.3
 
 
 def long_slice_bounds():

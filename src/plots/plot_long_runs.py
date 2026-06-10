@@ -22,8 +22,9 @@ from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import daily_floor, axis_pad_entry
 from src.shared.workouts import load_cs, project_long_runs
 from src.shared.cs_projection import load_cs_outputs, cs_line_at_anchor
-from src.shared.recovery_model import (fit_recovery_model,
-                                       transferable_contributions)
+from src.shared.recovery_model import transferable_contributions
+from src.shared.long_run_model import (fit_long_run_model, load_quality_dates,
+                                       MIN_COV_N)
 from src.plotting import widgets
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box, route_paren,
@@ -96,24 +97,24 @@ def main():
     pace_min = lr['recovery_pace_sec_per_mi'].astype(float) / 60.0
     miles    = lr['miles'].astype(float)
 
-    # ---------- recovery-model normalization (transferable factors) ----------
-    # Betas come from the recovery fit (shared module — the same fit the
-    # Recovery tab renders), applying only the transferable per-day factors:
-    # temperature, recent-race fatigue, time of day. Route and era stay out
-    # (recovery route betas don't transfer to long-run effort; era is a
-    # recovery-residual track). The fit input mirrors make_recovery_plots:
-    # logging-era daily rows + races.csv + the CS summary.
-    daily_all = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
-    daily_all = daily_all.sort_values('date')
-    daily_all = daily_all[daily_all['date'] >= daily_floor()].reset_index(drop=True)
-    races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
-    rec_fit = fit_recovery_model(daily_all, races, daily_summary, verbose=False)
+    # ---------- normalization (long-run-sourced covariates) ----------
+    # Betas come from the TQ long-run model (same fit plot_training_quality
+    # renders): temperature + marathon/short-race fatigue, fit on the
+    # in-slice long runs themselves. Recovery-sourced betas were tried and
+    # rejected (June 2026) — marathons hit long runs ~2.3× harder than
+    # recovery runs, and recovery's time-of-day effect is dead on long runs
+    # (see docs/training-quality-reference.md). Adjustments apply to every
+    # plotted run, including out-of-slice ones the fit itself excludes.
     norm_adj = None
-    if rec_fit is not None:
-        adj = transferable_contributions(lr, rec_fit.betas, rec_fit.quality_dates)
-        # Omit a dead checkbox (profile where every adjustment is ~0).
-        if np.abs(adj).max() > 0.05:
-            norm_adj = adj
+    lr_in = lr[lr['excluded_reason'].isna()]
+    if len(lr_in) >= MIN_COV_N:
+        quality_dates = load_quality_dates()
+        _, lr_fit, _ = fit_long_run_model(lr_in.copy(), quality_dates)
+        if lr_fit.cov_coefs:
+            adj = transferable_contributions(lr, lr_fit.cov_coefs, quality_dates)
+            # Omit a dead checkbox (profile where every adjustment is ~0).
+            if np.abs(adj).max() > 0.05:
+                norm_adj = adj
 
     # ---------- figure ----------
     fig = go.Figure()
@@ -216,8 +217,8 @@ def main():
             widgets.divider()
             + widgets.checkbox_rows([('normalize', 'Normalize')],
                                     data_attr='lrnorm', checked=False)
-            + widgets.subtitle('Subtract modeled temp, recent-race and '
-                               'time-of-day effects (recovery-fit betas).')
+            + widgets.subtitle('Subtract modeled temperature and '
+                               'recent-race effects (long-run-fit betas).')
         )
     overlay_html = widgets.sidebar(
         'lr-gradient', body=gradient_bar + norm_section,
@@ -324,9 +325,11 @@ function buildTooltip(day, isSnap, pointHtml) {
     html += (isSnap && pointHtml ? pointHtml : run.html);
     if (window.__lrNormOn && run && run.adj != null) {
       // Shift applied to the point by the Normalize toggle: y = raw − adj.
+      // One decimal: adjustments are small (often < 5 s/mi), whole seconds
+      // would flatten most of them to +0.
       var sh = -run.adj;
-      html += '<div class="tt-row"><span>Norm adj</span><b>' +
-              (sh >= 0 ? '+' : '−') + Math.abs(Math.round(sh)) +
+      html += '<div class="tt-row"><span>Normalized adjustment</span><b>' +
+              (sh >= 0 ? '+' : '−') + Math.abs(sh).toFixed(1) +
               ' s/mi</b></div>';
     }
     html += '</div>';

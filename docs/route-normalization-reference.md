@@ -140,55 +140,48 @@ Terrain matters: at the same elev_per_mile, mixed routes cost
 unidentifiable from recovery alone (watershed, the only trail route in
 the data, has zero recovery runs — all long).
 
-## Long-run TQ corrections (May 2026)
+## Long-run TQ corrections (June 2026: physical terms)
 
 Long-run residuals in the training-quality framework are corrected by an
-in-plot OLS fit:
+in-plot OLS fit on the in-slice set (`miles ∈ [15.1, 25.3]`):
 
 ```
-raw_resid ~ bin + route
+raw_resid ~ bin + elev_pm(pinned at +0.17) + altitude(fitted)
+            + temp + race-fatigue
 ```
 
-fit on the in-slice long-run set (`miles ∈ [15.1, 25.3]`), with `route`
-collapsed to `'other'` for any location below `MIN_ROUTE_N = 5` long
-runs. Iterative MAD prune at σ = 3 on the V1-corrected residuals; outliers
-are dropped from the figure entirely. See
-`training-quality-reference.md` Stage 5b for the formula and parameters.
+See `training-quality-reference.md` Stage 5b for parameters.
 
-### Why fit route betas inside the TQ plot rather than reuse recovery betas
+### History: empirical per-route betas (May 2026) and why they were removed
 
-The recovery-only design principle (above) holds for the recovery plot.
-For long-run TQ residuals it doesn't, for two reasons:
+Stage 5b originally fit `raw_resid ~ bin + route` with empirical
+per-route dummies, accepting era confounding as tolerable for plot
+purposes ("the smoother track interpretation shifts to within-route
+within-era trend"). June 2026 showed the confounding corrupts
+*point-level* readings, which the graph visually invites: every named
+long-run route lives in one contiguous era with its own effort policy,
+so betas measured "typical effort that year", not terrain. Physically
+near-identical flat sea-level routes (south lakefront, north greenway)
+carried betas 31 s/mi apart, and a moderate 2026 effort out-ranked the
+all-time-best 2023 long run after correction.
 
-1. **Altitude under load.** Recovery effort at altitude is mildly
-   suppressed; long-run effort at altitude is more impaired. The
-   altitude-duration interaction means recovery betas systematically
-   under-correct Boulder-area long runs. A long-run-fit beta absorbs
-   the additional load.
+The fix is the **predicted-β idea this doc anticipated** (the cross-route
+fit `β = −13.7 + 0.17·elev_per_mile + 6.6·is_mixed`): the TQ model now
+pins the elevation slope at the recovery-derived **+0.17 s/mi per ft/mi**
+— effort-uncontaminated because recovery effort is uniform and recovery
+routes span eras; transferable because elevation cost is mechanical
+work, not a physiological state response — and fits altitude (≈ +3 s/mi
+per 1000 ft, identified by the within-Boulder-era sea-level contrast).
+The empirically-fit elevation slope on long runs comes out wrong-signed
+(−0.13) from the same era confounding, which is also why the earlier
+"altitude has no statistical effect" null was unfalsifiable: all 42
+in-slice altitude long runs fall inside the 2023–25 Boulder window, so
+altitude was unidentifiable from long-run data without an external
+anchor.
 
-2. **Single-era Nashville-quality routes.** Belle Meade, Greenway, North
-   Greenway are 100% in the 2020-23 quality-LR era and have insufficient
-   recovery coverage to estimate effort-uncontaminated betas. The
-   long-run beta entangles route cost with the era's quality
-   prescription — we accept that for the plot's purpose, since the
-   smoother track interpretation shifts to "within-route within-era
-   trend," not "fitness ahead of CS."
-
-This is a deliberate departure from the recovery-only design principle,
-scoped to the TQ visualization. The recovery plot stays untouched and
-its `route_betas_{tag}.csv` continues to represent intrinsic route cost.
-
-### When the predicted-β fallback (elev+terrain model) might still be useful
-
-The cross-route fit `β = −13.7 + 0.17 · elev_per_mile + 6.6 · is_mixed`
-documented above is no longer in the production TQ plot. It remains
-useful for:
-
-- Out-of-band analysis: estimating cost of routes with no logged data.
-- Future revisitation: if the era-confounding becomes problematic, the
-  predicted-β fallback can serve as a regularizer for low-n routes.
-- Cross-checking: large divergences between empirical TQ-plot betas and
-  predicted betas highlight era / altitude effects worth investigating.
+The recovery plot stays untouched: recovery's own empirical route betas
+remain valid (uniform effort, cross-era routes) and its
+`route_betas_{tag}.csv` continues to represent intrinsic route cost.
 
 ## Powerline name disambiguation
 
@@ -223,10 +216,19 @@ Flagstaff, Longs Peak, Magnolia, etc.) and Banff trails.
 
 ### Altitude as feature
 
-Currently doesn't help (3-4 altitude routes, all lie on the same
-elev_per_mile line as sea-level). Worth revisiting if (a) Max accumulates
-substantially more altitude data or (b) a genuinely outlying altitude
-route appears that elev_per_mile alone can't explain.
+For **recovery** route betas, altitude currently doesn't help (3-4
+altitude routes, all lie on the same elev_per_mile line as sea-level) —
+plausible, since recovery effort at altitude is only mildly suppressed.
+Worth revisiting if (a) Max accumulates substantially more altitude data
+or (b) a genuinely outlying altitude route appears that elev_per_mile
+alone can't explain.
+
+For **long runs** the earlier null was an identification failure, not a
+finding: all in-slice altitude long runs sit inside the 2023–25 Boulder
+high-effort era, so altitude was perfectly confounded with effort
+policy. The June 2026 TQ physical model fits altitude at ≈ +3 s/mi per
+1000 ft via the within-era sea-level contrast (see "Long-run TQ
+corrections" above).
 
 ### When to rebuild the elev+terrain coefficients
 
@@ -235,7 +237,11 @@ snapshot. They should be rerun whenever:
 - A new route crosses MIN_ROUTE_N (currently 13) for recovery
 - elev_per_mile/terrain_type values are revised in the locations sheet
 - Trail or altitude data expands enough to flip the conclusion that
-  altitude doesn't contribute
+  altitude doesn't contribute (for recovery)
+
+(June 2026) The TQ long-run model pins `LR_ELEV_SLOPE = 0.17` in
+`src/shared/long_run_model.py` from this fit — when these coefficients
+are rebuilt, update the pinned constant to match.
 
 The recovery plotter writes `route_betas_{tag}.csv` on every run, which
 provides the per-route empirical betas. The cross-route fit (regressing

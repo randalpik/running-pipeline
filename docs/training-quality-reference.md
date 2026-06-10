@@ -25,17 +25,47 @@ sits next to CS without feeding back into it.
 - **No β_long anywhere.** β_long encodes max-effort long-distance fade,
   doesn't apply to sub-max efforts. Including it would inflate fitness
   implications beyond what the data demonstrates.
-- **Long-run scope is `[15.1, 25.3]` miles, with a 21mi internal bin.**
-  Replaces `miles ≥ 20` + 23mi split. Lower bound separates honest
-  long-run effort from mid-week aerobic work; upper bound trims the
-  small-n marathon-distance fade regime; 21mi corresponds to where
-  glycogen / fueling effects begin dominating.
-- **Empirical per-route long-run betas at n ≥ 5 within the slice.** Fit
-  inside the TQ plot rather than imported from the recovery plot's
-  betas. Recovery betas systematically under-correct at altitude and
-  miss the 2020–23 single-era Nashville-quality routes. Era-confounding
-  remains for some routes but is acceptable for the residual
-  visualization purpose.
+- **Long-run scope is `[15.1, 25.3]` miles; distance carries no model
+  term (June 2026).** The scope bounds stand: lower bound separates
+  honest long-run effort from mid-week aerobic work; upper bound trims
+  the small-n marathon-distance fade regime. The 21mi internal bin's
+  coefficient collapsed from ~+20 to +3.5 when route dummies were
+  removed (it was mostly route/era mix), and a fresh sweep under the
+  physical model found bin@21 *worse*
+  than no distance term (ΔAIC +0.8) while every apparently-better
+  distance term was era composition in disguise — within-era distance
+  slopes flip sign between eras. The lr_lo/lr_hi labels are fully
+  retired: the TQ legend renders a single "Long" entry, and the
+  dashboard's long-run pace prediction (projected to 20 miles) uses a
+  recency-weighted (365d half-life) mean residual over familiar-route
+  long runs — the per-bin empirical means differed by 0.3 s/mi (the
+  split conditioned on nothing) while recency moves the estimate
+  ~+7 s/mi.
+- **Physical route terms (pinned elevation slope + fitted altitude)
+  replace per-route dummies (June 2026).** Empirical route betas were
+  almost perfectly era-confounded — every named route lives in one
+  contiguous era with its own long-run effort policy, so betas encoded
+  "typical effort that year", not terrain (physically identical flat
+  routes south lakefront / north greenway sat 31 s/mi apart; a moderate
+  2026 effort out-ranked the all-time-best 2023 long run after
+  correction). The elevation slope is pinned at +0.17 s/mi per ft/mi
+  from the recovery cross-route fit (effort-uncontaminated; mechanical
+  cost transfers across effort types, unlike fatigue betas) because the
+  long-run-fit slope comes out wrong-signed (−0.13) from the same
+  confounding. Altitude is fitted (≈ +3 s/mi per 1000 ft), identified by
+  the within-Boulder-era sea-level contrast. Era effort policy now stays
+  visible in the corrected residuals — the smoother track reading
+  reverts to "fitness/effort vs CS", no longer "within-route trend".
+- **Temperature + race-fatigue covariates in the long-run fit, betas fit
+  fresh on long runs (June 2026).** Stage 5b adds `temp_centered` and the
+  marathon / short-race exponential fatigue decays using the recovery
+  model's encodings but its own coefficients: marathons impair long runs
+  ~2.3× more than recovery runs (+39 vs +17 s/mi peak), so transplanting
+  recovery betas under-corrects (tested and rejected in the June 2026
+  variant experiment). Time of day, a strong
+  recovery factor, is dead on long runs (t ≈ 0.25) and excluded.
+  Covariates are gated at `MIN_COV_N = 30` in-slice runs so sparse
+  watch profiles degrade to an intercept-only fit.
 - **τ = 210 sec/mi for workout D_eff decay.** Calibrated so 6×1600 @ 3:00/mi
   rest gives D_eff ≈ 5000m (anchor preserved from earlier work).
 - **Reps excluded from the smoother.** Anaerobic top-end work, doesn't
@@ -99,10 +129,11 @@ Per in-scope long run:
 3. `t_5K = (5000 − D'_t) · t_run / (D_eff − D'_t)`
 4. `P5K = t_5K · 1609.344 / 5000`
 5. `raw_resid = P5K − CS_implied_5K_pace`
-6. Bin: `lr_lo` if `miles < 21`, else `lr_hi`. The 21mi internal split
-   physiologically corresponds to the regime change where glycogen /
-   fueling effects start dominating; supported empirically by a
-   within-slice 2-bin sweep (Δ AIC = −52 vs no bin).
+(There is no per-distance bin: the former 21mi lr_lo/lr_hi split was
+retired in June 2026 — its original Δ AIC = −52 justification was
+computed inside the route-dummy model and didn't survive its removal;
+the bin was absorbing route/era mix, not a glycogen regime change. See
+"Decisions locked in".)
 
 Long-run residuals are then corrected by an OLS fit (Stage 5b) rather
 than by a per-category median offset like workouts and hills.
@@ -174,70 +205,92 @@ threshold. Converges in 3–4 passes. Hills have a higher prune rate
 (~20%) than workouts because the long right tail of "easy hill days"
 sits just above the +23.3 cutoff.
 
-### Stage 5b — Long-run model (route betas + bin)
+### Stage 5b — Long-run model (physical route terms + covariates)
 
 Long runs use an OLS fit on the in-slice set instead of a per-category
 median offset:
 
 ```
-raw_resid ~ bin + route
+raw_resid ~ elev_pm(pinned) + altitude + temp_centered
+            + fat_marathon + fat_race_short
 ```
 
-- `bin ∈ {lr_lo, lr_hi}`, reference `lr_hi` (Treatment-encoded).
-- `route` is `location` for routes with at least `MIN_ROUTE_N = 5` long
-  runs in the slice; all others collapse to a single `'other'` bucket
-  used as the route reference. Per-route betas are read directly off the
-  fit.
+- Distance carries no term (June 2026 sweep — see "Decisions locked in");
+  the lr_lo/lr_hi labels are fully retired.
+- Physical route terms (June 2026, replacing per-route dummies — see
+  "Decisions locked in"): `elev_pm_c` is feet of climbing per mile from
+  the locations sheet, centered at the in-slice median (missing →
+  reference, contribution 0), with the slope **pinned** at
+  `LR_ELEV_SLOPE = +0.17` s/mi per ft/mi from the recovery cross-route
+  fit; `altitude_kft` (missing → sea level) is **fitted**. Terrain type
+  is not a term — in-slice long runs are 95% paved.
+- Covariates reuse the recovery model's encodings —
+  `temp_centered = temp_c − 12`, `fat_<cat> = exp(−days_since/τ)` with
+  τ = 6d (marathon) / 5d (short race) — but the betas are fit on the
+  long runs themselves. Missing temp falls to the reference
+  (contribution 0) so no row drops from the fit.
+- All terms gate on ≥ `MIN_COV_N = 30` in-slice runs; physical terms
+  additionally require variation in the data (watch profiles without
+  route metadata degrade to an intercept-only fit).
 - Iterative MAD-based outlier prune at σ = `PRUNE_SIGMA = 3.0` on the
-  V1-corrected residuals (`raw_resid − model.predict()`). Pruned rows
+  corrected residuals (`raw_resid − model.predict()`). Pruned rows
   are dropped from the figure entirely; they don't feed the smoother
   and aren't rendered.
+- `route` / `qualifying_routes` (locations with ≥ `MIN_ROUTE_N = 5`
+  in-slice runs) are still emitted as descriptive labels — the
+  dashboard's familiar-route bin-residual filter and outlier reporting
+  use them — but carry no coefficients.
 
-Why route betas computed inside the TQ plot rather than imported from
-the recovery plot's `route_betas_{tag}.csv`: long-run effort at altitude
-(Boulder routes) is more impaired than recovery effort, and
-Belle Meade / Greenway / North Greenway are 100% in the 2020–23
-quality-LR era and have insufficient recovery data — recovery betas
-systematically under-correct. Era-confounding remains for some routes
-but is acceptable for plot purposes; the smoother track interpretation
-shifts from "fitness ahead of CS" to "within-route within-era trend."
-The recovery-only design principle (see
-`route-normalization-reference.md`) still holds for the recovery plot.
+The Long Runs tab's "Normalize" toggle reuses this fit's covariate betas
+(via `recovery_model.transferable_contributions`) to shift every plotted
+long run — including out-of-slice ones — by its modeled temp + fatigue
+contribution.
 
-### Per-category offsets / coefficients (final, May 2026)
+Caveat to keep in mind: with route dummies gone, era effort variance has
+nowhere to hide, and some of it leaks into whatever correlates with era —
+the race-fatigue betas roughly tripled (race-dense blocks were
+quality-effort blocks) and temperature dropped to ~0. The fatigue terms
+are still day-scale (decay τ ≈ 5–6d) so the damage is bounded, but
+re-examine the betas once more cross-era data accumulates or after
+elev_per_mile gaps are filled.
+
+### Per-category offsets / coefficients (June 2026)
+
+These drift as data accumulates — regenerate by running
+`plot_training_quality.py` and reading the console output.
 
 Workouts and hills (Stage 5a):
 
 | Category            | Offset (sec/mi) | Interpretation                             |
 |---------------------|----------------:|--------------------------------------------|
-| interval            |          −2.20  | At ~5K capability                          |
-| continuous_fartlek  |         +18.21  | Sub-threshold continuous                   |
-| tempo               |         +19.07  | Sub-threshold by design                    |
-| hill_lc             |         +29.93  | Paved 3.5% loop, tempo+hill effort         |
-| hill_pwr1           |         +96.38  | Steep gravel 9.8% loop                     |
-| hill_rc             |         +73.10  | Rocky-trail 5.8% loop                      |
+| interval            |          −2.31  | At ~5K capability                          |
+| continuous_fartlek  |         +17.58  | Sub-threshold continuous                   |
+| tempo               |         +18.99  | Sub-threshold by design                    |
+| hill_lc             |         +28.75  | Paved 3.5% loop, tempo+hill effort         |
+| hill_pwr1           |         +96.62  | Steep gravel 9.8% loop                     |
+| hill_rc             |         +75.38  | Rocky-trail 5.8% loop                      |
 
-Long-run model (Stage 5b), reference `bin=lr_hi`, `route=other`:
+Long-run model (Stage 5b), reference: median-elevation (62 ft/mi)
+sea-level route:
 
-| Term                       | Coef (sec/mi) | n   |
-|----------------------------|--------------:|----:|
-| Intercept                  |       +56.07  |     |
-| bin = lr_lo                |       +23.24  | 134 |
-| route = belle meade        |       −64.44  |  42 |
-| route = boulder turnpike   |       −12.41  |  22 |
-| route = east boulder       |       −40.02  |  17 |
-| route = greenway           |       −43.99  |  46 |
-| route = lake samm          |       −33.85  |  16 |
-| route = north greenway     |       −57.15  |   9 |
-| route = river trail        |       −30.30  |  12 |
-| route = south lakefront    |       −19.80  |  14 |
+| Term                        | Coef (sec/mi) |
+|-----------------------------|--------------:|
+| Intercept                   |       +27.45  |
+| elev_pm_c (per ft/mi)       | +0.17 pinned  |
+| altitude_kft (per 1000 ft)  |        +2.98  |
+| temp_centered (per °C)      |        +0.11  |
+| fat_marathon (peak)         |       +35.61  |
+| fat_race_short (peak)       |       +28.95  |
 
-Fit on n_kept = 185 (4 pruned): R² = 0.607, resid SD = 12.91 sec/mi.
+Fit on n_kept = 188 (3 pruned): R² = 0.119, resid SD = 18.09 sec/mi.
+The R² drop vs the route-dummy model (0.605) is **intentional**: the
+dummies were explaining era effort policy, which is signal the graph
+should display, not variance the model should remove.
 
 Reps (~35) are excluded from the smoother.
 
-Total kept after all filters and prunes: 215 workouts + 185 long runs
-+ 99 hills = 499. Hill offsets are large because they encode actual
+Total kept after all filters and prunes: 217 workouts + 188 long runs
++ 96 hills = 501. Hill offsets are large because they encode actual
 on-loop pace (no grade adjustment); steeper loops have proportionally
 larger offsets.
 
@@ -373,6 +426,45 @@ race residual = −0.16. Three reasons:
   at 6–7 for nearly all hill rep sessions; after regressing out
   workload, residual variance is too low for useful signal. Refreezing
   would be cheap but the signal isn't there.
+- **Any distance term in the long-run model (June 2026, two rounds).**
+  Round 1 (inside the route-dummy model): linear/hinge lost to the
+  21mi bin by ΔAIC +39 — at the time read as "the bin is a genuine
+  regime change". Round 2 (a threshold/knot sweep after route dummies
+  were removed): the bin's coefficient collapsed +20 →
+  +3.5, bin@21 scored *worse* than no distance term (ΔAIC +0.8), and the
+  tempting alternatives (bin@17.5, ΔAIC −62; hinge@18.5, −44) are era
+  composition in disguise — the sub-17.5mi band's effect flips sign
+  across eras (Nashville −13.5 vs Seattle +13.1 / Chicago +16.4 s/mi),
+  within-era distance slopes flip sign era to era, and a real
+  physiological boundary wouldn't migrate 3.5mi when route handling
+  changes. Distance terms removed entirely, and the lr_lo/lr_hi labels
+  with them (single "Long" legend entry; the dashboard's long-run
+  prediction is a recency-weighted mean, distance-unconditioned, since
+  the per-bin empirical means differed by 0.3 s/mi). Round 1's
+  bin-vs-continuous result is thereby
+  understood as two route/era proxies competing, the coarser one
+  winning.
+- **Recovery-sourced covariate betas on long runs (June 2026).** Tested
+  as variant V3: subtract the recovery fit's temp/fatigue/TOD
+  contributions, then fit bin + route. Underperforms fitting the betas
+  fresh — marathon fatigue is ~2.3× stronger on long runs, and TOD is
+  recovery-specific. Same conclusion as the route-beta decision: TQ fits
+  its own coefficients.
+- **Time-of-day covariate in the long-run fit (June 2026).** β ≈ +0.5,
+  t ≈ 0.25 — dead, despite being a strong recovery factor (−4.8 s/mi).
+  Excluded.
+- **Empirical per-route long-run betas (removed June 2026).** Served as
+  the Stage 5b route correction until the era confounding proved fatal:
+  every named route lives in one contiguous era, so betas measured
+  "typical effort that year" (physically identical flat routes 31 s/mi
+  apart; east boulder at 5,400 ft carried a *negative* beta; a moderate
+  2026 run out-ranked the all-time-best 2023 long run after correction).
+  Replaced by physical route terms — see "Decisions locked in".
+- **Empirically-fit elevation slope in the long-run model (June 2026).**
+  Comes out −0.13 s/mi per ft/mi — wrong-signed, because hilly routes
+  are concentrated in quality-effort eras; the same confounding that
+  sank route dummies, in continuous form. Pinned to the recovery
+  cross-route value (+0.17) instead.
 
 ## Working assumptions
 
