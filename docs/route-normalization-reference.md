@@ -143,7 +143,7 @@ the data, has zero recovery runs — all long).
 ## Long-run TQ corrections (June 2026: physical terms)
 
 Long-run residuals in the training-quality framework are corrected by an
-in-plot OLS fit on the in-slice set (`miles ∈ [15.1, 25.3]`):
+in-plot OLS fit on the in-slice set (`miles ∈ [12.0, 25.3]`):
 
 ```
 raw_resid ~ bin + elev_pm(pinned at +0.17) + altitude(fitted)

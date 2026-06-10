@@ -679,7 +679,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         model_rows += [
             ('temp, per °C (ref 12)',
              f'{lr_fit.cov_coefs["temp_centered"]:+.2f}'),
-            ('marathon fatigue, peak',
+            (f'marathon fatigue, peak ({lr_fit.fatigue_ratio:.2g}× short)',
              f'{lr_fit.cov_coefs["fat_marathon"]:+.1f}'),
             ('short-race fatigue, peak',
              f'{lr_fit.cov_coefs["fat_race_short"]:+.1f}'),

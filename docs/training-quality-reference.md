@@ -25,10 +25,13 @@ sits next to CS without feeding back into it.
 - **No β_long anywhere.** β_long encodes max-effort long-distance fade,
   doesn't apply to sub-max efforts. Including it would inflate fitness
   implications beyond what the data demonstrates.
-- **Long-run scope is `[15.1, 25.3]` miles; distance carries no model
-  term (June 2026).** The scope bounds stand: lower bound separates
-  honest long-run effort from mid-week aerobic work; upper bound trims
-  the small-n marathon-distance fade regime. The 21mi internal bin's
+- **Long-run scope is `[12.0, 25.3]` miles; distance carries no model
+  term (June 2026).** The floor was lowered from 15.1 in June 2026: the
+  residual cliff sits at ~12 mi (sub-12 labeled-long runs — the 2016–17
+  subjective "long" days — run ~90 s/mi off CS, while 12–15 mi runs at
+  ~40-55 s/mi match same-era in-slice runs), and the 12–15.1 band adds
+  ~88 runs concentrated in the otherwise near-empty 2017–2019 years.
+  The upper bound trims the small-n marathon-distance fade regime. The 21mi internal bin's
   coefficient collapsed from ~+20 to +3.5 when route dummies were
   removed (it was mostly route/era mix), and a fresh sweep under the
   physical model found bin@21 *worse*
@@ -56,13 +59,25 @@ sits next to CS without feeding back into it.
   the within-Boulder-era sea-level contrast. Era effort policy now stays
   visible in the corrected residuals — the smoother track reading
   reverts to "fitness/effort vs CS", no longer "within-route trend".
-- **Temperature + race-fatigue covariates in the long-run fit, betas fit
-  fresh on long runs (June 2026).** Stage 5b adds `temp_centered` and the
-  marathon / short-race exponential fatigue decays using the recovery
-  model's encodings but its own coefficients: marathons impair long runs
-  ~2.3× more than recovery runs (+39 vs +17 s/mi peak), so transplanting
-  recovery betas under-corrects (tested and rejected in the June 2026
-  variant experiment). Time of day, a strong
+- **Temperature + race-fatigue covariates in the long-run fit; fatigue
+  is one fitted scale with the marathon/short contrast pinned from the
+  recovery fit (June 2026).** Stage 5b adds `temp_centered` (fit fresh on
+  long runs) and a combined race-fatigue regressor
+  `fat_race_short + ratio·fat_marathon`, where `ratio` is
+  `β_marathon / β_race_short` from the profile's recovery fit
+  (`recovery_fatigue_ratio()`, computed per profile at build time;
+  fallback 1.0 when the recovery fit is unavailable or the contrast
+  unidentified). Rationale: the free long-run marathon beta was
+  unidentified — only ~4 long runs carry meaningful marathon-fatigue
+  load, and leave-one-out swung it 1.4–8.6 s/mi — while the recovery fit
+  pins the contrast on ~2,300 rows (1.82 for Max, June 2026). The fitted
+  long-run scale comes out ~2.3× recovery's amplitude (t = 2.12 against
+  scale = 1), so transplanting recovery betas wholesale under-corrects
+  (tested and rejected in the June 2026 variant experiment); the contrast
+  transfers, the amplitude doesn't — a long run holds the fatigued state
+  for 12–25 mi nearer threshold. Implied peaks for Max: marathon ≈ +38,
+  short ≈ +21 s/mi, strikingly convergent with the old slice's free
+  estimate (+36) that had motivated separate terms. Time of day, a strong
   recovery factor, is dead on long runs (t ≈ 0.25) and excluded.
   Covariates are gated at `MIN_COV_N = 30` in-slice runs so sparse
   watch profiles degrade to an intercept-only fit.
@@ -116,9 +131,10 @@ Per workout (in the plot pipeline):
 
 ### Stage 3 — Long run projection
 
-Filter: `run_type == 'long'` AND `miles ∈ [15.1, 25.3]`. The slice replaces
+Filter: `run_type == 'long'` AND `miles ∈ [12.0, 25.3]`. The slice replaces
 the earlier `miles ≥ 20` cutoff: lower bound separates honest long-run
-effort from shorter mid-week aerobic work; upper bound trims the small-n
+effort from shorter mid-week aerobic work (the residual cliff sits at
+~12 mi — see "Decisions locked in"); upper bound trims the small-n
 marathon-distance fade regime that would otherwise need its own bin.
 Out-of-scope long runs aren't displayed in the plot and don't feed the
 smoother.
@@ -212,7 +228,8 @@ median offset:
 
 ```
 raw_resid ~ elev_pm(pinned) + altitude + temp_centered
-            + fat_marathon + fat_race_short
+            + fat_race  (= fat_race_short + ratio·fat_marathon,
+                         ratio pinned from the recovery fit)
 ```
 
 - Distance carries no term (June 2026 sweep — see "Decisions locked in");
@@ -226,9 +243,13 @@ raw_resid ~ elev_pm(pinned) + altitude + temp_centered
   is not a term — in-slice long runs are 95% paved.
 - Covariates reuse the recovery model's encodings —
   `temp_centered = temp_c − 12`, `fat_<cat> = exp(−days_since/τ)` with
-  τ = 6d (marathon) / 5d (short race) — but the betas are fit on the
-  long runs themselves. Missing temp falls to the reference
-  (contribution 0) so no row drops from the fit.
+  τ = 6d (marathon) / 5d (short race). Temperature's beta is fit on the
+  long runs themselves. Race fatigue is a single fitted scale on
+  `fat_race_short + ratio·fat_marathon` with the ratio pinned from the
+  recovery fit (see "Decisions locked in"); `cov_coefs` exposes the
+  ratio-expanded per-category betas so `transferable_contributions`
+  and the sidebar see the familiar two-key shape. Missing temp falls to
+  the reference (contribution 0) so no row drops from the fit.
 - All terms gate on ≥ `MIN_COV_N = 30` in-slice runs; physical terms
   additionally require variation in the data (watch profiles without
   route metadata degrade to an intercept-only fit).

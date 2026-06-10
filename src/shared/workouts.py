@@ -35,10 +35,13 @@ CS_PATH       = DATA_DIR / 'bayes_cs_summary.csv'
 
 # ---------- pipeline parameters ----------
 TAU = 210.0
-# Max's hand-tuned long-run distance slice. A Max-specific exception (his
-# years of long runs span ~15–25 mi); other profiles use
-# long_slice_bounds()'s permissive fallback — see below.
-LONG_FLOOR = 15.1
+# Max's hand-tuned long-run distance slice; other profiles use
+# long_slice_bounds()'s permissive fallback — see below. The floor sits at
+# the residual cliff: labeled-long runs under ~12 mi (2016–17 subjective
+# "long" days) run ~90 s/mi off CS vs ~40-55 for 12–15 mi, which behave
+# like same-era in-slice long runs. Lowered 15.1 → 12.0 in June 2026 to
+# pull in ~88 runs concentrated in the sparse 2017–2019 years.
+LONG_FLOOR = 12.0
 LONG_CEIL  = 25.3
 
 

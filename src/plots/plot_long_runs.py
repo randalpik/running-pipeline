@@ -99,12 +99,14 @@ def main():
 
     # ---------- normalization (long-run-sourced covariates) ----------
     # Betas come from the TQ long-run model (same fit plot_training_quality
-    # renders): temperature + marathon/short-race fatigue, fit on the
-    # in-slice long runs themselves. Recovery-sourced betas were tried and
-    # rejected (June 2026) — marathons hit long runs ~2.3× harder than
-    # recovery runs, and recovery's time-of-day effect is dead on long runs
-    # (see docs/training-quality-reference.md). Adjustments apply to every
-    # plotted run, including out-of-slice ones the fit itself excludes.
+    # renders): temperature fit on the in-slice long runs, race fatigue as
+    # one fitted scale with the marathon/short contrast pinned from the
+    # recovery fit (see long_run_model docstring). Recovery-sourced
+    # amplitudes were tried and rejected (June 2026) — long runs are hit
+    # ~2.3× harder than recovery runs — and recovery's time-of-day effect
+    # is dead on long runs (see docs/training-quality-reference.md).
+    # Adjustments apply to every plotted run, including out-of-slice ones
+    # the fit itself excludes.
     norm_adj = None
     lr_in = lr[lr['excluded_reason'].isna()]
     if len(lr_in) >= MIN_COV_N:

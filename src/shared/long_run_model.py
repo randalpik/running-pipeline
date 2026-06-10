@@ -33,11 +33,24 @@ filter and outlier reporting use them — but the model no longer fits
 per-route coefficients.
 
 Covariates use the recovery model's encodings (temp centered at 12°C,
-exp(−days/τ) race-fatigue decay) but the betas are fit FRESH on long runs —
-a June 2026 variant experiment showed recovery-sourced betas underperform:
-marathons hit long runs ~2.3× harder than recovery runs (+39 vs +17 s/mi
-peak), and time of day, a strong recovery factor, is dead on long runs
-(t≈0.25) so it's excluded here.
+exp(−days/τ) race-fatigue decay). Temperature is fit fresh on long runs.
+Race fatigue is a SINGLE fitted scale on a combined regressor
+``fat_race_short + ratio·fat_marathon`` where the marathon/short ratio is
+pinned from the profile's recovery fit (``recovery_fatigue_ratio()``).
+Rationale (June 2026): the free marathon beta was unidentified — only ~4
+long runs carry meaningful marathon-fatigue load, and leave-one-out swung
+the beta 1.4–8.6 (23–57 on the pre-12mi-floor slice). The recovery fit
+identifies the marathon-vs-short contrast on ~2,300 rows; fatigue is the
+same physiological state response, so the contrast transfers while the
+amplitude is regime-specific — long runs hold the fatigued state for
+12–25 mi nearer threshold, and the fitted scale comes out ~2.3× recovery's
+(t=2.12 against scale=1, so transplanting recovery betas wholesale
+under-corrects — that variant was tested and rejected in June 2026; an
+F-test could not reject a single shared beta, p=0.39). Time of day, a
+strong recovery factor, is dead on long runs (t≈0.25) so it's excluded
+here. ``cov_coefs`` still exposes per-category ``fat_marathon`` /
+``fat_race_short`` keys (the ratio-expanded scale) so downstream consumers
+(``transferable_contributions``, the TQ sidebar) see the familiar shape.
 
 Lifted out of ``src/plots/plot_training_quality.py`` so both the Training
 plot and the Dashboard tab can import the same fit without one having to
@@ -55,6 +68,7 @@ from src.shared.paths import DATA_DIR
 from src.shared.plot_window import daily_floor
 from src.shared.recovery_model import (quality_category_dates,
                                        add_quality_features,
+                                       fit_recovery_model,
                                        TEMP_REFERENCE_C)
 
 # Min long runs per location for the DESCRIPTIVE 'route' label (locations
@@ -68,7 +82,11 @@ PRUNE_SIGMA = 3.0
 # (watch profiles with a handful of long runs).
 MIN_COV_N = 30
 
-LR_COVARIATES = ['temp_centered', 'fat_marathon', 'fat_race_short']
+# 'fat_race' is the combined race-fatigue regressor (short + ratio·marathon,
+# ratio pinned from the recovery fit — see recovery_fatigue_ratio()). One
+# fitted scale instead of two free betas; expanded back to per-category
+# keys in cov_coefs after the fit.
+LR_COVARIATES = ['temp_centered', 'fat_race']
 # Physical route terms: feet of climbing per mile (centered at the in-slice
 # median so the intercept reads as "typical-elevation route"; missing →
 # reference), and altitude in thousands of feet (missing → sea level, the
@@ -90,6 +108,38 @@ LR_ELEV_SLOPE = 0.17
 LR_PHYS_FITTED = ['altitude_kft']
 
 
+_FATIGUE_RATIO_CACHE: dict = {}
+
+
+def recovery_fatigue_ratio():
+    """Marathon/short-race fatigue contrast from the profile's recovery fit
+    (β_marathon / β_race_short), computed per profile from real data so a
+    watch profile gets its own contrast as history accumulates. Falls back
+    to 1.0 — a flat single fatigue term, which an F-test on Max's long runs
+    couldn't reject anyway — when the recovery fit is unavailable (missing
+    files, too little data) or either beta comes out non-positive (an
+    unidentified contrast, e.g. a profile with no marathons yet — harmless,
+    since such a profile's ``fat_marathon`` is all-zero too). Cached per
+    data dir; the recovery OLS is cheap but not free."""
+    key = str(DATA_DIR)
+    if key not in _FATIGUE_RATIO_CACHE:
+        ratio = 1.0
+        try:
+            daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
+            races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
+            cs = pd.read_csv(DATA_DIR / 'bayes_cs_summary.csv',
+                             parse_dates=['date'])
+            betas = fit_recovery_model(daily, races, cs, verbose=False).betas
+            m = float(betas.get('fat_marathon', 0.0))
+            rs = float(betas.get('fat_race_short', 0.0))
+            if np.isfinite(m) and np.isfinite(rs) and m > 0 and rs > 0:
+                ratio = m / rs
+        except Exception:
+            pass
+        _FATIGUE_RATIO_CACHE[key] = ratio
+    return _FATIGUE_RATIO_CACHE[key]
+
+
 def load_quality_dates():
     """Quality-day dates (marathon / short race) from the profile's daily.csv
     and races.csv — the recovery model's categorization, reused here for the
@@ -101,24 +151,29 @@ def load_quality_dates():
     return quality_category_dates(daily, races)
 
 
-def fit_long_run_model(lr_in, quality_dates=None):
+def fit_long_run_model(lr_in, quality_dates=None, fatigue_ratio=None):
     """Fit ``raw_resid ~ physical route + covariates`` on the in-slice long
     runs via OLS, with an iterative MAD-based outlier prune at
     ``PRUNE_SIGMA`` on the corrected residuals. Physical terms (elevation
     gain per mile at the pinned ``LR_ELEV_SLOPE`` + fitted altitude) and
-    covariates (``LR_COVARIATES``: temperature + marathon/short-race fatigue
-    decay) are included only when the sample has at least ``MIN_COV_N``
-    rows; each physical term additionally requires variation in the data.
-    Distance carries no term — see module docstring.
+    covariates (``LR_COVARIATES``: temperature + the ratio-pinned combined
+    race-fatigue decay — see module docstring) are included only when the
+    sample has at least ``MIN_COV_N`` rows; each physical term additionally
+    requires variation in the data. Distance carries no term — see module
+    docstring.
 
     ``quality_dates`` is the per-category race-date dict from
     ``load_quality_dates()`` / ``recovery_model.quality_category_dates``;
     pass it when the caller already has it, else it's loaded from the
-    profile's data dir.
+    profile's data dir. ``fatigue_ratio`` is the marathon/short fatigue
+    contrast; defaults to ``recovery_fatigue_ratio()`` (pass explicitly in
+    experiments to bypass the recovery fit).
 
     Returns ``(lr_in_augmented, fit, qualifying_routes)``. ``fit`` is a
     SimpleNamespace with ``intercept``, ``phys_coefs`` (dict), ``cov_coefs``
-    (dict; both empty when gated off), ``elev_ref`` (the in-slice median
+    (dict; both empty when gated off; race fatigue appears as per-category
+    ``fat_marathon`` / ``fat_race_short`` keys expanded from the single
+    fitted scale), ``fatigue_ratio``, ``elev_ref`` (the in-slice median
     ft/mi the elevation term is centered at), ``rsquared``, ``resid_sd``,
     ``n_kept``.
 
@@ -134,6 +189,12 @@ def fit_long_run_model(lr_in, quality_dates=None):
     # Missing temp = reference temp (contribution 0) so no row drops out of
     # the fit for lacking a thermometer reading.
     lr_in['temp_centered'] = (lr_in['temp_c'] - TEMP_REFERENCE_C).fillna(0.0)
+    # Combined race-fatigue regressor: one fitted scale, marathon/short
+    # contrast pinned from the recovery fit (see module docstring).
+    if fatigue_ratio is None:
+        fatigue_ratio = recovery_fatigue_ratio()
+    lr_in['fat_race'] = (lr_in['fat_race_short']
+                         + fatigue_ratio * lr_in['fat_marathon'])
     # Physical route terms. Elevation is centered at the in-slice median so
     # the intercept reads as a typical-elevation route; rows missing
     # elev_per_mile fall to the reference (contribution 0). Altitude is in
@@ -196,6 +257,14 @@ def fit_long_run_model(lr_in, quality_dates=None):
                                 lr_in['elev_contrib'].copy())
     lr_in['cov_contrib'] = sum((cov_coefs[c] * lr_in[c] for c in cov_cols),
                                pd.Series(0.0, index=lr_in.index))
+    # Expand the combined fatigue scale back to per-category keys so
+    # downstream consumers (transferable_contributions, the TQ sidebar)
+    # see the familiar shape. Contribution-identical: s·fat_race ==
+    # s·fat_race_short + (ratio·s)·fat_marathon.
+    if 'fat_race' in cov_coefs:
+        scale = cov_coefs.pop('fat_race')
+        cov_coefs['fat_marathon'] = fatigue_ratio * scale
+        cov_coefs['fat_race_short'] = scale
     lr_in['model_offset'] = (intercept + lr_in['phys_contrib']
                              + lr_in['cov_contrib'])
     lr_in['corrected'] = lr_in['raw_resid'] - lr_in['model_offset']
@@ -215,6 +284,7 @@ def fit_long_run_model(lr_in, quality_dates=None):
         intercept=intercept,
         phys_coefs=phys_coefs,
         cov_coefs=cov_coefs,
+        fatigue_ratio=fatigue_ratio,
         elev_ref=elev_ref,
         rsquared=1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan'),
         resid_sd=float(np.sqrt(ss_res / (n_kept - p))) if n_kept > p else float('nan'),
