@@ -13,7 +13,9 @@ workout_pruned.csv into output/debug/.
 Reads daily.csv from data/.
 """
 import argparse
+import math
 import sys
+import numpy as np
 import pandas as pd
 import re
 from pathlib import Path
@@ -21,6 +23,7 @@ from datetime import date
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, DEBUG_DIR
+from src.shared.workouts import RECON_TAU_S, g_anaerobic
 
 MILE_M = 1609.344
 
@@ -110,6 +113,70 @@ def reclassify_fartlek(total_m, has_zero_rest):
     return None
 
 
+def _structure_label(dists):
+    """Run-length-encoded headline for measured reps, in rep order:
+    [1600, 800, 800, 400, 400, 400, 400, 200] -> '1600 + 2×800 + 4×400 + 200m'.
+    Uniform days keep the familiar 'N × Dm' form."""
+    groups = []
+    for d in dists:
+        d = int(d)
+        if groups and groups[-1][0] == d:
+            groups[-1][1] += 1
+        else:
+            groups.append([d, 1])
+    if len(groups) == 1:
+        d, n = groups[0]
+        return f'{d}m' if n == 1 else f'{n} × {d}m'
+    return ' + '.join(f'{n}×{d}' if n > 1 else f'{d}' for d, n in groups) + 'm'
+
+
+def _connected_core(dists, times, rests):
+    """Connected-fatigue (D_eff, t_eff) from per-rep arrays, with the
+    short-distance anaerobic correction applied per rep.
+
+    Each rep extends a running "connected" effort by its distance; the rest
+    AFTER it dissipates the accumulated connection by exp(-rest_s/RECON_TAU_S).
+    Rest is ACTUAL seconds — reconstitution is a wall-clock process, NOT
+    per-mile-normalized (per-mile would misweight ladders). D_eff is the
+    deepest connected distance reached, bounded in [longest rep, total] with
+    no floor (no rest -> total; full recovery -> longest rep).
+
+    The anaerobic correction g_anaerobic(d) slows each rep's pace before the
+    mean rep speed is taken, so short reps (sub-~800m) — whose pace the CP
+    hyperbola over-credits as CS — contribute a sustainable-equivalent speed.
+    Distance-only, so it preserves gain and acts per-segment on ladders. No
+    CS enters D_eff, so the implied CS the projection reads off stays an
+    independent fitness signal — see [[project-workout-enrichment]].
+
+    ``dists``/``times``: per-rep arrays. ``rests``: rest-after seconds per rep
+    (the final entry, if present, is unused — nothing accumulates after it).
+    """
+    dists = np.asarray(dists, float)
+    times = np.asarray(times, float)
+    rests = np.asarray(rests, float)
+    paces = times * MILE_M / dists                       # s/mi
+    times_corr = (paces + g_anaerobic(dists)) * dists / MILE_M
+    conn = d_eff = 0.0
+    for i in range(len(dists)):
+        conn += dists[i]
+        if conn > d_eff:
+            d_eff = conn
+        if i < len(rests):
+            conn *= math.exp(-rests[i] / RECON_TAU_S)
+    v = dists.sum() / times_corr.sum()                   # corrected mean speed
+    return d_eff, d_eff / v
+
+
+def _measured_d_eff(day):
+    """(D_eff, t_eff) for a watch-measured day — see _connected_core. Rest is
+    the recorded standing+jog seconds per interval (last rep has none)."""
+    day = day.sort_values('rep_idx')
+    rest = (day['rest_stand_s'].fillna(0)
+            + day['rest_jog_s'].fillna(0)).to_numpy(float)
+    return _connected_core(day['dist_m'].to_numpy(float),
+                           day['time_s'].to_numpy(float), rest)
+
+
 def measured_to_decomposed(measured, daily_df):
     """Convert watch-measured reps (workout_measured.csv, written by
     src/coros/reps.py) into decomposed-schema rows.
@@ -131,11 +198,20 @@ def measured_to_decomposed(measured, daily_df):
 
       rep_dist     : distance-weighted mean rep length (sum d_i^2 / sum d_i)
                      rounded to 100m — exact for uniform days, an effective
-                     rep for ladders;
+                     rep for ladders (kept for type inference and as a
+                     fallback summary; display and projection use the
+                     columns below);
       rep_count    : round(total / rep_dist), >= 1;
       pace_per_mile: time-weighted measured pace across all reps;
       rest_per_mile: MEASURED total rest (standing + jog) per rep-mile,
-                     replacing the parser's defaults.
+                     replacing the parser's defaults;
+      structure    : run-length-encoded rep layout in rep order
+                     ('1600 + 2×800 + 4×400 + 200m') — the hover headline;
+      d_eff_m,
+      t_eff_s      : whole-workout effective distance/time computed from
+                     the per-rep structure and measured rests
+                     (_measured_d_eff); project_workouts uses these instead
+                     of the uniform-rep formula when present.
 
     Type honors the hand letter when explicit (t/i/r); `f@` days (and
     watch-only days) become continuous_fartlek when the day is a single cf
@@ -154,6 +230,7 @@ def measured_to_decomposed(measured, daily_df):
                     & (measured['status'].isin(['exact', 'watch-only']))]
     for dt, day in reps.groupby('date'):
         dt = pd.to_datetime(dt).date()
+        day = day.sort_values('rep_idx')
         run_type = daily_types.get(dt)
         total = day['dist_m'].sum()
         pace = day['time_s'].sum() / (total / MILE_M)
@@ -161,7 +238,9 @@ def measured_to_decomposed(measured, daily_df):
         if (day['kind'] == 'cf').all():
             rows.append({'date': dt, 'type': 'continuous_fartlek',
                          'rep_dist': int(total), 'rep_count': 1,
-                         'pace_per_mile': pace, 'rest_per_mile': 0})
+                         'pace_per_mile': pace, 'rest_per_mile': 0,
+                         'structure': None, 'd_eff_m': float(total),
+                         't_eff_s': day['time_s'].sum()})
             enriched.add(dt)
             continue
 
@@ -169,16 +248,24 @@ def measured_to_decomposed(measured, daily_df):
         rep_dist = max(100, round(rep_dist / 100) * 100)
         rep_count = max(1, round(total / rep_dist))
         rest = (day['rest_stand_s'].fillna(0) + day['rest_jog_s'].fillna(0))
-        rest_total = rest[day['rest_stand_s'].notna()
-                          | day['rest_jog_s'].notna()].sum()
-        rest_per_mile = rest_total / (total / MILE_M)
+        has_rest = day['rest_stand_s'].notna() | day['rest_jog_s'].notna()
+        rest_total = rest[has_rest].sum()
+        # Normalize over the distance of reps that HAD a rest after them (the
+        # last rep has none), so N-1 rests divide by N-1 reps' distance:
+        # 4x1mi w/ 3:00 between reads 3:00/mi, not 2:15. Display + non-enriched
+        # fallback only — the connected D_eff uses raw rest seconds directly.
+        rest_denom_m = day.loc[has_rest, 'dist_m'].sum()
+        rest_per_mile = rest_total / (rest_denom_m / MILE_M) if rest_denom_m else 0.0
         if run_type in ('tempo', 'interval', 'rep'):
             final_type = run_type
         else:                           # fartlek collision / watch-only
             final_type = 'interval' if rep_dist >= 800 else 'rep'
+        d_eff, t_eff = _measured_d_eff(day)
         rows.append({'date': dt, 'type': final_type,
                      'rep_dist': int(rep_dist), 'rep_count': int(rep_count),
-                     'pace_per_mile': pace, 'rest_per_mile': rest_per_mile})
+                     'pace_per_mile': pace, 'rest_per_mile': rest_per_mile,
+                     'structure': _structure_label(day['dist_m']),
+                     'd_eff_m': round(d_eff, 1), 't_eff_s': round(t_eff, 1)})
         enriched.add(dt)
     return rows, enriched
 
@@ -263,6 +350,7 @@ def decompose(daily_df, continuous_fartlek_only=False):
                 'date': dt, 'type': 'continuous_fartlek',
                 'rep_dist': int(total_m), 'rep_count': 1,
                 'pace_per_mile': qp, 'rest_per_mile': 0,
+                'd_eff_m': float(total_m), 't_eff_s': qp * total_m / MILE_M,
             })
             continue
 
@@ -336,17 +424,31 @@ def decompose(daily_df, continuous_fartlek_only=False):
         else:
             rest_per_mile = default_rest_per_mile(final_type, rep_dist)
 
+        # Connected-fatigue projection (matching watch-enriched days) for
+        # RECORDED-rest days only: reconstruct a uniform per-rep sequence from
+        # the resolved structure and recorded rest. Defaulted-rest days get
+        # NaN -> project_workouts falls back to the legacy formula and keeps
+        # reps excluded (estimated rest is not a trustworthy CS signal).
+        d_eff_m = t_eff_s = np.nan
+        if explicit_rest_per_mile is not None and rep_count >= 2:
+            rep_t = pace_per_mile * rep_dist / MILE_M
+            rep_rest_s = rest_per_mile * rep_dist / MILE_M
+            d_eff_m, t_eff_s = _connected_core(
+                [rep_dist] * rep_count, [rep_t] * rep_count,
+                [rep_rest_s] * (rep_count - 1) + [0.0])
+
         results.append({
             'date': dt, 'type': final_type,
             'rep_dist': rep_dist, 'rep_count': rep_count,
             'pace_per_mile': pace_per_mile, 'rest_per_mile': rest_per_mile,
+            'd_eff_m': d_eff_m, 't_eff_s': t_eff_s,
         })
 
     # Explicit columns so an empty result (a profile with no quality workouts,
     # e.g. a watch import of all easy runs) is still a well-formed frame the
     # caller can sort/write rather than a column-less DataFrame.
     decomp_cols = ['date', 'type', 'rep_dist', 'rep_count',
-                   'pace_per_mile', 'rest_per_mile']
+                   'pace_per_mile', 'rest_per_mile', 'd_eff_m', 't_eff_s']
     return pd.DataFrame(results, columns=decomp_cols), pd.DataFrame(pruned)
 
 

@@ -69,7 +69,11 @@ def workout_hover(r, single_type=False):
     xc_note = f' <span style="color:{SURFACES["XC"]}">(XC-corrected)</span>' if r.get('xc_corrected') else ''
     rep_count = int(r['rep_count'])
     rep_dist = int(r['rep_dist'])
-    if cat == 'continuous_fartlek' and rep_count == 1:
+    structure = r.get('structure')
+    if isinstance(structure, str) and structure:
+        # Watch-enriched: actual measured rep layout, not the effective rep.
+        body = f"{structure} @ {sec_to_mss(r['pace_per_mile'])}/mi"
+    elif cat == 'continuous_fartlek' and rep_count == 1:
         body = f"{rep_dist}m @ {sec_to_mss(r['pace_per_mile'])}/mi"
     else:
         body = (f"{rep_count} × {rep_dist}m @ "

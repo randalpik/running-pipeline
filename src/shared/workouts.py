@@ -34,21 +34,49 @@ DAILY_PATH    = DATA_DIR / 'daily.csv'
 CS_PATH       = DATA_DIR / 'bayes_cs_summary.csv'
 
 # ---------- pipeline parameters ----------
+# TAU / DECAY_FLOOR drive the LEGACY uniform-rep decay used for hand-log-only
+# quality days (no watch data): decay = max(exp(-rest_per_mile/TAU),
+# DECAY_FLOOR), D_eff = rep_dist*(1+(rep_count-1)*decay). The floor stops a
+# fully-recovered set from collapsing D_eff toward D' and exploding the 5K-
+# equivalent hyperbola (a 12x400 read as one 440m effort); it sets a LEVEL
+# the TQ category offsets absorb, not the workout-to-workout signal. Watch-
+# ENRICHED days bypass this entirely — they carry a CS-free connected-fatigue
+# D_eff (parse_workouts._measured_d_eff, RECON_TAU_S below), so the floor's
+# arbitrariness no longer touches the enriched corpus.
 TAU = 210.0
-# Floor on the rest-decay term (June 2026, with watch-measured rests). The
-# exponential was calibrated on the parser's default rests (140-480 s/mi);
-# real rests reach ~1100, where exp() saturates and claims a fully-recovered
-# rep contributes ~nothing to D_eff — driving D_eff toward D' and exploding
-# the 5K-equivalent hyperbola (a 12x400 read as one 440m effort). A
-# fully-recovered repeat still evidences repeatability: floor its
-# contribution at DECAY_FLOOR of rep distance. Dimensionless and structural
-# (rest_per_mile carries no pace/CS units), so it ports across profiles and
-# fitness levels; the value is fit to residual-vs-rest independence
-# (Spearman rho = 0 at 0.17) on the watch-enriched interval corpus.
-# Bit-identical to the unfloored model below rest = -TAU*ln(0.17) ~ 372
-# s/mi, which covers every legacy default except rep (420: decay
-# 0.135 -> 0.17, a 2-3s shift absorbed by the rep category offset).
 DECAY_FLOOR = 0.17
+# Connected-fatigue reconstitution time constant (REAL seconds), used by the
+# enriched per-rep D_eff. Fit June 2026 by minimizing SSE of workout-implied
+# CS vs race-fit CS over Max's 58 enriched days (best of a 120-1200s grid;
+# residual mean +0.8, sd 8.4 s/mi). Lands inside the W' reconstitution
+# literature range (Skiba ~316-862s) — independent corroboration, not a free
+# knob. Unlike the legacy decay this needs no floor: the accumulator is
+# bounded in [longest rep, total] by construction. Provisional pending the
+# race-residual weighting step (workout effort runs sub-max vs races — a
+# longest-rep-correlated bias, +0.25 Spearman, still in the residual).
+RECON_TAU_S = 540.0
+# Short-distance anaerobic correction g(d) = ANAEROBIC_K*(1/d - 1/ANAEROBIC_D0)+,
+# a per-rep pace add (s/mi) applied INSIDE the connected accumulator. It removes
+# the 2-param CP hyperbola's short-effort CS overshoot, which biases sub-~800m
+# reps fast (uniform 400m days read ~16 s/mi too fit; 800m ~3; >=1600m ~0). Fit
+# June 2026 scatter-weighted with a free offset (the offset = the workout-vs-race
+# sub-max effort gap, absorbed downstream by the TQ category offset): K=8000,
+# d0=1400 -> g(400)=+14.3, g(800)=+4.3, g(>=1400)=0 s/mi. Distance-only, so it
+# shifts the level the hyperbola misplaces without touching responsiveness (gain
+# stays ~1). Because it depends on rep distance, a ladder's 400 segments get the
+# correction and its 1600 doesn't.
+# NOT for races: calibrated on rep-PACE 400s (~72s); all-out race 400s (~57s) sit
+# far deeper in the anaerobic regime and need ~4x more correction (the effect
+# scales with speed-above-CS, not distance), so make_race_plots keeps its own
+# BETA_SHORT display term. See [[project-workout-enrichment]].
+ANAEROBIC_K = 8000.0
+ANAEROBIC_D0 = 1400.0
+
+
+def g_anaerobic(d_m):
+    """Per-rep anaerobic pace correction (s/mi) added to a rep of distance d_m
+    metres; 0 for d_m >= ANAEROBIC_D0. Accepts scalars or numpy arrays."""
+    return ANAEROBIC_K * np.maximum(0.0, 1.0 / d_m - 1.0 / ANAEROBIC_D0)
 # Global long-run slice (June 2026, replacing the per-profile distance
 # slice). The two bounds deliberately mix units because they encode
 # different mechanisms:
@@ -199,16 +227,33 @@ def project_workouts(cs, epoch):
     decay = np.maximum(np.exp(-w['rest_per_mile'] / TAU), DECAY_FLOOR)
     w['D_eff']    = w['rep_dist'] * (1 + (w['rep_count'] - 1) * decay)
     w['t_eff']    = w['pace_per_mile'] * w['D_eff'] / 1609.344
+    # Watch-enriched days carry whole-workout D_eff/t_eff computed from the
+    # measured per-rep structure (parse_workouts._measured_d_eff) — the
+    # uniform effective-rep formula above mis-serves varied-length days
+    # (ladders, closers). t_eff_s is raw measured time, so the XC pace
+    # correction has to be re-applied to it here.
+    if 'd_eff_m' in w.columns:
+        has = w['d_eff_m'].notna() & w['t_eff_s'].notna()
+        w.loc[has, 'D_eff'] = w.loc[has, 'd_eff_m']
+        w.loc[has, 't_eff'] = (w.loc[has, 't_eff_s']
+                               / np.where(w.loc[has, 'xc_corrected'], 1.06, 1.0))
     w['t_5k_hyp'] = (5000 - w['dp_t']) * w['t_eff'] / (w['D_eff'] - w['dp_t'])
     w['p5k_min']  = w['t_5k_hyp'] * 1609.344 / 5000 / 60.0
     w['raw_resid'] = (w['p5k_min'] - w['p5k_cs_min']) * 60
     w['category'] = w['type']
 
-    # Flag (don't drop) reps and snow.
+    # Flag (don't drop) reps and snow. Reps now rejoin the TQ fit IF they carry
+    # a trustworthy per-rep projection (d_eff_m present: watch-measured, or
+    # reconstructed from recorded log rest) — the anaerobic g(d) correction
+    # (applied in parse_workouts._connected_core) has removed their short-effort
+    # CS bias. Reps WITHOUT a connected projection (defaulted/estimated rest)
+    # stay excluded: their pace alone is not a reliable CS signal.
     snow_w = w['workout_raw'].astype(str).str.contains('snow', case=False, na=False)
     snow_c = w['conditions'].astype(str).str.contains('snow', case=False, na=False)
+    has_conn = (w['d_eff_m'].notna() if 'd_eff_m' in w.columns
+                else pd.Series(False, index=w.index))
     w['excluded_reason'] = None
-    w.loc[w['type'] == 'rep', 'excluded_reason'] = 'rep_anaerobic'
+    w.loc[(w['type'] == 'rep') & ~has_conn, 'excluded_reason'] = 'rep_anaerobic'
     w.loc[snow_w | snow_c, 'excluded_reason'] = 'snow'
 
     return w

@@ -122,7 +122,11 @@ def workout_hover(r, single_type=False):
     xc_note = f' <span style="color:{SURFACES["XC"]}">(XC-corrected)</span>' if r.get('xc_corrected') else ''
     rep_count = int(r['rep_count'])
     rep_dist = int(r['rep_dist'])
-    if cat == 'continuous_fartlek' and rep_count == 1:
+    structure = r.get('structure')
+    if isinstance(structure, str) and structure:
+        # Watch-enriched: actual measured rep layout, not the effective rep.
+        body = f"{structure} @ {sec_to_mss(r['pace_per_mile'])}/mi"
+    elif cat == 'continuous_fartlek' and rep_count == 1:
         body = f"{rep_dist}m @ {sec_to_mss(r['pace_per_mile'])}/mi"
     else:
         body = (f"{rep_count} × {rep_dist}m @ "
@@ -275,11 +279,30 @@ def main():
     }).to_csv(offsets_csv, index=False)
     print(f'Wrote {offsets_csv}')
 
+    # Per-point smoother weight: reps are an intrinsically noisier CS signal
+    # even after the anaerobic g(d) correction (their residual scatter runs
+    # ~50% wider than intervals'), so they enter the track scatter-weighted —
+    # weight = (reference resid SD / rep resid SD)^2, clipped — rather than at
+    # full strength, where ~24 early-era rep days would over-steer exactly the
+    # early track. Every other category stays weight 1.
+    workouts = workouts.copy()
+    rep_mask = workouts['category'] == 'rep'
+    rep_w = 1.0
+    if rep_mask.any():
+        sd_rep = workouts.loc[rep_mask, 'resid'].std()
+        sd_ref = workouts.loc[~rep_mask, 'resid'].std()
+        if sd_rep and sd_rep > 0:
+            rep_w = float(np.clip((sd_ref / sd_rep) ** 2, 0.1, 1.0))
+        print(f'  Reps in TQ: {int(rep_mask.sum())} days, scatter-weight {rep_w:.2f} '
+              f'(SD rep {sd_rep:.1f} vs ref {sd_ref:.1f} s/mi)')
+    workouts['weight'] = np.where(rep_mask, rep_w, 1.0)
+
     # Combined for the smoother. Long runs use the model-corrected residual.
     combined = pd.concat([
-        workouts[['date', 'resid']],
-        long_runs[['date', 'corrected']].rename(columns={'corrected': 'resid'}),
-        hills[['date', 'resid']],
+        workouts[['date', 'resid', 'weight']],
+        long_runs[['date', 'corrected']].rename(columns={'corrected': 'resid'})
+            .assign(weight=1.0),
+        hills[['date', 'resid']].assign(weight=1.0),
     ], ignore_index=True).sort_values('date').reset_index(drop=True)
 
     ds = (combined['date'] - epoch).dt.days.astype(float).values
@@ -294,6 +317,7 @@ def main():
         target_ess=GAUSS_TARGET_ESS,
         base_bw=GAUSS_BASE_BW_DAYS,
         max_bw=GAUSS_MAX_BW_DAYS,
+        point_weights=combined['weight'].values,
     )
 
     # Break the track in any gap > GAP_BREAK_DAYS in the training data.
@@ -389,10 +413,10 @@ def main():
     # tooltip (CS pace + smoother trend + nearest session).
     # Single-type collapse: one workout/hill category present (watch CF case)
     # -> one generic "Workout" legend line. Category + CS analysis unchanged.
-    present_cats = [c for c in ['interval', 'tempo', 'continuous_fartlek']
+    present_cats = [c for c in ['interval', 'tempo', 'rep', 'continuous_fartlek']
                     if not workouts[workouts['category'] == c].empty]
     single_type = (len(present_cats) + (1 if len(hills) else 0)) == 1
-    for cat in ['interval', 'tempo', 'continuous_fartlek']:
+    for cat in ['interval', 'tempo', 'rep', 'continuous_fartlek']:
         sub = workouts[workouts['category'] == cat]
         if sub.empty:
             continue

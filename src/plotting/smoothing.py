@@ -25,7 +25,8 @@ GAP_BREAK_DAYS = 90
 def adaptive_gauss_smoother(ds, res, grid_days, *,
                              target_ess: float = 12,
                              base_bw: float = 30,
-                             max_bw: float = 400):
+                             max_bw: float = 400,
+                             point_weights=None):
     """Adaptive-bandwidth Gaussian smoother.
 
     Bandwidth at each grid point is the smallest value (found by bisection)
@@ -36,13 +37,19 @@ def adaptive_gauss_smoother(ds, res, grid_days, *,
 
     ``ds``: source-point days. ``res``: source-point values.
     ``grid_days``: days at which to evaluate the smoother.
+    ``point_weights``: optional per-source-point reliability weights (same
+    length as ``ds``); they multiply the Gaussian kernel weights so noisier
+    observations (e.g. anaerobically-corrected reps) contribute less to both
+    the weighted mean and the ESS. ``None`` (default) ⇒ all ones ⇒ unchanged.
     Returns an array the same length as ``grid_days``; entries where
     even ``max_bw`` couldn't reach ``target_ess`` are NaN.
     """
     out = np.full(len(grid_days), np.nan)
+    pw = np.ones_like(ds, dtype=float) if point_weights is None \
+        else np.asarray(point_weights, dtype=float)
 
     def weights_and_ess(t, bw):
-        w = np.exp(-0.5 * ((ds - t) / bw) ** 2)
+        w = pw * np.exp(-0.5 * ((ds - t) / bw) ** 2)
         s = w.sum()
         ss = (w * w).sum()
         return w, (s * s / ss) if ss > 0 else 0.0
