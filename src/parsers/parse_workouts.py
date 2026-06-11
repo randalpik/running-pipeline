@@ -177,6 +177,88 @@ def _measured_d_eff(day):
                            day['time_s'].to_numpy(float), rest)
 
 
+# ---------- rest-source policy (per Max's logging-behaviour audit) ----------
+# Logged rest is trustworthy in two regimes and lazy/catch-all otherwise (a
+# 2026-06 scatter audit of logged rest/mi over time):
+#   - tempo / fartlek logged rest is real (0:00 continuous blocks; the ladder's
+#     enforced 2:20; deliberate short tempo rest) — always trusted;
+#   - interval / rep logged rest is accurate PRE-2020 but lazy/legacy after
+#     (Max kept logging the old ballpark while actually resting more). So 2020+
+#     interval/rep rest is taken from this profile's OWN watch-measured median
+#     (by rep distance); pre-2020 uses the log, or the pre-2020 logged median
+#     for that type when a day has no annotation at all.
+# This is data-derived per profile (recomputed each run), so it sharpens as the
+# watch corpus grows. See [[project-workout-enrichment]].
+WATCH_ERA_START_YEAR = 2020
+LADDER_4800 = [1600, 800, 800, 400, 400, 400, 400]   # 4800f @ 2:20: exact, hardcoded
+
+
+def _logged_rest_per_mile(raw):
+    """Logged rest/mile from a workout string, or None if not annotated.
+    Per-rep `/Ns@` (early format) is converted to per-mile; `(M:SS rest/mi)`
+    is taken directly."""
+    a = RX_A.search(raw)
+    if a:
+        return int(a.group(4)) * (MILE_M / int(a.group(2)))
+    m = RX_REST.search(raw)
+    return parse_time_to_seconds(m.group(1)) if m else None
+
+
+def build_rest_model(measured, daily):
+    """Per-profile rest estimators for days without trustworthy logged rest:
+    `watch` = median measured rest (s/rep) by 100m-binned rep distance (2020+
+    interval/rep); `early` = pre-2020 logged median rest/mile by type."""
+    watch = {}
+    if measured is not None and len(measured):
+        mr = measured[(measured['rep_idx'] > 0)
+                      & measured['status'].isin(['exact', 'watch-only'])
+                      & (measured['kind'] != 'cf')].copy()
+        mr = mr[mr['rest_stand_s'].notna() | mr['rest_jog_s'].notna()]
+        if len(mr):
+            mr['rest_s'] = mr['rest_stand_s'].fillna(0) + mr['rest_jog_s'].fillna(0)
+            mr['rd'] = (mr['dist_m'] / 100).round() * 100
+            watch = {int(rd): float(g['rest_s'].median())
+                     for rd, g in mr.groupby('rd') if len(g) >= 5}
+    early = {}
+    if daily is not None:
+        d = daily.copy()
+        d['date'] = pd.to_datetime(d['date'])
+        for typ in ('interval', 'rep'):
+            sub = d[(d['run_type'] == typ) & (d['date'].dt.year < WATCH_ERA_START_YEAR)]
+            vals = [_logged_rest_per_mile('' if pd.isna(r) else str(r))
+                    for r in sub['workout_raw']]
+            vals = [v for v in vals if v is not None and v > 0]
+            if vals:
+                early[typ] = float(np.median(vals))
+    return {'watch': watch, 'early': early}
+
+
+def _watch_rest_s(rep_dist, watch):
+    if not watch:
+        return None
+    return watch.get(int(rep_dist)) or watch[min(watch, key=lambda k: abs(k - rep_dist))]
+
+
+def effective_rest_per_mile(rtype, rep_dist, year, logged_rpm, rest_model):
+    """Return (rest_per_mile, trusted). `trusted` gates the connected
+    projection / TQ inclusion — an untrusted estimate falls back to the legacy
+    formula and (for reps) stays excluded."""
+    if rtype in ('interval', 'rep') and rest_model is not None:
+        if year >= WATCH_ERA_START_YEAR:
+            s = _watch_rest_s(rep_dist, rest_model['watch'])
+            if s is not None:
+                return s * MILE_M / rep_dist, True       # 2020+: watch median
+        if logged_rpm is not None:
+            return logged_rpm, True                       # pre-2020: trust the log
+        early = rest_model['early'].get(rtype)
+        if early is not None:
+            return early, True                            # pre-2020, no log: early median
+    if logged_rpm is not None:                            # tempo/fartlek: real
+        return logged_rpm, True
+    dflt = default_rest_per_mile(rtype, rep_dist)
+    return (dflt if dflt is not None else 0.0), False
+
+
 def measured_to_decomposed(measured, daily_df):
     """Convert watch-measured reps (workout_measured.csv, written by
     src/coros/reps.py) into decomposed-schema rows.
@@ -270,7 +352,7 @@ def measured_to_decomposed(measured, daily_df):
     return rows, enriched
 
 
-def decompose(daily_df, continuous_fartlek_only=False):
+def decompose(daily_df, continuous_fartlek_only=False, rest_model=None):
     """
     Filter quality workouts, decompose each row.
     Returns (decomposed_df, pruned_df).
@@ -315,11 +397,22 @@ def decompose(daily_df, continuous_fartlek_only=False):
             pruned.append({'date': dt, 'type': rtype,
                            'reason': 'time-based (minutes not meters)', 'raw': raw})
             continue
-        # (4) Continuous tempo: rest 0 in string
+        # (4) Continuous tempo (0:00 rest): a real sustained block — analyze it
+        # like a continuous fartlek (one connected effort, D_eff = total) rather
+        # than pruning it. Needs a usable distance/pace.
         has_zero_rest = bool(re.search(r'0:00\s*rest/mi', raw))
         if rtype == 'tempo' and has_zero_rest:
-            pruned.append({'date': dt, 'type': rtype,
-                           'reason': 'continuous tempo (0 rest)', 'raw': raw})
+            if pd.isna(qd) or pd.isna(qp) or qd < 100:
+                pruned.append({'date': dt, 'type': rtype,
+                               'reason': 'continuous tempo, no usable qd/qp', 'raw': raw})
+                continue
+            results.append({
+                'date': dt, 'type': 'tempo',
+                'rep_dist': int(qd), 'rep_count': 1,
+                'pace_per_mile': qp, 'rest_per_mile': 0,
+                'structure': None, 'd_eff_m': float(qd),
+                't_eff_s': qp * qd / MILE_M,
+            })
             continue
 
         # ---------- Nx and rest extraction ----------
@@ -336,6 +429,30 @@ def decompose(daily_df, continuous_fartlek_only=False):
         # Total distance: from Nx if present, else from quality_distance_m
         total_m = nx['count'] * nx['rep_dist'] if nx else qd
 
+        # ---------- hardcoded ladder: 4800f @ 2:20/mi is ALWAYS 1600,2x800,4x400 ----------
+        # Two exact-value criteria (4800m total + 2:20 logged rest) pin the
+        # structure of a large 2017-19 body Max ran as this fixed ladder. Without
+        # this the parser mis-reads 4800f as 6x800. Per-rep paces are unknown
+        # pre-watch, so all reps take the logged average pace; the rest is the
+        # enforced 2:20/mi. Decomposes like a watch-measured ladder.
+        if (rtype == 'fartlek' and total_m and 4700 <= total_m <= 4900
+                and explicit_rest_per_mile is not None
+                and 135 <= explicit_rest_per_mile <= 145 and not pd.isna(qp)):
+            reps = LADDER_4800
+            times = [qp * d / MILE_M for d in reps]
+            rests = [explicit_rest_per_mile * d / MILE_M for d in reps[:-1]] + [0.0]
+            d_eff, t_eff = _connected_core(reps, times, rests)
+            tot = sum(reps)
+            eff_rd = max(100, round((sum(d * d for d in reps) / tot) / 100) * 100)
+            results.append({
+                'date': dt, 'type': 'interval',
+                'rep_dist': eff_rd, 'rep_count': max(1, round(tot / eff_rd)),
+                'pace_per_mile': qp, 'rest_per_mile': explicit_rest_per_mile,
+                'structure': _structure_label(reps),
+                'd_eff_m': round(d_eff, 1), 't_eff_s': round(t_eff, 1),
+            })
+            continue
+
         # ---------- continuous_fartlek: 6400-10000m with no positive rest signal ----------
         # Either explicit "0:00 rest/mi" or no rest annotation at all.
         # In continuous-fartlek-only mode (watch profiles) the upper band is
@@ -349,7 +466,7 @@ def decompose(daily_df, continuous_fartlek_only=False):
             results.append({
                 'date': dt, 'type': 'continuous_fartlek',
                 'rep_dist': int(total_m), 'rep_count': 1,
-                'pace_per_mile': qp, 'rest_per_mile': 0,
+                'pace_per_mile': qp, 'rest_per_mile': 0, 'structure': None,
                 'd_eff_m': float(total_m), 't_eff_s': qp * total_m / MILE_M,
             })
             continue
@@ -418,19 +535,22 @@ def decompose(daily_df, continuous_fartlek_only=False):
                            'reason': unresolved_reason, 'raw': raw})
             continue
 
-        # ---------- rest ----------
-        if explicit_rest_per_mile is not None:
-            rest_per_mile = explicit_rest_per_mile
-        else:
-            rest_per_mile = default_rest_per_mile(final_type, rep_dist)
+        # ---------- rest (era/type policy) ----------
+        # interval/rep: 2020+ -> this profile's watch median; pre-2020 -> logged,
+        # else pre-2020 logged median. tempo/fartlek: logged is real. `trusted`
+        # gates the connected projection (untrusted -> legacy formula + reps stay
+        # excluded). See effective_rest_per_mile / build_rest_model.
+        rest_per_mile, trusted = effective_rest_per_mile(
+            final_type, rep_dist, dt.year, explicit_rest_per_mile, rest_model)
+        # Nx tempo-intervals (e.g. 4x1600t) carry deliberate ~1:00/mi rest even
+        # when unlogged (Max: tempo rest is real, either 0:00 or ~1:00). Trust
+        # the tempo default for them so they get the connected projection; an
+        # un-Nx'd compound tempo (no clean structure) stays on the legacy path.
+        if final_type == 'tempo' and not trusted and nx is not None:
+            trusted = True
 
-        # Connected-fatigue projection (matching watch-enriched days) for
-        # RECORDED-rest days only: reconstruct a uniform per-rep sequence from
-        # the resolved structure and recorded rest. Defaulted-rest days get
-        # NaN -> project_workouts falls back to the legacy formula and keeps
-        # reps excluded (estimated rest is not a trustworthy CS signal).
         d_eff_m = t_eff_s = np.nan
-        if explicit_rest_per_mile is not None and rep_count >= 2:
+        if trusted and rep_count >= 2:
             rep_t = pace_per_mile * rep_dist / MILE_M
             rep_rest_s = rest_per_mile * rep_dist / MILE_M
             d_eff_m, t_eff_s = _connected_core(
@@ -441,14 +561,14 @@ def decompose(daily_df, continuous_fartlek_only=False):
             'date': dt, 'type': final_type,
             'rep_dist': rep_dist, 'rep_count': rep_count,
             'pace_per_mile': pace_per_mile, 'rest_per_mile': rest_per_mile,
-            'd_eff_m': d_eff_m, 't_eff_s': t_eff_s,
+            'structure': None, 'd_eff_m': d_eff_m, 't_eff_s': t_eff_s,
         })
 
     # Explicit columns so an empty result (a profile with no quality workouts,
     # e.g. a watch import of all easy runs) is still a well-formed frame the
     # caller can sort/write rather than a column-less DataFrame.
-    decomp_cols = ['date', 'type', 'rep_dist', 'rep_count',
-                   'pace_per_mile', 'rest_per_mile', 'd_eff_m', 't_eff_s']
+    decomp_cols = ['date', 'type', 'rep_dist', 'rep_count', 'pace_per_mile',
+                   'rest_per_mile', 'structure', 'd_eff_m', 't_eff_s']
     return pd.DataFrame(results, columns=decomp_cols), pd.DataFrame(pruned)
 
 
@@ -472,15 +592,21 @@ def main():
         )
     print(f'Source: {src}')
     daily = pd.read_csv(src)
+
+    # Rest model (watch-median + pre-2020 logged) drives the era/type rest
+    # policy in decompose(); built from this profile's own measured + log data.
+    measured_path = DATA_DIR / 'workout_measured.csv'
+    measured = pd.read_csv(measured_path) if measured_path.exists() else None
+    rest_model = build_rest_model(measured, daily)
+
     decomposed, pruned = decompose(
-        daily, continuous_fartlek_only=args.continuous_fartlek_only)
+        daily, continuous_fartlek_only=args.continuous_fartlek_only,
+        rest_model=rest_model)
 
     # Watch enrichment: days the rep-extraction layer reconstructed exactly
     # replace their parsed rows (real structure + measured rest); watch-only
     # days are added outright. See measured_to_decomposed for the rules.
-    measured_path = DATA_DIR / 'workout_measured.csv'
-    if measured_path.exists():
-        measured = pd.read_csv(measured_path)
+    if measured is not None:
         m_rows, enriched = measured_to_decomposed(measured, daily)
         if m_rows:
             decomposed = decomposed[~decomposed['date'].isin(enriched)]

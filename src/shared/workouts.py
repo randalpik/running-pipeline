@@ -201,20 +201,24 @@ def project_workouts(cs, epoch):
     flagged so the Workouts plot can show them.
 
     Always-applied transforms (regardless of exclusion):
-      - Implicit-Nx tempo at >=1600m -> reclassified as interval
       - 2016-07..10 fall and any tempo with quality_distance_m == 5000:
         XC pace correction (-6%), `xc_corrected` flag set
+
+    Type is logged effort INTENT and is preserved end-to-end (tempo stays
+    tempo, etc.). The only reclassification anywhere in the pipeline is for
+    `f@`-coded fartleks — Max's log uses that letter for both continuous
+    fartlek and varied-distance reps/intervals — handled in
+    parse_workouts.decompose (continuous -> continuous_fartlek; non-continuous
+    -> interval, or rep when short enough to be varied repetitions). A former
+    "long non-Nx tempo -> interval" heuristic was a pre-watch band-aid (no
+    logged rest meant a continuous 10k tempo got read as one rep faster than
+    the PR); watch structure closes that gap, so it was removed.
     """
     w = pd.read_csv(WORKOUTS_PATH, parse_dates=['date'])
     daily = pd.read_csv(DAILY_PATH, parse_dates=['date'])
     w = w.merge(daily[['date', 'workout_raw', 'conditions', 'quality_distance_m',
                        'display_name', 'city_state', 'temp_c']],
                 on='date', how='left')
-
-    # Tempo @ rep_dist>=1600 with no explicit Nx -> interval (catches 2024-05-04).
-    has_nx = w['workout_raw'].astype(str).str.contains(r'\d+x\d+', regex=True, na=False)
-    mask = (w['type'] == 'tempo') & (w['rep_dist'] >= 1600) & (~has_nx)
-    w.loc[mask, 'type'] = 'interval'
 
     # XC correction (always applied — same convention as XC race correction).
     fall_2016 = (w['date'] >= pd.Timestamp('2016-07-01')) & (w['date'] <= pd.Timestamp('2016-10-31'))
