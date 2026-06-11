@@ -39,10 +39,11 @@ _WEATHER_KEYS = ("temperature", "windSpeed", "windDirection", "weatherType",
 
 
 def slim_detail(d: dict) -> dict:
-    """Project a full (or already-slim) activity detail to the slim record.
+    """Project a full (or already-slim/rich) activity detail to the slim record.
 
-    Idempotent: a record that's already slim (has 'gps', lacks 'frequencyList')
-    is returned unchanged, so callers can pass either shape.
+    Idempotent: a record that's already slim or rich (has 'gps', lacks
+    'frequencyList') is returned unchanged, so callers can pass any shape —
+    rich records are a slim-compatible superset.
     """
     if "gps" in d and "frequencyList" not in d:
         return d
@@ -54,6 +55,36 @@ def slim_detail(d: dict) -> dict:
         "weather": {k: w.get(k) for k in _WEATHER_KEYS},
         "gps": [lat, lon],
     }
+
+
+def rich_detail(d: dict):
+    """Project a full activity detail to the rich record (slim + per-second).
+
+    A slim-compatible superset (every slim consumer accepts it) adding the
+    fields the rep-extraction layer (reps.py) needs, RAW/unscaled like slim:
+
+      pauses: [[startTimestamp, endTimestamp, duration], ...]
+      freq:   [[timestamp, distance, heart, gpsLat, gpsLon], ...]  per-second
+
+    ~100 KB vs slim's ~600 B, so it's kept only where reps.py consumes it:
+    every Track Run (sync caches those rich from the start) and runs on
+    hand-logged workout days (scripts/backfill_rich_details.py).
+
+    Idempotent on rich records. Returns None for a slim record — the
+    per-second data is gone and the caller must re-fetch.
+    """
+    if "freq" in d:
+        return d
+    if "frequencyList" not in d:
+        return None
+    rec = slim_detail(d)
+    rec["rich"] = 1
+    rec["pauses"] = [[p.get("startTimestamp"), p.get("endTimestamp"),
+                      p.get("duration")] for p in (d.get("pauseList") or [])]
+    rec["freq"] = [[p.get("timestamp"), p.get("distance"), p.get("heart"),
+                    p.get("gpsLat"), p.get("gpsLon")]
+                   for p in (d.get("frequencyList") or [])]
+    return rec
 
 
 class Activity:

@@ -144,8 +144,9 @@ def build_coros_data(profile, env, *, rebuild, fit=False):
           "--no-fetch", "--snapshot", str(snapshot_path),
           "--out-dir", str(data_dir), "--current-year", str(current_year)],
          env, f"{profile.id}: build_dataset")
-    _run(["python", "src/parsers/parse_workouts.py", "--continuous-fartlek-only"],
-         env, f"{profile.id}: parse_workouts")
+    # CS fit before workouts: the rep-extraction layer (reps.py) needs the
+    # CS timeline for its quality cutoff, and parse_workouts consumes its
+    # output. The fit itself only needs races, so the order is safe.
     if profile.fit and fit:
         try:
             _run(["python", "src/models/bayes_cs_fit.py"], env,
@@ -158,6 +159,16 @@ def build_coros_data(profile, env, *, rebuild, fit=False):
                   f"CS-dependent tabs will be omitted")
     elif profile.fit:
         print(f"[{profile.id}] no --fit: reusing existing bayes_cs_* outputs")
+    # Watch-derived rep extraction (workout_measured.csv). Watch profiles
+    # have no hand log to reconcile against -> --watch-only. Needs the rich
+    # details cache and a CS fit; skipped (with the tab unaffected) if absent.
+    if (data_dir / "details").exists() and (data_dir / "bayes_cs_summary.csv").exists():
+        _run(["python", "src/coros/reps.py", "--watch-only"],
+             env, f"{profile.id}: reps")
+    else:
+        print(f"[{profile.id}] reps: no details cache or CS fit — skipped")
+    _run(["python", "src/parsers/parse_workouts.py", "--continuous-fartlek-only"],
+         env, f"{profile.id}: parse_workouts")
 
 
 def _race_additions(cfg):

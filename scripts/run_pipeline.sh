@@ -81,6 +81,14 @@ fi
 
 quiet_step "drive_fetch (snapshot)"  python src/parsers/drive_fetch.py snapshot --year "$(date +%Y)"
 quiet_step "build_dataset"           python src/parsers/build_dataset.py
+# Watch-derived rep extraction for Max's hybrid profile: the hand log stays
+# the source of truth; reps.py reconciles the Coros per-second stream against
+# it (src/coros/reps.py) and parse_workouts consumes the result. Skipped when
+# the rich details cache or CS timeline isn't present (e.g. CI before the
+# coros sync is wired) — parse_workouts then falls back to string parsing.
+if [[ -d data/profiles/coros/details && -f data/bayes_cs_summary.csv ]]; then
+  quiet_step "reps"                  python src/coros/reps.py --details-dir data/profiles/coros/details
+fi
 quiet_step "parse_workouts"          python src/parsers/parse_workouts.py "${diag_flag[@]}"
 
 if [[ $fit -eq 1 ]]; then

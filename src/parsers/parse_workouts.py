@@ -110,6 +110,79 @@ def reclassify_fartlek(total_m, has_zero_rest):
     return None
 
 
+def measured_to_decomposed(measured, daily_df):
+    """Convert watch-measured reps (workout_measured.csv, written by
+    src/coros/reps.py) into decomposed-schema rows.
+
+    Only days the rep-extraction layer trusts are converted:
+      - 'exact'      : reconciled to the meter against the hand log;
+      - 'watch-only' : no hand log exists (watch-import profiles) — a
+        watch-derived Track Run on such a day IS the workout.
+    Every other status (disqualified, ambiguous, no-subset, ...) falls back
+    to the string parser. Days whose hand log doesn't claim a quality
+    workout never appear in workout_measured.csv at all (reps.py only
+    analyzes quality days), so a stray watch Track Run on a non-workout
+    day is ignored completely — per Max, the hand log wins.
+
+    Each enriched day becomes ONE decomposed row — the projection's CS+D'
+    hyperbola needs whole-workout D_eff (per-rep-group rows with measured
+    full-recovery rests push D_eff toward D' and the 5K-equivalent
+    explodes). Per-rep detail stays in workout_measured.csv for display.
+
+      rep_dist     : distance-weighted mean rep length (sum d_i^2 / sum d_i)
+                     rounded to 100m — exact for uniform days, an effective
+                     rep for ladders;
+      rep_count    : round(total / rep_dist), >= 1;
+      pace_per_mile: time-weighted measured pace across all reps;
+      rest_per_mile: MEASURED total rest (standing + jog) per rep-mile,
+                     replacing the parser's defaults.
+
+    Type honors the hand letter when explicit (t/i/r); `f@` days (and
+    watch-only days) become continuous_fartlek when the day is a single cf
+    chunk, else interval/rep by effective rep length.
+
+    Returns (rows, enriched_dates).
+    """
+    daily_types = {}
+    if daily_df is not None:
+        d = daily_df.copy()
+        d['date'] = pd.to_datetime(d['date']).dt.date
+        daily_types = dict(zip(d['date'], d['run_type']))
+
+    rows, enriched = [], set()
+    reps = measured[(measured['rep_idx'] > 0)
+                    & (measured['status'].isin(['exact', 'watch-only']))]
+    for dt, day in reps.groupby('date'):
+        dt = pd.to_datetime(dt).date()
+        run_type = daily_types.get(dt)
+        total = day['dist_m'].sum()
+        pace = day['time_s'].sum() / (total / MILE_M)
+
+        if (day['kind'] == 'cf').all():
+            rows.append({'date': dt, 'type': 'continuous_fartlek',
+                         'rep_dist': int(total), 'rep_count': 1,
+                         'pace_per_mile': pace, 'rest_per_mile': 0})
+            enriched.add(dt)
+            continue
+
+        rep_dist = (day['dist_m'] ** 2).sum() / total
+        rep_dist = max(100, round(rep_dist / 100) * 100)
+        rep_count = max(1, round(total / rep_dist))
+        rest = (day['rest_stand_s'].fillna(0) + day['rest_jog_s'].fillna(0))
+        rest_total = rest[day['rest_stand_s'].notna()
+                          | day['rest_jog_s'].notna()].sum()
+        rest_per_mile = rest_total / (total / MILE_M)
+        if run_type in ('tempo', 'interval', 'rep'):
+            final_type = run_type
+        else:                           # fartlek collision / watch-only
+            final_type = 'interval' if rep_dist >= 800 else 'rep'
+        rows.append({'date': dt, 'type': final_type,
+                     'rep_dist': int(rep_dist), 'rep_count': int(rep_count),
+                     'pace_per_mile': pace, 'rest_per_mile': rest_per_mile})
+        enriched.add(dt)
+    return rows, enriched
+
+
 def decompose(daily_df, continuous_fartlek_only=False):
     """
     Filter quality workouts, decompose each row.
@@ -299,6 +372,20 @@ def main():
     daily = pd.read_csv(src)
     decomposed, pruned = decompose(
         daily, continuous_fartlek_only=args.continuous_fartlek_only)
+
+    # Watch enrichment: days the rep-extraction layer reconstructed exactly
+    # replace their parsed rows (real structure + measured rest); watch-only
+    # days are added outright. See measured_to_decomposed for the rules.
+    measured_path = DATA_DIR / 'workout_measured.csv'
+    if measured_path.exists():
+        measured = pd.read_csv(measured_path)
+        m_rows, enriched = measured_to_decomposed(measured, daily)
+        if m_rows:
+            decomposed = decomposed[~decomposed['date'].isin(enriched)]
+            decomposed = pd.concat(
+                [decomposed, pd.DataFrame(m_rows)], ignore_index=True)
+            print(f'Watch-enriched: {len(enriched)} days '
+                  f'({len(m_rows)} decomposed rows) from {measured_path}')
 
     decomposed = decomposed.sort_values('date').reset_index(drop=True)
     pruned = pruned.sort_values('date').reset_index(drop=True) if len(pruned) else pruned

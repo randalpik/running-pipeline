@@ -23,15 +23,24 @@ from pathlib import Path
 import pandas as pd
 
 from src.coros import mappings as M
-from src.coros.build_current_log import build_current_log, slim_detail
+from src.coros.build_current_log import build_current_log, rich_detail, slim_detail
 from src.coros.client import CorosClient
 from src.parsers.snapshot import CURRENT_LOG_COLUMNS
 
 
-def _cache_detail(client, item, details_dir: Path):
-    """Return the slim detail record, fetching + caching (slim) on miss.
+def _project(raw, sport_type):
+    """Slim or rich projection: Track Runs keep the per-second data that the
+    rep-extraction layer (reps.py) consumes; everything else stays slim."""
+    if sport_type == M.SPORT_TRACK_RUN:
+        return rich_detail(raw) or slim_detail(raw)
+    return slim_detail(raw)
 
-    The cache stores only the slim projection (~600 B) — never the ~1.5 MB raw
+
+def _cache_detail(client, item, details_dir: Path):
+    """Return the cached detail record, fetching + caching on miss.
+
+    The cache stores a projection — slim (~600 B) for plain runs, rich
+    (~100 KB, + per-second stream) for Track Runs — never the ~1.5 MB raw
     detail. A cache file that predates slimming (full detail) is migrated in
     place on read.
     """
@@ -39,25 +48,26 @@ def _cache_detail(client, item, details_dir: Path):
     path = details_dir / f"{label}.json"
     if path.exists():
         raw = json.loads(path.read_text())
-        rec = slim_detail(raw)
+        rec = _project(raw, item.get("sportType"))
         if "frequencyList" in raw:           # legacy full file -> migrate in place
             path.write_text(json.dumps(rec))
         return rec
-    rec = slim_detail(client.activity_detail(label, item.get("sportType")))
+    rec = _project(client.activity_detail(label, item.get("sportType")),
+                   item.get("sportType"))
     details_dir.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(rec))
     return rec
 
 
 def _load_all_details(details_dir: Path):
-    """Load every cached detail as a slim record, migrating legacy full files."""
+    """Load every cached detail record, migrating legacy full files."""
     out = []
     for p in sorted(details_dir.glob("*.json")):
         try:
             raw = json.loads(p.read_text())
         except (ValueError, OSError):
             continue
-        rec = slim_detail(raw)
+        rec = _project(raw, (raw.get("summary") or {}).get("sportType"))
         if "frequencyList" in raw:
             p.write_text(json.dumps(rec))
         out.append(rec)

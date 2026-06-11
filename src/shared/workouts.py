@@ -35,6 +35,20 @@ CS_PATH       = DATA_DIR / 'bayes_cs_summary.csv'
 
 # ---------- pipeline parameters ----------
 TAU = 210.0
+# Floor on the rest-decay term (June 2026, with watch-measured rests). The
+# exponential was calibrated on the parser's default rests (140-480 s/mi);
+# real rests reach ~1100, where exp() saturates and claims a fully-recovered
+# rep contributes ~nothing to D_eff — driving D_eff toward D' and exploding
+# the 5K-equivalent hyperbola (a 12x400 read as one 440m effort). A
+# fully-recovered repeat still evidences repeatability: floor its
+# contribution at DECAY_FLOOR of rep distance. Dimensionless and structural
+# (rest_per_mile carries no pace/CS units), so it ports across profiles and
+# fitness levels; the value is fit to residual-vs-rest independence
+# (Spearman rho = 0 at 0.17) on the watch-enriched interval corpus.
+# Bit-identical to the unfloored model below rest = -TAU*ln(0.17) ~ 372
+# s/mi, which covers every legacy default except rep (420: decay
+# 0.135 -> 0.17, a 2-3s shift absorbed by the rep category offset).
+DECAY_FLOOR = 0.17
 # Global long-run slice (June 2026, replacing the per-profile distance
 # slice). The two bounds deliberately mix units because they encode
 # different mechanisms:
@@ -182,7 +196,7 @@ def project_workouts(cs, epoch):
     w['xc_corrected'] = xc_mask
 
     w = add_cs(w, cs, epoch)
-    decay = np.exp(-w['rest_per_mile'] / TAU)
+    decay = np.maximum(np.exp(-w['rest_per_mile'] / TAU), DECAY_FLOOR)
     w['D_eff']    = w['rep_dist'] * (1 + (w['rep_count'] - 1) * decay)
     w['t_eff']    = w['pace_per_mile'] * w['D_eff'] / 1609.344
     w['t_5k_hyp'] = (5000 - w['dp_t']) * w['t_eff'] / (w['D_eff'] - w['dp_t'])

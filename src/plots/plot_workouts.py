@@ -76,6 +76,9 @@ def workout_hover(r, single_type=False):
                 f"{sec_to_mss(r['pace_per_mile'])}/mi")
     if pd.notna(r.get('rest_per_mile')) and r['rest_per_mile'] > 0:
         body += f", rest {sec_to_mss(r['rest_per_mile'])}/mi"
+    measured = r.get('measured_line')
+    if isinstance(measured, str) and measured:
+        body += f"<br>{measured}"
 
     p5k_disp = r.get('p5k_display_min', r['p5k_min'])
     p5k_line = (f"<b>5K-equiv:</b> {fmt_min(p5k_disp)}/mi   "
@@ -124,12 +127,37 @@ def hill_rep_hover(r):
     return "<br>".join(parts)
 
 
+def measured_lines():
+    """Per-date watch-measured rep decomposition for hover (workout_measured
+    .csv, written by src/coros/reps.py). Only trusted statuses appear."""
+    path = DATA_DIR / 'workout_measured.csv'
+    if not path.exists():
+        return {}
+    m = pd.read_csv(path)
+    m = m[(m['rep_idx'] > 0) & (m['status'].isin(['exact', 'watch-only']))]
+    lines = {}
+    for date, day in m.groupby('date'):
+        parts = [f"{int(r['dist_m'])}{'cf' if r['kind'] == 'cf' else ''}"
+                 f"@{sec_to_mss(r['pace_sec_per_mi'])}"
+                 for _, r in day.iterrows()]
+        chunks = [' · '.join(parts[i:i+5]) for i in range(0, len(parts), 5)]
+        lines[date] = '<b>Watch:</b> ' + '<br>'.join(chunks)
+    return lines
+
+
 def main():
     cs, epoch = load_cs()
 
     workouts = project_workouts(cs, epoch)
     hills_c  = project_hill_continuous(cs, epoch)
     hills_r  = project_hill_reps()
+
+    lines = measured_lines()
+    if lines:
+        workouts['measured_line'] = (
+            workouts['date'].dt.date.astype(str).map(lines))
+        print(f'Watch decomposition on {workouts["measured_line"].notna().sum()} '
+              f'workout hovers')
 
     # Load TQ's final per-category offsets so each category's markers sit at
     # the same per-category baseline TQ uses. Categories not in the CSV (rep,
