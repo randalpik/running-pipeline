@@ -89,7 +89,9 @@ The volume / temperature / weight panel: three stacked subplots with moving-aver
 | `recovery-runs-reference.md` | 3 | Era window (±182d), OLS features, route inclusion threshold, rejected normalizers (volume, bodyweight). |
 | `route-normalization-reference.md` | cross | Schema and dataflow of the locations sheet, propagation to recovery and TQ. |
 | `qualitative-trends-reference.md` | diagnostic | Window sizes (56/28/56-day MA, 14d min-max with 7d smoothing), gradient-strip rendering, weight gap-align before+after smoothing. |
-| `cs-workout-enrichment-plan.md` | 1 (plan) | Plan-of-record for *if/how* watch-enriched interval workouts get added to the CS fit. Not started; gates + validation protocol to work through on a dedicated thread before touching `bayes_cs_fit.py` inputs. |
+| `cs-workout-enrichment-plan.md` | 1 (plan) | Plan-of-record for *if/how* watch-enriched interval workouts get added to the CS fit. Spike executed June 2026 → HALTED at validation (level bias); fit stays race-only. |
+| `short-effort-unification-plan.md` | cross (plan) | Proposed June 2026: replace race-side β_short AND workout-side g(d) with ONE effort-aware anaerobic correction (scales with speed-above-CS; a 400m race analyzes exactly like a 400m rep). Problem evidence, candidate designs (effort-aware g, 3-param CP), validation gates. |
+| `cs-workout-enrichment-spike-report.md` | 1 (report) | June 2026 spike: CS-likelihood enrichment HALTED (hold-out failures, characterized likelihood pathologies); pivoted to the **performance frontier** — deterministic demonstrated-capability envelope on Fitness (`src/shared/performance_frontier.py`, cone slopes from the spike's structure-function analysis). `bayes_cs_fit.py --workout-obs` remains flag-gated, default off. |
 
 ## Pre-2016 race data
 

@@ -296,6 +296,19 @@ def main():
     p.add_argument('--tag', default='',
                    help='Suffix for output filenames (e.g. "v4a") to keep '
                         'experiments separate')
+    p.add_argument('--workout-obs', default='',
+                   help='EXPERIMENTAL (cs-workout-enrichment spike, June '
+                        '2026): path to a CSV of near-race training '
+                        'observations with columns date, t5k_sec, dp_fixed_m, '
+                        'sigma_obs. Each row enters the likelihood as a '
+                        '5K-equivalent effort at its date: '
+                        'log(t5k_sec) ~ N(log((5000 - dp_fixed_m)/CS(t)), '
+                        'sigma_obs). dp_fixed_m is the RACE-FIT D\' median at '
+                        'that date (fixed, not the model\'s D\' — workouts '
+                        'inform the CS curve only, races stay the sole D\' '
+                        'anchor; Gate 2 of the enrichment plan). No beta_long '
+                        '(5000m < d_thresh). Default off: race-only fit, '
+                        'output unchanged.')
     p.add_argument('--diagnostics', action='store_true',
                    help='Also write bayes_cs_residuals.csv, '
                         'bayes_cs_posterior.nc, and bayes_cs_diagnostics.txt '
@@ -411,6 +424,21 @@ def main():
     race_times = elig['time_sec'].to_numpy().astype(float)
     log_race_times = np.log(race_times)
 
+    # ---------- optional near-race workout observations (spike) ----------
+    wobs = None
+    if args.workout_obs:
+        wobs = pd.read_csv(args.workout_obs, parse_dates=['date'])
+        wobs_grid_idx = np.array([
+            min(int(round((wd.date() - first_d).days / args.grid_step)), n_grid - 1)
+            for wd in wobs['date']
+        ])
+        wobs_dp = wobs['dp_fixed_m'].to_numpy().astype(float)
+        wobs_log_t = np.log(wobs['t5k_sec'].to_numpy().astype(float))
+        wobs_sigma = wobs['sigma_obs'].to_numpy().astype(float)
+        print(f"Workout observations: {len(wobs)} from {args.workout_obs} "
+              f"(sigma_obs {wobs_sigma.min():.4f}-{wobs_sigma.max():.4f}; "
+              f"D' fixed from race fit, CS-only likelihood)")
+
     # Center grid_t for HSGP numerical stability
     grid_t_centered = (grid_t - grid_t.mean()) / 365.0  # in years
     L = (grid_t_centered.max() - grid_t_centered.min()) * 1.5  # boundary buffer
@@ -503,6 +531,18 @@ def main():
         log_expected = pm.math.log(expected_time_corrected)
 
         pm.Normal('obs', mu=log_expected, sigma=sigma_per_race, observed=log_race_times)
+
+        # Near-race workout observations (spike): 5K-equivalent efforts with
+        # D' FIXED at the race-fit median (wobs_dp), so the gradient flows
+        # into the CS GPs only — races remain the sole anchor for D' and
+        # beta_long (which doesn't apply at 5000m anyway). sigma_obs is a
+        # per-row constant measured empirically (pair-based repeatability),
+        # not a fitted parameter.
+        if wobs is not None:
+            cs_at_wobs = cast(Any, pm.math.exp(log_cs_total[wobs_grid_idx]))
+            expected_t_w = (5000.0 - wobs_dp) / cs_at_wobs
+            pm.Normal('obs_workout', mu=pm.math.log(expected_t_w),
+                      sigma=wobs_sigma, observed=wobs_log_t)
 
     # ---------- prior predictive ----------
     print("\nRunning prior predictive (200 samples)...")

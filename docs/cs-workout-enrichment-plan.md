@@ -1,9 +1,19 @@
 # CS Workout-Enrichment Plan
 
-**Status (June 2026): not started. Prerequisite built and shipped; the fit remains race-only.**
-This doc is the plan-of-record for *if and how* watch-enriched interval workouts get added as
-observations to the critical-speed fit (`bayes_cs_fit.py`). It is meant to be opened at the start
-of a dedicated thread — do not begin implementation without working through the gates below.
+**Status (June 2026): spike executed — HALTED at validation. The fit stays race-only.**
+The spike ran this plan with a near-race band selection (Max's June 2026 variant: every TQ
+point within ±14 s/mi of CS, the band set by the fastest corrected residual). Gate 1 *passed*
+— near-race efforts are race-grade precise (pair-repeatability σ 0.027 vs races 0.029) — but
+the hold-out test failed decisively: with the 2019-06→2020-12 races removed, enrichment made
+held-out race predictions worse (mean |err| 2.49% → 3.26%, bias −1.50% → −3.09%) because the
+in-band population keeps a one-sided sub-max effort bias (+2.7 s/mi mean, era-modulated 0…+6)
+that the symmetric band cannot remove. Full numbers, machinery, and the one surviving idea
+(level-free shape-only observations) in
+[cs-workout-enrichment-spike-report.md](cs-workout-enrichment-spike-report.md).
+`bayes_cs_fit.py --workout-obs` remains as the flag-gated, default-off implementation.
+
+This doc is the plan-of-record the spike executed; kept for the gate rationale. Do not re-open
+enrichment without addressing the level-bias finding in the report.
 
 See also: [cs-model-reference.md](cs-model-reference.md) (the fit itself),
 [training-quality-reference.md](training-quality-reference.md) (the workout projection that would

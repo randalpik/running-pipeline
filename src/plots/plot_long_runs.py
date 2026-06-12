@@ -30,14 +30,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import daily_floor, axis_pad_entry
 from src.shared.workouts import load_cs, project_long_runs
-from src.shared.cs_projection import load_cs_outputs, cs_line_at_anchor
+from src.shared.cs_projection import load_cs_outputs
+from src.shared.performance_frontier import (standard_demos, build_frontier,
+                                              frontier_at_anchor)
 from src.shared.recovery_model import transferable_contributions
 from src.shared.long_run_model import (fit_long_run_model, load_quality_dates,
                                        MIN_COV_N)
 from src.plotting import widgets
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box, route_paren,
-                            sec_to_mss, GRID, CAT_COLORS, CS_LINE, TAG_COLORS,
+                            sec_to_mss, GRID, CAT_COLORS,
+                            FRONTIER_LINE, TAG_COLORS,
                             rgba, yearly_x_axis_kwargs, nice_time_ticks,
                             marker_half_px)
 
@@ -61,8 +64,7 @@ LR_GRADIENT = [[0.0, LR_GRAD_BLUE], [0.5, LR_GRAD_PURPLE], [1.0, LR_GRAD_MAGENTA
 # CS reference curve colors. Marathon = full CS_LINE gold (darker because
 # longer-distance fade pushes pace slower); HM = a lighter, semi-transparent
 # version of the same orange/gold so both read as the same "CS" family.
-CS_LINE_HM       = rgba('#ffb450', 0.55)
-CS_LINE_MARATHON = CS_LINE
+FRONTIER_LINE_HM = rgba(FRONTIER_LINE, 0.55)
 
 
 def _y_safe(arr):
@@ -158,10 +160,18 @@ def main():
     daily_plot = daily_summary[daily_summary['date'] >= daily_floor()].copy()
 
     hm_dist_m, mar_dist_m = 21097.5, 42195.0
-    t_hm  = cs_line_at_anchor(daily_plot, hm_dist_m, beta_long, d_thresh)
-    t_mar = cs_line_at_anchor(daily_plot, mar_dist_m, beta_long, d_thresh)
-    hm_pace_min  = t_hm  / (hm_dist_m  / 1609.344) / 60.0
-    mar_pace_min = t_mar / (mar_dist_m / 1609.344) / 60.0
+
+    # Frontier reference curves at HM and marathon (demonstrated capability;
+    # src/shared/performance_frontier.py — corpus artifact written by
+    # plot_training_quality, which runs earlier in run_plots.sh).
+    _xc = load_cs_outputs(str(DATA_DIR), '')[3]
+    front_demos = standard_demos(daily_summary, beta_long, d_thresh, _xc)
+    frontier, _ = build_frontier(front_demos, pd.DatetimeIndex(daily_plot['date']),
+                                 daily_plot['p5k_implied_min'])
+    tf_hm  = frontier_at_anchor(frontier, daily_plot, hm_dist_m, beta_long, d_thresh)
+    tf_mar = frontier_at_anchor(frontier, daily_plot, mar_dist_m, beta_long, d_thresh)
+    front_hm_pace_min  = tf_hm  / (hm_dist_m  / 1609.344) / 60.0
+    front_mar_pace_min = tf_mar / (mar_dist_m / 1609.344) / 60.0
 
     pace_min = lr['recovery_pace_sec_per_mi'].astype(float) / 60.0
     miles    = lr['miles'].astype(float)
@@ -211,18 +221,19 @@ def main():
     # ---------- figure ----------
     fig = go.Figure()
 
-    # Marathon curve (darker gold, full saturation).
+    # Frontier curves only (the gold CS pair was removed June 2026):
+    # marathon bright purple, HM faint purple — "fastest I could physically
+    # race this distance that day".
     fig.add_trace(go.Scatter(
-        x=daily_plot['date'], y=_y_safe(mar_pace_min),
-        mode='lines', name='CS marathon pace',
-        line=dict(color=CS_LINE_MARATHON, width=2.2),
+        x=daily_plot['date'], y=_y_safe(front_mar_pace_min),
+        mode='lines', name='Frontier marathon pace',
+        line=dict(color=FRONTIER_LINE, width=2.2),
         hoverinfo='skip',
     ))
-    # HM curve (lighter gold).
     fig.add_trace(go.Scatter(
-        x=daily_plot['date'], y=_y_safe(hm_pace_min),
-        mode='lines', name='CS half-marathon pace',
-        line=dict(color=CS_LINE_HM, width=2.0),
+        x=daily_plot['date'], y=_y_safe(front_hm_pace_min),
+        mode='lines', name='Frontier half-marathon pace',
+        line=dict(color=FRONTIER_LINE_HM, width=2.0),
         hoverinfo='skip',
     ))
 
@@ -253,28 +264,33 @@ def main():
 
     # Condition-tag halo rings (same construction as the Workouts plot).
     # meta.idx maps ring points back to marker-trace positions so the JS
-    # toggles can move the rings with the markers. Rings start HIDDEN — the
-    # distance gradient is this plot's primary encoding and the Show-tags
-    # checkbox opts into the overlay (visible=False also hides the legend
-    # entries until then).
+    # toggles can move the rings with the markers. Rings ship VISIBLE but
+    # parked at an off-axis sentinel (1900 — same trick as the race plots'
+    # legend sentinels; empty-data traces can suppress legend entries):
+    # the Tags legend group therefore exists from load with constant size,
+    # so toggling Show-tags never reflows the legend, the gradient sidebar
+    # anchored below it, or the plot margin. The JS toggle swaps the ring
+    # DATA between sentinel and the real points, never trace visibility.
     tags = [lr_tag(r) for _, r in lr.iterrows()]
     has_tags = any(t for t in tags)
     dates = lr['date'].tolist()
     raw_y_list = _y_safe(pace_min.values)
+    sentinel_x = [pd.Timestamp('1900-01-01')]
+    sentinel_y = [6.0]
     for tag, label in LR_TAG_LEGEND.items():
         idx = [i for i, t in enumerate(tags) if t == tag]
         if not idx:
             continue
         fig.add_trace(go.Scatter(
-            x=[dates[i] for i in idx], y=[raw_y_list[i] for i in idx],
+            x=sentinel_x, y=sentinel_y,
             mode='markers', name=f'{label} (n={len(idx)})',
-            visible=False,
             marker=dict(symbol='circle', size=TAG_RING_SIZE,
                         color='rgba(0,0,0,0)',
                         line=dict(width=TAG_RING_WIDTH, color=TAG_COLORS[tag])),
             hoverinfo='skip',
             legendgroup='tags', legendgrouptitle_text='Tags',
-            meta={'role': 'lr_ring', 'idx': idx},
+            meta={'role': 'lr_ring', 'idx': idx,
+                  'x_real': [str(pd.Timestamp(dates[i]).date()) for i in idx]},
         ))
 
     # ---------- layout ----------
@@ -283,8 +299,8 @@ def main():
     # long-run markers. Data-driven so it fits each profile (Max's data already
     # spans the former fixed 4:30–8:30 bounds, so his axis is unchanged).
     _ys = np.concatenate([
-        np.asarray(mar_pace_min, dtype=float),
-        np.asarray(hm_pace_min, dtype=float),
+        np.asarray(front_mar_pace_min, dtype=float),
+        np.asarray(front_hm_pace_min, dtype=float),
         np.asarray(pace_min.values, dtype=float),
         # Corrected paces are slower than logged; include them so the Watch
         # correction toggle never pushes a point off-axis.
@@ -381,11 +397,11 @@ def main():
     plot_start, plot_end = lr_lo, lr_hi
     all_days   = pd.date_range(plot_start, plot_end, freq='D')
 
-    # Per-day HM and marathon CS pace (min/mi) for the smooth-mode tooltip.
+    # Per-day HM and marathon FRONTIER pace (min/mi) for the tooltip.
     days_2016 = (all_days - epoch).days.astype(float).values
     daily_days = (daily_plot['date'] - epoch).dt.days.astype(float).values
-    hm_per_day  = np.interp(days_2016, daily_days, hm_pace_min)
-    mar_per_day = np.interp(days_2016, daily_days, mar_pace_min)
+    hm_per_day  = np.interp(days_2016, daily_days, front_hm_pace_min)
+    mar_per_day = np.interp(days_2016, daily_days, front_mar_pace_min)
 
     sessions = []
     for i, (_, r) in enumerate(lr.iterrows()):
@@ -434,8 +450,8 @@ function buildTooltip(day, isSnap, pointHtml) {
   var html = '';
   html += '<div class="tt-date">' + dateLabel(day) + '</div>';
   html += '<div class="tt-section">';
-  html += '<div class="tt-row"><span>CS half-marathon</span><b>' + fmtMin(P.hm_pace[idx]) + '/mi</b></div>';
-  html += '<div class="tt-row"><span>CS marathon</span><b>' + fmtMin(P.mar_pace[idx]) + '/mi</b></div>';
+  html += '<div class="tt-row"><span>Frontier half-marathon</span><b>' + fmtMin(P.hm_pace[idx]) + '/mi</b></div>';
+  html += '<div class="tt-row"><span>Frontier marathon</span><b>' + fmtMin(P.mar_pace[idx]) + '/mi</b></div>';
   html += '</div>';
 
   var run = null;

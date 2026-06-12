@@ -40,9 +40,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import data_span, first_race_date, axis_pad_entry
 from src.shared.cs_projection import load_cs_outputs, project_races_to_5k_pace
+from src.shared.performance_frontier import standard_demos, build_frontier_band
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             sec_to_mss, sec_to_mss_full, SURFACES, rgba, GRID,
-                            yearly_x_axis_kwargs, nice_time_ticks, marker_half_px)
+                            FRONTIER_LINE, CAT_COLORS, yearly_x_axis_kwargs,
+                            nice_time_ticks, marker_half_px)
 
 
 DEFAULT_IN_DIR = str(DATA_DIR)
@@ -145,28 +147,68 @@ def main():
     elig_plot = elig_plot[elig_plot['pace_norm_min'].notna()].copy()
     print(f'Hyperbolic projection (5K-equiv): {len(elig_plot)} race diamonds')
 
+    # ---------- performance frontier (red line) ----------
+    # Demonstrated-5K-capability envelope over race 5K-equivalents + the kept
+    # TQ corpus (see src/shared/performance_frontier.py for semantics).
+    # standard_demos is the shared canonical set every tab builds from;
+    # Fitness is the line's home.
+    demos = standard_demos(daily_summary, beta_long_med, d_thresh_long,
+                           xc_correction,
+                           races_path=Path(args.races),
+                           exclusions_path=Path(excl_path))
+    frontier, front_lo, front_hi, demos = build_frontier_band(
+        demos, pd.DatetimeIndex(summary_plot['date']), summary_plot)
+    n_front = int(frontier['frontier_pace_min'].notna().sum())
+    # Every workout above the CS-5K floor is shown ("Frontier workouts" —
+    # context belongs on the chart even when a bigger neighbor overshadows
+    # the point at its own date); binding is a hover annotation, not a
+    # display filter.
+    front_workouts = demos[(demos['excess'] > 0) & (demos['src'] != 'race')].copy()
+    print(f'Frontier: {int((demos["excess"] > 0).sum())} demos above the '
+          f'CS-5K floor ({len(front_workouts)} non-race, '
+          f'{int(front_workouts["binding"].sum())} of those binding)')
+
     # ---------- figure ----------
     fig = go.Figure()
 
-    # 95% ribbon
-    fig.add_trace(go.Scatter(
-        x=summary_plot['date'].tolist() + summary_plot['date'].tolist()[::-1],
-        y=summary_plot['cs_pace_lo95'].tolist() + summary_plot['cs_pace_hi95'].tolist()[::-1],
-        fill='toself', fillcolor='rgba(255,180,80,0.10)',
-        line=dict(width=0), mode='lines',
-        name='95% credible interval', hoverinfo='skip', showlegend=True))
-    # 50% ribbon
-    fig.add_trace(go.Scatter(
-        x=summary_plot['date'].tolist() + summary_plot['date'].tolist()[::-1],
-        y=summary_plot['cs_pace_lo50'].tolist() + summary_plot['cs_pace_hi50'].tolist()[::-1],
-        fill='toself', fillcolor='rgba(255,180,80,0.25)',
-        line=dict(width=0), mode='lines',
-        name='50% credible interval', hoverinfo='skip', showlegend=True))
-    # Posterior median CS
+    # Posterior median CS — demoted to a faint reference (June 2026): the
+    # graph's purpose is now 5K prediction, so the asymptotic CS line and
+    # its CrI ribbons no longer dominate. The frontier carries the band.
     fig.add_trace(go.Scatter(
         x=summary_plot['date'], y=summary_plot['cs_pace_med'],
+        mode='lines', line=dict(color=rgba('#ffb450', 0.55), width=2.0),
+        name='Posterior median CS', hoverinfo='skip', showlegend=True,
+        legendrank=4))
+    # Frontier-swept 95% prediction band: the frontier recomputed with the
+    # floor at the CS lo95/hi95 5K predictions. Collapses onto the line
+    # where a demonstration binds (proof pins the prediction); equals the
+    # CS CrI on the floor. Purple so band and line read as one object.
+    fig.add_trace(go.Scatter(
+        x=(summary_plot['date'].tolist()
+           + summary_plot['date'].tolist()[::-1]),
+        y=(front_lo['frontier_pace_min'].tolist()
+           + front_hi['frontier_pace_min'].tolist()[::-1]),
+        fill='toself', fillcolor=rgba(FRONTIER_LINE, 0.14),
+        line=dict(width=0), mode='lines',
+        name='95% prediction band', hoverinfo='skip', showlegend=True,
+        legendrank=2))
+    # CS-implied 5K prediction — the frontier's floor, BRIGHT gold (the
+    # graph's primary gold object; the asymptotic CS median above is the
+    # faint one). Same 5K-equiv space as the diamonds.
+    fig.add_trace(go.Scatter(
+        x=summary_plot['date'], y=summary_plot['p5k_implied_min'],
         mode='lines', line=dict(color='rgb(255,180,80)', width=2.5),
-        name='Posterior median CS', hoverinfo='skip', showlegend=True))
+        name='CS 5K prediction', hoverinfo='skip', showlegend=True,
+        legendrank=3))
+    # Performance frontier — demonstrated 5K capability (5K-equiv pace space,
+    # same space as the race diamonds; the gold CS line is asymptotic pace).
+    if n_front:
+        fig.add_trace(go.Scatter(
+            x=frontier['date'], y=frontier['frontier_pace_min'],
+            mode='lines', line=dict(color=FRONTIER_LINE, width=2),
+            connectgaps=False,
+            name='Performance frontier (5K)', hoverinfo='skip',
+            showlegend=True, legendrank=1))
     # Race diamonds (bias-corrected). Colors derived from canonical SURFACES
     # hex tokens with 0.7 alpha so a re-skin only edits one place. Each
     # diamond carries a per-race snap-mode tooltip via customdata, and the
@@ -224,6 +266,51 @@ def main():
             legendgrouptitle_text='Race pace (5K-equiv)',
             meta={'snap_eligible': True}))
 
+    # Frontier workouts: EVERY non-race demonstration above the CS-5K floor,
+    # rendered exactly as Training renders its session markers (per-category
+    # colors/sizes, matching legend entries) under a "Frontier workouts"
+    # legend group — small dots alongside the larger race diamonds. Binding
+    # status (defines the envelope somewhere) is noted in the hover.
+    FRONTIER_CATS = [('interval', 'Interval'), ('tempo', 'Tempo'),
+                     ('rep', 'Rep'), ('continuous_fartlek', 'Fartlek'),
+                     ('long', 'Long'), ('hill_cont', 'Cont. hills')]
+
+    def _disp_cat(row):
+        if row['src'] == 'long_run':
+            return 'long'
+        if row['src'] == 'hill':
+            return 'hill_cont'
+        return row['category']
+
+    def _frontier_inner(row):
+        label = dict(FRONTIER_CATS).get(_disp_cat(row), str(row['src']).title())
+        note = ' <span class="tt-mute">(sets the frontier)</span>' if row['binding'] else ''
+        pace_sec = float(row['pace_min']) * 60
+        t5k_sec = pace_sec * 5000.0 / 1609.344
+        return (f"<div>{label}{note}</div>"
+                f"<div>{row['detail']}</div>"
+                f"<div>5K-equiv: <b>{sec_to_mss(t5k_sec)}</b> "
+                f"<span class='tt-mute'>({sec_to_mss(pace_sec)}/mi)</span></div>")
+
+    if len(front_workouts):
+        front_workouts['disp_cat'] = front_workouts.apply(_disp_cat, axis=1)
+        for cat, label in FRONTIER_CATS:
+            sub = front_workouts[front_workouts['disp_cat'] == cat]
+            if sub.empty:
+                continue
+            fig.add_trace(go.Scatter(
+                x=sub['date'], y=sub['pace_min'],
+                mode='markers',
+                name=f'{label} (n={len(sub)})',
+                marker=dict(color=CAT_COLORS[cat], size=7,
+                            line=dict(color='rgba(255,255,255,0.4)', width=0.5),
+                            opacity=0.85),
+                customdata=[_frontier_inner(r) for _, r in sub.iterrows()],
+                hoverinfo='skip',
+                legendgroup='frontier_workouts',
+                legendgrouptitle_text='Frontier workouts',
+                meta={'snap_eligible': True}))
+
     # ---------- layout ----------
     # Y-bounds + ticks enclosing the plotted data — the CS median line and the
     # race diamonds (the point estimates the axis is sized for; the 95% band
@@ -233,6 +320,10 @@ def main():
     _ys = np.concatenate([
         summary_plot['cs_pace_med'].to_numpy(dtype=float),
         elig_plot['pace_norm_min'].to_numpy(dtype=float),
+        frontier['frontier_pace_min'].to_numpy(dtype=float),
+        front_lo['frontier_pace_min'].to_numpy(dtype=float),
+        front_hi['frontier_pace_min'].to_numpy(dtype=float),
+        front_workouts['pace_min'].to_numpy(dtype=float),
     ])
     _ys = _ys[np.isfinite(_ys)]
     _lo, _hi = (float(_ys.min()), float(_ys.max())) if len(_ys) else (4.50, 8.00)
@@ -260,16 +351,22 @@ def main():
         return round(float(v) * 60) if pd.notna(v) else None
 
     cs_pace_med  = [_round_pace(v) for v in summary_plot['cs_pace_med']]
-    cs_pace_lo50 = [_round_pace(v) for v in summary_plot['cs_pace_lo50']]
-    cs_pace_hi50 = [_round_pace(v) for v in summary_plot['cs_pace_hi50']]
-    cs_pace_lo95 = [_round_pace(v) for v in summary_plot['cs_pace_lo95']]
-    cs_pace_hi95 = [_round_pace(v) for v in summary_plot['cs_pace_hi95']]
+    fr_lo = [_round_pace(v) for v in front_lo['frontier_pace_min']]
+    fr_hi = [_round_pace(v) for v in front_hi['frontier_pace_min']]
 
     sessions = []
     for _, r in elig_plot.iterrows():
         sessions.append({'day':  int((r['date'] - epoch).days),
                          'html': _race_inner(r)})
+    # Frontier-setting workouts join the snap list so hovering near an open
+    # red circle resolves to its session in smooth mode too.
+    for _, r in front_workouts.iterrows():
+        sessions.append({'day':  int((r['date'] - epoch).days),
+                         'html': _frontier_inner(r)})
     sessions.sort(key=lambda s: s['day'])
+
+    # Per-day frontier pace (sec/mi, null in gap breaks) for the trend section.
+    frontier_sec = [_round_pace(v) for v in frontier['frontier_pace_min']]
 
     first_day = int((summary_plot['date'].iloc[0]  - epoch).days)
     last_day  = int((summary_plot['date'].iloc[-1] - epoch).days)
@@ -277,10 +374,9 @@ def main():
     payload = {
         'first_day': first_day,
         'cs_med':    cs_pace_med,
-        'cs_lo50':   cs_pace_lo50,
-        'cs_hi50':   cs_pace_hi50,
-        'cs_lo95':   cs_pace_lo95,
-        'cs_hi95':   cs_pace_hi95,
+        'fr_lo':     fr_lo,
+        'fr_hi':     fr_hi,
+        'frontier':  frontier_sec,
         'sessions':  sessions,
         'nearest_window_days': 60,
     }
@@ -310,11 +406,16 @@ function buildTooltip(day, isSnap, pointHtml) {
   // Date header in both modes — see scaffold note in cursor_tooltip.js.
   html += '<div class="tt-date">' + dateLabel(day) + '</div>';
 
-  // Section 1: per-day CS posterior summary.
+  // Section 1: per-day prediction summary — frontier first (the graph's
+  // primary object), CS median as faint context.
   html += '<div class="tt-section">';
-  html += '<div class="tt-row"><span>CS median</span><b>' + paceMSS(P.cs_med[idx]) + '/mi</b></div>';
-  html += '<div class="tt-row"><span>50% interval</span>' + paceMSS(P.cs_lo50[idx]) + '–' + paceMSS(P.cs_hi50[idx]) + '/mi</div>';
-  html += '<div class="tt-row"><span>95% interval</span>' + paceMSS(P.cs_lo95[idx]) + '–' + paceMSS(P.cs_hi95[idx]) + '/mi</div>';
+  if (P.frontier && P.frontier[idx] != null) {
+    html += '<div class="tt-row"><span>5K frontier</span><b>' + paceMSS(P.frontier[idx]) + '/mi</b></div>';
+  }
+  if (P.fr_lo && P.fr_lo[idx] != null && P.fr_hi && P.fr_hi[idx] != null) {
+    html += '<div class="tt-row"><span>95% band</span>' + paceMSS(P.fr_lo[idx]) + '–' + paceMSS(P.fr_hi[idx]) + '/mi</div>';
+  }
+  html += '<div class="tt-row"><span>CS median</span>' + paceMSS(P.cs_med[idx]) + '/mi</div>';
   html += '</div>';
 
   // Section 2: race details. Smooth = nearest within window.

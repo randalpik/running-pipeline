@@ -13,8 +13,10 @@
 // The condition-tag halo rings are separate traces whose meta.idx maps
 // each ring point to its marker-trace position; their y is recomputed from
 // the same base so rings track the markers through both toggles. The rings
-// ship visible:false; the Show-tags checkbox flips their visibility (which
-// also shows/hides their legend entries).
+// ship VISIBLE but parked at an off-axis sentinel so their legend entries
+// exist from load (constant legend size — toggling never reflows the
+// legend, the gradient sidebar, or the plot). Show-tags swaps the ring
+// DATA between the sentinel and the real points.
 //
 // window.__lrWatchOn / window.__lrNormOn mirror the checkboxes so the
 // cursor-tooltip build_js (keyed by day in plot_long_runs.py's payload)
@@ -58,10 +60,14 @@
     Plotly.restyle(plot, { y: [y], 'marker.color': [color] }, [main]);
     var tagsOn = !!(tagsCb && tagsCb.checked);
     for (var rI = 0; rI < rings.length; rI++) {
-      var idx = plot.data[rings[rI]].meta.idx;
-      var ry = [];
-      for (var j = 0; j < idx.length; j++) ry.push(y[idx[j]]);
-      Plotly.restyle(plot, { y: [ry], visible: tagsOn }, [rings[rI]]);
+      var rMeta = plot.data[rings[rI]].meta;
+      if (tagsOn) {
+        var ry = [];
+        for (var j = 0; j < rMeta.idx.length; j++) ry.push(y[rMeta.idx[j]]);
+        Plotly.restyle(plot, { x: [rMeta.x_real], y: [ry] }, [rings[rI]]);
+      } else {
+        Plotly.restyle(plot, { x: [['1900-01-01']], y: [[6.0]] }, [rings[rI]]);
+      }
     }
   }
 

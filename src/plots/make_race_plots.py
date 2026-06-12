@@ -6,11 +6,13 @@ Two outputs (interactive, dark-themed, self-contained HTML):
                                  toggle distance bins
   - race_pace_by_distance.html : 8 distance-bin subplots (400m → marathon)
 
-Each plot lays the CS-implied 5K curve (posterior median, no ribbons) under
-the race markers as a fitness reference. The race projection uses the
-hyperbolic CS model with the long-distance β_long un-bias APPLIED but the
-XC pre-correction OMITTED — so XC 5Ks display their actual race pace, not
-their flat-course equivalent.
+Each plot lays the PERFORMANCE FRONTIER (demonstrated 5K capability, red —
+src/shared/performance_frontier.py) under the race markers as the
+race-prediction reference; pre-2013 the frontier's floor is the hand-drawn
+cubic (the GP isn't really estimating CS in that sparse era). The race
+projection uses the hyperbolic CS model with the long-distance β_long
+un-bias APPLIED but the XC pre-correction OMITTED — so XC 5Ks display
+their actual race pace, not their flat-course equivalent.
 
 NO outliers are pruned. Every row in races.csv with positive distance and
 time is plotted, including fatigued (race_seq > 1) races — these aren't
@@ -40,12 +42,13 @@ from plotly.subplots import make_subplots
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import data_span, axis_pad_entry
-from src.shared.cs_projection import (load_cs_outputs, project_races_to_5k_pace,
-                                       cs_line_at_anchor, cubic_at_anchor)
+from src.shared.cs_projection import load_cs_outputs, project_races_to_5k_pace
+from src.shared.performance_frontier import (standard_demos, build_frontier,
+                                              frontier_at_anchor)
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box,
                             sec_to_mss, sec_to_mss_full,
-                            SURFACES, CS_LINE, CS_LINE_WIDTH, GRID,
+                            SURFACES, FRONTIER_LINE, GRID,
                             pr_marker, is_pr_eligible, marker_half_px,
                             PR_LEGEND_NAME, PR_LEGEND_RANK,
                             yearly_x_axis_kwargs, nice_time_ticks)
@@ -70,20 +73,21 @@ DEFAULT_OUT    = str(OUTPUT_DIR)
 # CS line. β_short>0 inflates the effective race time for d<d_thresh_short
 # by (1 + β_short·log(d_thresh_short/d)) before projection.
 #
-# Calibrated April 2026 against Max's 800m behavior. His 800ms (β-immune,
-# at d=d_thresh_short the correction is exactly 1) sit ~+7 to +11 s/mi
-# below the CS line — that's the natural floor for sustained sub-CS
-# efforts at sub-mile distances. β_short=0.35 places his fastest 400m
-# (59.30s on 2016-03-31) at +1.6 s/mi below the CS line of that date, so
-# all 12 lifetime 400ms cleanly sit at-or-below CS without dominating
-# the cross-distance PR sequence. A couple of focused-track-era 400ms
-# remain near the CS line, which is appropriate.
-#
-# Tune β_short up to push 400m markers toward/above CS, down to push them
-# below. d_thresh_short=800 is the boundary: 800m+ races receive no
-# correction.
-BETA_SHORT     = 0.35
-D_THRESH_SHORT = 800.0
+# Recalibrated June 2026 (second pass) on TWO prediction anchors solved
+# simultaneously: today's frontier-derived 400m and 800m predictions land
+# exactly ON their lifetime PRs (57.0 / 2:04.1) — "race predictions must
+# not surpass all-time PRs". Two anchors pin both knobs in closed form:
+# beta_short=0.363, d_thresh_short=875m. The curve extends smoothly to any
+# short distance (300/600/1k — no per-event logic). Display sanity: ZERO
+# non-fatigued sub-1000m races project past the performance frontier
+# (closest +0.7 s/mi); the only ones past it are fatigued mid-meet doubles,
+# which are also excluded from PR competition (see compute_pr pools).
+# Honest caveat: beta_short remains a calibration knob, not physiology —
+# the principled replacement is the effort-aware anaerobic correction
+# unifying race and rep short-effort handling (see the cs-model-reference
+# frontier section's open items).
+BETA_SHORT     = 0.363
+D_THRESH_SHORT = 875.0
 
 
 # ---------- distance grouping for the 8-panel plot (8% tolerance, may leave races unmatched) ----------
@@ -103,8 +107,7 @@ TOLERANCE = 0.08  # 8% of target on either side
 # Display titles for the by-distance plot. β-calibration mentions are
 # intentionally omitted — in this view, race datapoints sit at their actual
 # times (β only rescales the CS line, not the points), so the calibration
-# detail isn't critical to interpreting any data point. The chart subtitle
-# still labels the gold line as "CS-derived".
+# detail isn't critical to interpreting any data point.
 SUBPLOT_DISPLAY = {
     '400':      lambda n: f'400m (n={n})',
     '800':      lambda n: f'800m (n={n})',
@@ -249,8 +252,8 @@ def build_hover_anchored(row, anchor_m):
         cs_sec = float(cs_sec)
         delta = float(row['time_norm_sec']) - cs_sec
         side = 'under (faster)' if delta < 0 else 'over (slower)'
-        parts.append(f"CS expected: {sec_to_mss_full(cs_sec)}")
-        parts.append(f"Δ vs CS: {delta:+.1f}s {side}")
+        parts.append(f"Frontier: {sec_to_mss_full(cs_sec)}")
+        parts.append(f"Δ vs frontier: {delta:+.1f}s {side}")
     parts.append(f"Surface: {row.get('surface') or '—'}")
     if row.get('location') and str(row['location']) != 'nan':
         parts.append(f"Location: {row['location']}")
@@ -292,102 +295,64 @@ def build_distance_filter_ui(bin_names):
 # Reversed so faster paces appear higher.
 
 
-def add_cs_line(fig, daily_summary, *, row=None, col=None, show_legend=True,
-                legend_name='CS-derived 5K pace'):
-    """Drop the posterior-median CS line (no ribbons) onto fig."""
-    trace = go.Scatter(
-        x=daily_summary['date'], y=daily_summary['p5k_implied_min'],
-        mode='lines', name=legend_name,
-        line=dict(color=CS_LINE, width=CS_LINE_WIDTH),
-        hoverinfo='skip',
-        showlegend=show_legend,
-        legendgroup='cs',
-        legendrank=2000)  # push below default-rank (1000) surface entries
-    if row is not None and col is not None:
-        fig.add_trace(trace, row=row, col=col)
-    else:
-        fig.add_trace(trace)
+# (The former add_cs_line / add_cs_line_blended gold-line helpers were
+# removed June 2026: race plots carry the performance frontier only. The
+# hand-drawn cubic survives as the frontier's pre-2013 FLOOR — see main().)
 
 
-def fit_handdrawn_cubic(daily_summary, *,
-                         handdrawn_start=pd.Timestamp('2008-04-01'),
-                         handdrawn_end=pd.Timestamp('2013-05-26'),
-                         anchors=None):
-    """Fit the calibrated pre-2013 cubic in 5K-equiv pace space.
+def fit_hiatus_floor(daily_summary, races_path=DEFAULT_RACES, *,
+                     join=pd.Timestamp('2013-05-26')):
+    """Pre-2013 frontier floor: a power curve through the racing-then-hiatus
+    era, replacing the hand-drawn cubic (June 2026 — the cubic DOMINATED the
+    sparse early demonstrations; this curve has exactly two constraints and
+    no interior anchors).
 
-    Returns (coefs, t0, hd_start, hd_end). The cubic interpolates 4 anchors:
-      - (2008-04-01, 9:00) beginner fitness
-      - (2009-07-01, 8:20) peak before stopping running
-      - (2012-01-01, 8:40) slight regression after years off
-      - (2013-05-26, model value at that date) — meets the real curve
+    Constraints (Max's spec):
+      - LEVELS OUT at the pace of the very first 5K, at its date (zero
+        slope going back — beginner fitness as the deep floor), giving the
+        sparse 2008-10 race demonstrations room to control the narrative;
+      - matches the GP line's VALUE AND SLOPE at the join (tangent, no kink).
 
-    The end date was chosen so the cubic's natural end-slope matches the
-    real curve's slope (~-0.33 s/mile/day) — tangent join, no kink. Used by
-    both the all-races plot (rendered directly) and the by-distance plot
-    (re-projected to each panel's anchor distance).
+    Thesis encoded: fitness rose through the 2010-12 running hiatus anyway
+    (aging 10->14, biking/hiking); a smooth curve rising to meet the first
+    HS races is a good-enough account, without the cubic's spurious local
+    structure. Form: f(t) = P0 - (P0-Pj)*((t-t0)/span)^p with p set by the
+    join slope (p ~= 3.9 on Max's data — the rise concentrates toward HS).
+
+    Returns (floor_fn, t0, join) where floor_fn maps DatetimeIndex ->
+    pace values (flat P0 before t0); or (None, None, join) when the data
+    can't support the curve (no pre-join 5K, or grid doesn't cover it).
     """
-    p5k_med = daily_summary['p5k_implied_min'].values
-    daily_dates_pd = pd.to_datetime(daily_summary['date']).values
-    if anchors is None:
-        anchors = [
-            (handdrawn_start,             9.000),
-            (pd.Timestamp('2009-07-01'),  8.333),
-            (pd.Timestamp('2012-01-01'),  8.667),
-            (handdrawn_end,               None),
-        ]
-    resolved = []
-    for d, p in anchors:
-        if p is None:
-            idx = int(np.argmin(np.abs(daily_dates_pd - np.datetime64(d))))
-            p = float(p5k_med[idx])
-        resolved.append((pd.Timestamp(d), float(p)))
-    t0 = resolved[0][0]
-    ts = np.array([(d - t0).days for d, _ in resolved], dtype=float)
-    ys = np.array([p for _, p in resolved], dtype=float)
-    coefs = np.polyfit(ts, ys, len(resolved) - 1)
-    return coefs, t0, handdrawn_start, handdrawn_end
+    try:
+        races = pd.read_csv(races_path, parse_dates=['date'])
+    except FileNotFoundError:
+        return None, None, join
+    early = races[(races['distance_m'] == 5000) & (races['date'] < join)]
+    if early.empty or daily_summary['date'].min() > join:
+        return None, None, join
+    first = early.sort_values('date').iloc[0]
+    t0 = pd.Timestamp(first['date'])
+    P0 = float(first['time_sec']) / (5000.0 / 1609.344) / 60.0  # min/mi
 
+    dd = daily_summary['date']
+    w = daily_summary[(dd >= join - pd.Timedelta(days=14))
+                      & (dd <= join + pd.Timedelta(days=14))]
+    if len(w) < 5:
+        return None, None, join
+    days = (w['date'] - join).dt.days.astype(float)
+    slope, icpt = np.polyfit(days, w['p5k_implied_min'], 1)  # min/mi per day
+    p_join = float(icpt)
+    span = float((join - t0).days)
+    if P0 <= p_join or span <= 0:
+        return None, None, join
+    p_exp = max(float(-slope * span / (P0 - p_join)), 1.0)
 
-def add_cs_line_blended(fig, daily_summary, race_dates, *,
-                         handdrawn_start=pd.Timestamp('2008-04-01'),
-                         handdrawn_end=pd.Timestamp('2013-05-26'),
-                         anchors=None):
-    """All-races-plot CS line: dotted hand-drawn cubic from handdrawn_start
-    to handdrawn_end, then the real model line (solid) from there onward.
+    def floor_fn(dates):
+        v = np.clip((pd.DatetimeIndex(dates) - t0).days.astype(float) / span,
+                    0.0, 1.0)
+        return P0 - (P0 - p_join) * v ** p_exp
 
-    Why hand-drawn through pre-2013: the GP isn't really estimating CS in
-    that period (sparse boundary races, multi-year training gaps), so the
-    GP's smooth fit misleadingly looks like steady fitness gain. The cubic
-    captures the actual training arc.
-
-    The race_dates argument is unused (kept for API symmetry).
-    """
-    coefs, t0, hd_start, hd_end = fit_handdrawn_cubic(
-        daily_summary, handdrawn_start=handdrawn_start,
-        handdrawn_end=handdrawn_end, anchors=anchors)
-
-    p5k_med = daily_summary['p5k_implied_min'].values
-    daily_dates_pd = pd.to_datetime(daily_summary['date']).values
-
-    dotted_dates = pd.date_range(hd_start, hd_end, freq='D')
-    dotted_ts = (dotted_dates - t0).days.values.astype(float)
-    dotted_ys = np.polyval(coefs, dotted_ts)
-
-    mask_solid = daily_dates_pd >= np.datetime64(hd_end)
-    y_solid = np.where(mask_solid, p5k_med, np.nan)
-
-    fig.add_trace(go.Scatter(
-        x=daily_summary['date'], y=y_solid,
-        mode='lines', name='CS-derived 5K pace',
-        line=dict(color=CS_LINE, width=CS_LINE_WIDTH),
-        hoverinfo='skip', showlegend=True, legendgroup='cs',
-        legendrank=2000))
-    fig.add_trace(go.Scatter(
-        x=dotted_dates, y=dotted_ys,
-        mode='lines', name='Estimated 5K pace',
-        line=dict(color=CS_LINE, width=CS_LINE_WIDTH, dash='dot'),
-        hoverinfo='skip', showlegend=True, legendgroup='cs',
-        legendrank=2001))
+    return floor_fn, t0, join
 
 
 def add_race_traces_filterable(fig, df, *, marker_size=9):
@@ -442,6 +407,8 @@ def add_race_traces_filterable(fig, df, *, marker_size=9):
                 legendgroup=surf, showlegend=False,
                 meta={'filter_bin': bin_name,
                       'pr_eligible': is_pr_eligible(surf),
+                      'pr_skip': [bool(f) for f in
+                                  s2['fatigued'].fillna(False)],
                       'snap_eligible': True}))
 
 
@@ -454,10 +421,16 @@ def add_pr_overlay_filterable(fig, df, *, value_col='pace_norm_min',
     Initial PR set is computed against the full pool (every checkbox starts
     checked). The JS recomputes on every visibility change.
     """
-    # PR pool excludes surfaces in PR_EXCLUDED_SURFACES (currently Downhill).
-    # The race markers stay visible on the plot — they just don't compete.
-    eligible = df[df['surface_plot'].apply(is_pr_eligible)] if 'surface_plot' in df.columns \
-               else df[df['surface'].apply(is_pr_eligible)]
+    # PR pool excludes surfaces in PR_EXCLUDED_SURFACES (currently Downhill)
+    # AND fatigued races. NOTE (Max, June 2026): for short events this is a
+    # BAND-AID with a weak rationale (aerobic fatigue from an hour earlier
+    # doesn't affect a single 400m) — the real defect is the short-effort
+    # projection over-crediting fast 400s; see
+    # docs/short-effort-unification-plan.md. Revert this exclusion once
+    # that lands. The race markers stay visible — they just don't compete.
+    surf_col = 'surface_plot' if 'surface_plot' in df.columns else 'surface'
+    eligible = df[df[surf_col].apply(is_pr_eligible)
+                  & ~df['fatigued'].fillna(False).astype(bool)]
     is_pr = compute_pr_mask(eligible, value_col=value_col, date_col=date_col)
     pr_df = eligible[is_pr].sort_values(date_col)
     # Actual PR markers — meta.is_pr_overlay flags this trace for the JS
@@ -575,9 +548,31 @@ def main():
     # the PR ring (the widest thing on the axis).
     axis_pad_all = [axis_pad_entry(x_lo, x_hi, marker_half_px(ALL_MARKER, ringed=True))]
 
+    # ---------- performance frontier (the only line on these plots) ----------
+    # Frontier floor pre-2013: the hiatus power curve (fit_hiatus_floor —
+    # level at the first 5K, tangent to the GP at the join; the GP isn't
+    # really estimating CS in that sparse era). CS-implied 5K after. The
+    # gold lines are GONE from the race plots (Max, June 2026): one purple
+    # line only — demonstrated capability is the race-prediction reference.
+    floor_fn, _floor_t0, hd_end = fit_hiatus_floor(daily_summary, args.races)
+    floor_5k = daily_summary['p5k_implied_min'].to_numpy(float).copy()
+    if floor_fn is not None:
+        _hd_mask = (daily_summary['date'] <= hd_end).to_numpy()
+        floor_5k[_hd_mask] = floor_fn(daily_summary.loc[_hd_mask, 'date'])
+    demos = standard_demos(daily_summary, beta_long, d_thresh, xc_correction)
+    frontier, _demos_f = build_frontier(
+        demos, pd.DatetimeIndex(daily_summary['date']), floor_5k)
+    print(f'Frontier: {int((_demos_f["excess"] > 0).sum())} demos above the '
+          f'blended floor')
+
     # ---------- plot 1: all races, single panel, with distance-filter checkboxes ----------
     fig1 = go.Figure()
-    add_cs_line_blended(fig1, daily_summary, elig['date'])
+    fig1.add_trace(go.Scatter(
+        x=daily_summary['date'], y=frontier['frontier_pace_min'],
+        mode='lines', name='Performance frontier (5K)',
+        line=dict(color=FRONTIER_LINE, width=2),
+        hoverinfo='skip', showlegend=True, legendgroup='frontier',
+        legendrank=2000))
     add_race_traces_filterable(fig1, elig, marker_size=ALL_MARKER)
     add_pr_overlay_filterable(fig1, elig, value_col='pace_norm_min')
 
@@ -607,8 +602,8 @@ def main():
     cs_dates = pd.to_datetime(daily_summary['date'])
     cs_first_day = int((cs_dates.iloc[0] - js_epoch).days)
     cs_last_day  = int((cs_dates.iloc[-1] - js_epoch).days)
-    cs_pace_per_day = [round(float(v), 4)
-                       for v in daily_summary['p5k_implied_min'].values]
+    cs_pace_per_day = [None if pd.isna(v) else round(float(v), 4)
+                       for v in frontier['frontier_pace_min'].values]
 
     sessions_all = []
     for _, r in elig.iterrows():
@@ -643,14 +638,12 @@ function buildTooltip(day, isSnap, pointHtml) {
     return y + '-' + m + '-' + dd + ' (' + DOW[dt.getUTCDay()] + ')';
   }
 
-  var trendLabel = new Date(day) >= new Date('2013-05-26').getTime() / 86400000 ? 'CS-derived pace' : 'Estimated pace';
-
   var html = '';
   html += '<div class="tt-date">' + dateLabel(day) + '</div>';
 
-  // Section 1: trend info — CS-derived 5K pace at this date.
+  // Section 1: trend info — frontier 5K pace at this date.
   html += '<div class="tt-section">';
-  html += '<div class="tt-row"><span>' + trendLabel + '</span><b>' + paceMSS(P.cs_pace[idx]) + '/mi</b></div>';
+  html += '<div class="tt-row"><span>5K frontier</span><b>' + paceMSS(P.cs_pace[idx]) + '/mi</b></div>';
   html += '</div>';
 
   // Section 2: race details. Smooth = nearest race within window.
@@ -759,9 +752,6 @@ function buildTooltip(day, isSnap, pointHtml) {
                          horizontal_spacing=0.07,
                          vertical_spacing=0.16 if n_rows > 1 else 0.0)
 
-    # Cubic, computed once and reused for every panel
-    cubic_coefs, cubic_t0, hd_start, hd_end = fit_handdrawn_cubic(daily_summary)
-
     surfaces_seen = set()
     cs_legend_drawn = False
 
@@ -793,45 +783,30 @@ function buildTooltip(day, isSnap, pointHtml) {
         if len(sub_proj) == 0:
             continue
 
-        # 2. CS-predicted time at this anchor for every date in summary
-        cs_times = cs_line_at_anchor(daily_summary, anchor, beta_long, d_thresh,
-                                      beta_short=BETA_SHORT,
-                                      d_thresh_short=D_THRESH_SHORT)
-        # 3. Hand-drawn cubic re-projected to this anchor (gives a
-        #    parallel time series for the 2008-04-26 → 2013-05-26 window)
-        dotted_dates, dotted_times = cubic_at_anchor(
-            daily_summary, cubic_coefs, cubic_t0, hd_start, hd_end, anchor,
-            beta_long, d_thresh,
+        # 2. Frontier-predicted time at this anchor for every date in
+        #    summary (the 5K frontier already carries the blended cubic
+        #    floor pre-2013, so no separate hand-drawn series here).
+        front_times = frontier_at_anchor(
+            frontier, daily_summary, anchor, beta_long, d_thresh,
             beta_short=BETA_SHORT, d_thresh_short=D_THRESH_SHORT)
 
-        # 4. CS-prediction lookup per race date (cubic in handdrawn window,
-        #    real CS line elsewhere)
-        cs_by_date = pd.Series(cs_times, index=daily_summary['date'].dt.date.values)
-        cubic_by_date = (pd.Series(dotted_times,
-                                   index=pd.DatetimeIndex(dotted_dates).date)
-                         if len(dotted_dates) else pd.Series(dtype=float))
-        hd_end_date = hd_end.date()
+        # 3. Frontier-prediction lookup per race date
+        front_by_date = pd.Series(front_times,
+                                  index=daily_summary['date'].dt.date.values)
 
-        def _cs_at(d):
+        def _front_at(d):
             d_date = d.date() if hasattr(d, 'date') else d
-            if d_date <= hd_end_date and d_date in cubic_by_date.index:
-                return float(cubic_by_date.loc[d_date])
-            v = cs_by_date.get(d_date, np.nan)
+            v = front_by_date.get(d_date, np.nan)
             return float(v) if v is not None and not pd.isna(v) else np.nan
 
-        sub_proj['cs_pred_sec'] = sub_proj['date'].apply(_cs_at)
+        sub_proj['cs_pred_sec'] = sub_proj['date'].apply(_front_at)
         sub_proj['hover'] = sub_proj.apply(
             lambda row: build_hover_anchored(row, anchor), axis=1)
 
-        # Build the per-panel tooltip payload. cs_for_day uses the cubic
-        # in the hand-drawn era and the real CS line afterwards (same
-        # rule as _cs_at above). round() keeps the JSON small.
-        cs_for_day = []
-        for d_idx, d_val in zip(daily_dates_idx, daily_summary['date']):
-            d_date = d_val.date()
-            v = (cubic_by_date.loc[d_date] if d_date <= hd_end_date
-                 and d_date in cubic_by_date.index else cs_by_date.get(d_date, np.nan))
-            cs_for_day.append(None if v is None or pd.isna(v) else round(float(v), 1))
+        # Per-panel tooltip payload (key kept as cs_pred_sec — the JS reads
+        # it; the displayed label says frontier). round() keeps JSON small.
+        cs_for_day = [None if pd.isna(v) else round(float(v), 1)
+                      for v in front_times]
         panel_sessions = []
         for _, r2 in sub_proj.iterrows():
             panel_sessions.append({
@@ -856,28 +831,16 @@ function buildTooltip(day, isSnap, pointHtml) {
             'sessions':    panel_sessions,
         }
 
-        # 5. CS solid trace (post-handdrawn) and dotted (handdrawn).
-        #    Only the first subplot puts the entries in the legend.
-        daily_dates = daily_summary['date'].to_numpy()
-        mask_solid = daily_dates >= np.datetime64(hd_end)
+        # 5. Frontier trace — the panel's only line. Only the first
+        #    subplot puts the entry in the legend.
         fig2.add_trace(go.Scatter(
-            x=daily_dates[mask_solid],
-            y=cs_times[mask_solid],
-            mode='lines', name='CS-derived',
-            line=dict(color=CS_LINE, width=CS_LINE_WIDTH),
-            hoverinfo='skip', legendgroup='cs',
+            x=daily_summary['date'], y=front_times,
+            mode='lines', name='Frontier',
+            line=dict(color=FRONTIER_LINE, width=2),
+            hoverinfo='skip', legendgroup='frontier',
             showlegend=(not cs_legend_drawn),
             legendrank=2000),
             row=r, col=c)
-        if len(dotted_dates):
-            fig2.add_trace(go.Scatter(
-                x=dotted_dates, y=dotted_times,
-                mode='lines', name='Estimated',
-                line=dict(color=CS_LINE, width=CS_LINE_WIDTH, dash='dot'),
-                hoverinfo='skip', legendgroup='cs',
-                showlegend=(not cs_legend_drawn),
-                legendrank=2001),
-                row=r, col=c)
         cs_legend_drawn = True
 
         # 6. Race markers, organized by surface. Fatigued races are not
@@ -900,6 +863,8 @@ function buildTooltip(day, isSnap, pointHtml) {
                 legendgroup=surf, showlegend=show_legend,
                 meta={'panel_name': name,
                       'pr_eligible': bool(is_pr_eligible(surf)),
+                      'pr_skip': [bool(f) for f in
+                                  s2['fatigued'].fillna(False)],
                       'snap_eligible': True}),
                 row=r, col=c)
 
@@ -914,7 +879,8 @@ function buildTooltip(day, isSnap, pointHtml) {
         #     off-range sentinel trace added once after this loop; that
         #     way the legend item never disappears when a panel's overlay
         #     goes empty (e.g. user hides the only surface in that bin).
-        eligible = sub_proj[sub_proj['surface_plot'].apply(is_pr_eligible)]
+        eligible = sub_proj[sub_proj['surface_plot'].apply(is_pr_eligible)
+                            & ~sub_proj['fatigued'].fillna(False).astype(bool)]
         is_pr_panel = compute_pr_mask(eligible, value_col='time_norm_sec')
         pr_panel = eligible[is_pr_panel].sort_values('date')
         if len(pr_panel) > 0:
@@ -935,20 +901,14 @@ function buildTooltip(day, isSnap, pointHtml) {
         x_lo_sub = x_data_min - pd.Timedelta(days=x_pad_days)
         x_hi_sub = x_data_max + pd.Timedelta(days=x_pad_days)
 
-        # Y-range pulls from data, plus CS values within this subplot's x-range
+        # Y-range pulls from data, plus frontier values within this
+        # subplot's x-range
         in_range = ((daily_summary['date'] >= x_lo_sub) &
                     (daily_summary['date'] <= x_hi_sub)).values
-        cs_in = cs_times[in_range]
-        cs_in = cs_in[~np.isnan(cs_in)]
-        if len(dotted_dates):
-            dot_mask = ((dotted_dates >= x_lo_sub) &
-                        (dotted_dates <= x_hi_sub))
-            dot_in = dotted_times[dot_mask]
-            dot_in = dot_in[~np.isnan(dot_in)]
-        else:
-            dot_in = np.array([])
+        front_in = front_times[in_range]
+        front_in = front_in[~np.isnan(front_in)]
         y_candidates = np.concatenate([
-            sub_proj['time_norm_sec'].values, cs_in, dot_in])
+            sub_proj['time_norm_sec'].values, front_in])
         y_min = float(np.nanmin(y_candidates))
         y_max = float(np.nanmax(y_candidates))
         y_span = y_max - y_min
@@ -1043,9 +1003,9 @@ function buildTooltip(day, isSnap, pointHtml, ctx) {
   var html = '';
   html += '<div class="tt-date">' + dateLabel(day) + '</div>';
 
-  // Section 1: per-panel CS prediction at the panel's anchor distance.
+  // Section 1: per-panel frontier prediction at the panel's anchor distance.
   html += '<div class="tt-section">';
-  html += '<div class="tt-row"><span>CS-predicted ' + distLabel(panel.anchor_m) + '</span><b>'
+  html += '<div class="tt-row"><span>Frontier ' + distLabel(panel.anchor_m) + '</span><b>'
         + timeFmt(panel.cs_pred_sec[idx]) + '</b></div>';
   html += '</div>';
 
@@ -1096,7 +1056,7 @@ function buildTooltip(day, isSnap, pointHtml, ctx) {
         title_slug='race_pace_by_distance',
         page_title='Races by distance',
         title='Lifetime races normalized by distance',
-        subtitle='Hyperbolic CS projection with time prediction lines',
+        subtitle='Hyperbolic projection per distance with performance-frontier prediction lines',
         cursor_tooltip=CursorTooltip(
             payload=payload_by_dist,
             build_js=smooth_build_js_by_dist,

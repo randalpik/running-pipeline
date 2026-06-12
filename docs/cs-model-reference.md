@@ -142,6 +142,77 @@ off-seasons or unusual conditions. Pruning candidates are inspected
 individually using the rule: "did Max have to stop/walk, or was there
 significant terrain slowdown? If yes, prune; if no, keep."
 
+### Performance frontier (purple line, June 2026)
+
+The Fitness plot carries a second line: the **performance frontier** — the
+demonstrated-5K-capability envelope (`src/shared/performance_frontier.py`).
+Semantics: every kept TQ point and eligible race 5K-equivalent is PROOF of
+5K capability at its date; the frontier answers "how fast could I have run
+a 5K that day, given surrounding performances" — a race-PREDICTION line,
+deliberately more responsive than CS, with no CI (an envelope over
+evidence, not a posterior; accuracy is owned by upstream point selection).
+
+**Formulation: floor = the CS-implied 5K prediction** ("I'm at least as
+fast as CS predicts" — CS's decay structure is the rigorously verified
+part, so the frontier inherits it). Demonstrations contribute only their
+EXCESS above that floor, weighted by a super-Gaussian shoulder
+`exp(−(|Δt|/τ)^4)` (τ ≈ 38d forward / 32d backward): excess holds near
+peak level for ~a month on both sides of a peak, then dies decisively by
+~8 weeks — calibrated June 2026 on the corpus's own top-decile-excess
+peaks, and consistent with the physiology end-to-end (build plateaus into
+a peak; taper-hold after; decisive detraining on the ~6-week scale). The
+line rides the CS-5K curve through quiet stretches and bulges faster where
+something super-CS was demonstrated. No gap machinery: stale proofs die by
+shape, and the floor itself carries long absences (the 2020-21 labrum
+crash is in the race fit). Two earlier arm designs are dead — linear cones
+(zigzag; no physiological process is linear) and bounded-loss exponential
+cones (saturated "immortal tails": a 2017 peak clamped all of 2018 flat).
+A point that binds the envelope DEFINES it locally — suspicious bulges are
+audited by deep-diving their binding demonstration. EVERY non-race
+demonstration above the floor is rendered (legend group "Frontier
+workouts"), styled exactly as Training renders its session markers
+(per-category colors, small dots beside the larger race diamonds); binding
+points carry a "sets the frontier" hover note. A faint gold "CS 5K
+prediction" line (the floor itself, same treatment as the Long Runs HM
+line) makes frontier-vs-floor divergence readable; the per-day tooltip
+gains a "5K frontier" row.
+
+The frontier renders **vibrant purple** (`FRONTIER_LINE = #9933ff`, the
+tab-shell accent; it was briefly red). On Fitness the asymptotic CS line is
+DEMOTED to a faint gold reference — its CrI ribbons are gone — and the
+**frontier carries the 95% band instead**: the frontier swept across the CS
+CrI (purple fill, so band and line read as one object; collapses where a
+demonstration binds, equals the CS CrI on the floor). The tooltip leads
+with the frontier + band; CS median is a context row.
+
+**Rollout (June 2026), per Max's per-tab decisions.** `standard_demos()`
+is the shared canonical demo set; every consumer computes the identical
+line. Fitness: home tab (above). **Races + Race distances: the frontier is
+the ONLY line** — gold CS lines removed entirely; the hand-drawn pre-2013
+cubic survives invisibly as the frontier's floor in that era (the GP isn't
+really estimating CS there); per-panel lines via `frontier_at_anchor()`
+(hyperbola + β factors incl. the by-distance plot's β_short); hover Δs are
+vs the frontier. Training: purple line added (normalized mode shows
+frontier−CS-5K excess at/below zero). Workouts: purple 5K line. Long runs:
+frontier marathon (bright purple) + HM (faint purple) — the gold CS pair
+is REMOVED (frontier lines only; tooltip rows are frontier values).
+Recovery: deliberately untouched (recovery calibrates against sustainable
+physiology, not peak capability). **Dashboard: predictions are direct
+frontier projections** — "the fastest I could physically run this, given
+the current frontier", no empirical residual offsets (the old
+recency-weighted long-run residual machinery is gone) — evaluated AS OF
+TODAY, not the fit grid's extrapolated end (frontier excess decays on the
+~6-week scale, unlike CS). The prediction band is the **frontier swept
+across the CS 95% CrI**: where a recent demonstration binds, the sweeps
+collapse onto it (proof pins the prediction — e.g. ±11s on the 5K twelve
+days after a binding HM); on the floor the band equals the CS CrI. Inputs: race diamonds (post-exclusion, XC-corrected, β-unbiased) +
+`data/training_quality_corpus.csv` (kept TQ corpus, persisted by
+plot_training_quality.py — which therefore runs BEFORE bayes_cs_plot in
+run_plots.sh). Frontier lives in 5K-equivalent pace space (diamond space),
+not asymptotic-CS space. History of the design — including why feeding
+workouts into the CS likelihood itself was tested and rejected — in
+[cs-workout-enrichment-spike-report.md](cs-workout-enrichment-spike-report.md).
+
 ### Gridlines: yearly. Y-axis range: 4:30 to 8:00 min/mi
 
 ### Tooltip format
@@ -274,6 +345,65 @@ defaults in the function signature if recalibration is needed.
   races (Frank Shorter 2025, WGP 2019 Road, etc.). The data does not
   separate these races. The rule errs toward keeping them in the fit;
   σ_per_race ≈ 0.028 absorbs ~3σ events without distortion.
+
+## Race-covariate spike (June 2026) — checked, mostly null
+
+Question: can race INPUTS to the CS fit defensibly carry covariate
+adjustments? Method: residuals = race 5K-equivalent (fit conventions: XC
+correction + β_long) minus the CS posterior at that date; distance-bin
+intercepts; MAD prune; ≥1500 m. Structural caveat first: races DEFINE the
+CS curve, so any covariate that varies smoothly in time (season/temp
+cycles, training-block fatigue) is partially absorbed by the fit and its
+beta attenuated — only transients sharp relative to the CS smoothing
+timescale are cleanly visible. Findings:
+
+- **Fatigue:** the recovery-style days-since decay is null beyond
+  same-day (β −0.2 ± 2.9, LOO straddles zero — n is sufficient; there's
+  just nothing there at 2+ days). **Same-day seconds** (race_seq ≥ 2,
+  CS-excluded so out-of-sample) show a real penalty: mean **+7.2 s/mi,
+  sd 9.0, n = 10** (range −5.5…+22.5; all-comers/HS doubles). Group
+  effect ≈ 2.5σ, but per-race correction would be indefensible at sd 9 —
+  and the within-day gap/first-race distance aren't logged. The
+  exclusion policy stands; the number is now quantified.
+- **Temperature, 5K bin** (the most promising slice a priori: n = 56
+  with temp): β **−0.02 ± 0.17** — null, and since adjacent 5Ks weeks
+  apart see real temp swings the CS curve can't track, this is only
+  mildly attenuated: the 2σ band [−0.36, +0.32] sits below the long-run
+  beta (+0.37). 5K race temp sensitivity is genuinely smaller than
+  long-run sensitivity — effort compensates at race intensity. 3200:
+  −0.25 ± 0.15 (warm-trending-FASTER — summer-track season confound).
+  1600: fit degenerates (MAD prune keeps 12/26 near-identical track
+  miles; its "significant" beta is an artifact, not a finding).
+  10k+HM pooled: +0.08 ± 0.25, n = 18. No usable temp beta anywhere.
+- **Elevation gain: CLOSED (June 2026)** — not fittable (26/245 race
+  rows carry elev_per_mile, and it's location-level, not course-level;
+  only ~28 road races are even fillable by log-location key, nearly all
+  flat), and the acid test fails: Deception Pass HM (2016-04-02,
+  1:51:32, ~275 ft/mi by Max's recollection) stays excluded under every
+  defensible correction. The full calculation: Minetti net factor for
+  3600 ft up+down over the HM = 1.138 (a 13.8% time penalty — bigger
+  than the 8% XC correction); stacking terrain × climb (1.08 × 1.138 =
+  1.229) brings the residual from +114 to +61 s/mi at the 5K anchor —
+  ~+866s on the exclusion metric, still well over the +500s HM
+  threshold. Landing at normal race scatter (+15 s/mi) would need a
+  total factor of 1.40 (~6,500 ft at the Minetti curve): the remainder
+  is stairs/bottlenecked singletrack/sand that no grade-or-footing
+  model prices in. The race is excluded because it genuinely isn't
+  CS-informative, not because the model lacks a term.
+
+One durable insight from the Deception Pass decomposition: the **XC
+correction is FOOTING, not elevation** — the hill model's trail term
+(+27 s/mi ≈ 8% at those paces) independently matches the 8% XC factor,
+so terrain × Minetti stacking is a correct decomposition, not
+double-counting (XC courses' own rolling terrain is mild enough that
+the 8% absorbs it).
+
+Bottom line: **race times stay unadjusted, all threads closed** —
+fatigue (null beyond same-day; same-day quantified at +7.2 s/mi and
+already excluded), temperature (null everywhere, 5K hypothesis
+rejected), elevation (the one motivating race is unsalvageable; the
+fillable remainder is flat). Re-affirms the earlier no-beta-adjustments
+decision, now with numbers.
 
 ## Working assumptions
 

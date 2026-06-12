@@ -20,6 +20,7 @@ BORDER     = '#555'
 # --- Reference / overlay lines ---
 CS_LINE       = 'rgb(255,180,80)'   # orange — Critical Speed reference
 CS_LINE_WIDTH = 2.5
+FRONTIER_LINE = '#9933ff'           # vibrant purple (tab-shell accent #93f) — performance frontier
 TREND_LINE    = 'rgb(220,220,220)'  # white-ish — recovery rolling trend
 TREND_WIDTH   = 2.0
 

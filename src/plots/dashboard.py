@@ -3,8 +3,13 @@
 Sections:
 1. Stats (streak, mileage totals, current shoes)
 2. Personal Records (best race per FILTER_BINS distance)
-3. Race Predictions (predicted time + 95% CrI per distance, from latest CS posterior)
-4. Workout Pace Predictions (intervals / fartlek / long 20 / long 24)
+3. Race Predictions (predicted time per distance, direct from the current
+   PERFORMANCE FRONTIER — demonstrated capability; the band is the frontier
+   swept across the CS 95% CrI, which collapses where a recent demonstration
+   pins the frontier and equals the CS CrI on the floor)
+4. Workout Pace Predictions ("fastest I could physically run this workout
+   given the current frontier" — direct hyperbolic projection, no empirical
+   residual offsets)
 + footer with snapshot last-updated timestamp.
 
 Self-contained HTML — bypasses ``render_plot`` so the dashboard doesn't pull
@@ -34,6 +39,9 @@ from src.shared.workouts import (
 )
 from src.shared.long_run_model import fit_long_run_model
 from src.shared.cs_projection import load_cs_outputs
+from src.shared.performance_frontier import (standard_demos,
+                                              build_frontier_band,
+                                              frontier_at_anchor)
 from src.plotting.formatters import sec_to_mss, sec_to_mss_full
 from src.plotting.markers import PR_EXCLUDED_SURFACES
 from src.plotting.render import _TAB_KEY_FORWARDER_JS
@@ -62,8 +70,8 @@ SHOE_BLOCK_DIFF_RUNS = 14
 # Short-distance correction matching make_race_plots.py — track distances
 # below 800m get stretched because the CS+D' model under-predicts time
 # (peak speed limits and anaerobic capacity dominate, not sustained CS).
-BETA_SHORT     = 0.35
-D_THRESH_SHORT = 800.0
+BETA_SHORT     = 0.363
+D_THRESH_SHORT = 875.0
 
 OUT_HTML = OUTPUT_DIR / 'dashboard.html'
 SCAFFOLD_DIR = Path(__file__).resolve().parents[1] / 'plotting' / '_scaffold'
@@ -323,28 +331,27 @@ def _time_at(d, dp, cs_mps, beta_long, d_thresh):
     return (d - dp) / cs_mps * _beta_factor(d, beta_long, d_thresh)
 
 
-def compute_race_predictions(daily_summary, beta_long, d_thresh):
-    """For each FILTER_BIN distance, compute predicted time + 95% CrI half-width."""
-    latest = daily_summary.iloc[-1]
-    cs_mps_med = float(latest['cs_mps_med'])
-    dp_med = float(latest['dp_med'])
-    cs_pace_lo95 = float(latest['cs_pace_lo95'])
-    cs_pace_hi95 = float(latest['cs_pace_hi95'])
-
-    # Back out cs_mps consistent with the cs_pace bounds, holding dp at dp_med.
-    def cs_mps_from_pace(pace_min):
-        return 1609.344 * (5000.0 - dp_med) / pace_min / 5000.0 / 60.0
-
-    cs_mps_lo95 = cs_mps_from_pace(cs_pace_hi95)  # slow pace -> low cs
-    cs_mps_hi95 = cs_mps_from_pace(cs_pace_lo95)  # fast pace -> high cs
-
+def compute_race_predictions(daily_summary, beta_long, d_thresh,
+                             front_med, front_lo, front_hi):
+    """Per FILTER_BIN distance: predicted time direct from today's frontier
+    ("the fastest I could physically race this distance"), with a band from
+    the frontier swept across the CS 95% CrI. Where a recent demonstration
+    binds, the three sweeps collapse onto it (proof pins the prediction);
+    on the floor the band equals the CS CrI."""
     out = []
     for name, d in FILTER_BINS:
-        t_med = _time_at(d, dp_med, cs_mps_med, beta_long, d_thresh)
-        t_lo = _time_at(d, dp_med, cs_mps_hi95, beta_long, d_thresh)  # fastest
-        t_hi = _time_at(d, dp_med, cs_mps_lo95, beta_long, d_thresh)  # slowest
-        half = (t_hi - t_lo) / 2.0
-        out.append({'distance': name, 'time_sec': t_med, 'half_sec': half})
+        t_med = frontier_at_anchor(front_med, daily_summary, d, beta_long,
+                                   d_thresh, beta_short=BETA_SHORT,
+                                   d_thresh_short=D_THRESH_SHORT)[-1]
+        t_fast = frontier_at_anchor(front_lo, daily_summary, d, beta_long,
+                                    d_thresh, beta_short=BETA_SHORT,
+                                    d_thresh_short=D_THRESH_SHORT)[-1]
+        t_slow = frontier_at_anchor(front_hi, daily_summary, d, beta_long,
+                                    d_thresh, beta_short=BETA_SHORT,
+                                    d_thresh_short=D_THRESH_SHORT)[-1]
+        half = (t_slow - t_fast) / 2.0
+        out.append({'distance': name, 'time_sec': float(t_med),
+                    'half_sec': float(half)})
     return out
 
 
@@ -386,55 +393,73 @@ def _long_run_residual(lr_in_aug):
     return float((w * keep['raw_resid']).sum() / w.sum())
 
 
-def compute_workout_predictions(daily_summary, lr_in_aug,
+def _invert_projection(make_efforts, t5k_target, dp, lo=200.0, hi=600.0):
+    """Find the pace (s/mi) at which a structured workout's connected
+    projection equals the frontier's 5K capability. make_efforts(pace) must
+    return (d_eff, t_eff) via THE SAME machinery the TQ corpus uses
+    (parse_workouts._connected_core / _cf_structure) — predictions and
+    plotted points are projections of one another by construction (Max,
+    June 2026: 'I assumed those were aligned'). Bisection; the projection
+    is monotone in pace."""
+    def t5k_of(pace):
+        d_eff, t_eff = make_efforts(pace)
+        return (5000.0 - dp) * t_eff / (d_eff - dp)
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if t5k_of(mid) < t5k_target:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def compute_workout_predictions(daily_summary, front_med,
                                 beta_long=0.0, d_thresh=10000.0):
+    """Direct frontier projections (Max, June 2026): "the fastest I could
+    physically run this workout given the current frontier". Each structured
+    prediction INVERTS the exact projection the TQ corpus applies to that
+    workout shape (connected accumulator, g(d), CF 500/300 reconstruction),
+    so a workout run at the predicted pace would plot exactly ON the
+    frontier. No empirical residual offsets anywhere."""
+    from src.parsers.parse_workouts import _connected_core, _cf_structure
     latest = daily_summary.iloc[-1]
-    cs_mps = float(latest['cs_mps_med'])
     dp = float(latest['dp_med'])
-    p5k_cs_min = float(latest.get('p5k_implied_min',
-                                   1609.344 * (5000 - dp) / cs_mps / 5000 / 60))
-    p5k_cs_sec = p5k_cs_min * 60.0  # 5K-equivalent CS pace in sec/mi.
+    t5k_front = (float(front_med['frontier_pace_min'].iloc[-1])
+                 * 60.0 * 5000.0 / 1609.344)
 
-    # --- Intervals 6x1600m, 3:00 rest ---
-    rep_dist = 1600.0
-    rep_count = 6
-    rest_sec = 180.0
-    rest_per_mile = rest_sec / (rep_dist / 1609.344)
-    decay = math.exp(-rest_per_mile / TAU)
-    d_eff_int = rep_dist * (1 + (rep_count - 1) * decay)
-    t_eff_int = (d_eff_int - dp) / cs_mps
-    pace_intervals = t_eff_int * 1609.344 / d_eff_int
+    # --- Intervals 6x1600m, 3:00 rest (actual seconds, connected core) ---
+    def _intervals(pace):
+        dists = [1600.0] * 6
+        times = [pace * 1600.0 / 1609.344] * 6
+        rests = [180.0] * 5
+        return _connected_core(dists, times, rests)
+    pace_intervals = _invert_projection(_intervals, t5k_front, dp)
 
-    # --- Fartlek 8000m continuous ---
-    d_far = 8000.0
-    t_far = (d_far - dp) / cs_mps
-    pace_fartlek = t_far * 1609.344 / d_far
+    # --- Continuous fartlek 8000m: the 500/300 reconstruction, inverted.
+    #     The blended pace is what the log would read; the hard-500 pace
+    #     (blended / structure ratio) is the actual prescription.
+    def _cf(pace):
+        d_eff, t_eff, _ = _cf_structure(8000.0, pace)
+        return d_eff, t_eff
+    pace_fartlek = _invert_projection(_cf, t5k_front, dp)
+    from src.parsers.parse_workouts import CF_HARD_M, CF_FLOAT_M, CF_FLOAT_HARD_RATIO
+    hards = 8000.0 // (CF_HARD_M + CF_FLOAT_M) * CF_HARD_M + 8000.0 % (CF_HARD_M + CF_FLOAT_M)
+    floats = 8000.0 - hards
+    pace_cf_hard = (pace_fartlek * 8000.0
+                    / (hards + CF_FLOAT_HARD_RATIO * floats))
 
-    # --- Long runs: recency-weighted mean raw_resid over familiar-route,
-    #     non-pruned long runs. Treat it as the expected 5K-equivalent pace
-    #     residual; project from CS to the card's distance. raw_resid is the
-    #     race-equivalent projection (β_long un-biased going in), so the
-    #     round trip back to a long-run PACE must re-apply β at the card's
-    #     distance — otherwise the fade we removed going in stays removed
-    #     and the predicted pace reads too fast.
-    lr_resid = _long_run_residual(lr_in_aug)
-
-    def project_long(miles, resid_sec_per_mi):
-        d = miles * 1609.344
-        p5k_pred_sec = p5k_cs_sec + resid_sec_per_mi
-        t_5k_pred_sec = p5k_pred_sec * 5000.0 / 1609.344
-        cs_mps_lr = (5000.0 - dp) / t_5k_pred_sec
-        t_d = (d - dp) / cs_mps_lr * _beta_factor(d, beta_long, d_thresh)
-        return t_d * 1609.344 / d
-
-    pace_long = (project_long(LR_PRED_MILES, lr_resid)
-                 if lr_resid is not None else None)
+    # --- Long run at the card's distance: race-equivalent projection with
+    #     the long-distance fade restored at the run's full distance.
+    cs_mps_f = (5000.0 - dp) / t5k_front
+    d_long = LR_PRED_MILES * 1609.344
+    t_long = (d_long - dp) / cs_mps_f * _beta_factor(d_long, beta_long, d_thresh)
+    pace_long = t_long * 1609.344 / d_long
 
     return {
         'intervals_6x1600': pace_intervals,
         'fartlek_8000':     pace_fartlek,
+        'fartlek_8000_hard': pace_cf_hard,
         'long':             pace_long,
-        '_debug':           {'lr_resid': lr_resid},
     }
 
 
@@ -519,13 +544,13 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
     # Workout pace predictions
     wp_rows = [
         ('Intervals (6×1600m):', fmt_pace_per_mi(workout_preds['intervals_6x1600'])),
-        ('Fartlek (8000m continuous):', fmt_pace_per_mi(workout_preds['fartlek_8000'])),
+        ('Fartlek (8000m continuous):',
+         f"{fmt_pace_per_mi(workout_preds['fartlek_8000'])} "
+         f"<span class='dim'>(hard 500s @ "
+         f"{fmt_pace_per_mi(workout_preds['fartlek_8000_hard'])})</span>"),
     ]
-    # Long-run prediction needs an empirical slowdown residual; omit it when
-    # the profile has no long-run history (see _long_run_residual).
-    if workout_preds['long'] is not None:
-        wp_rows.append((f'Long ({LR_PRED_MILES} miles):',
-                        fmt_pace_per_mi(workout_preds['long'])))
+    wp_rows.append((f'Long ({LR_PRED_MILES} miles):',
+                    fmt_pace_per_mi(workout_preds['long'])))
     workout_html = ''.join(
         f'<div class="stat-label">{label}</div>'
         f'<div class="stat-value"><b>{value}</b></div>'
@@ -622,19 +647,23 @@ def main():
 
     daily_summary, beta_long, d_thresh, _xc = load_cs_outputs(str(DATA_DIR))
 
-    # Long-run model fit (in-slice runs, not snow). We need the augmented
-    # frame (with `route` and `is_outlier`) for the recency-weighted
-    # long-run residual on familiar routes — the model fit itself is only
-    # used here for its outlier flags.
-    cs, epoch = load_cs()
-    lr_all = project_long_runs(cs, epoch)
-    lr_in = lr_all[lr_all['excluded_reason'].isna()].copy()
-    lr_in_aug, _lr_fit, _qual_routes = fit_long_run_model(lr_in)
+    # Performance frontier (median + CS-CrI sweep) — the source for every
+    # prediction below. Predictions are AS OF TODAY, not the fit grid's
+    # margin-extended end: CS barely moves in the extrapolated tail, but
+    # frontier excess decays on the ~6-week scale, so iloc[-1] on the full
+    # grid would price the predictions months after the last demonstration.
+    demos = standard_demos(daily_summary, beta_long, d_thresh, _xc)
+    asof_mask = daily_summary['date'] <= pd.Timestamp(now_utc.date())
+    summary_asof = (daily_summary[asof_mask] if asof_mask.any()
+                    else daily_summary).reset_index(drop=True)
+    front_med, front_lo, front_hi, _ = build_frontier_band(
+        demos, pd.DatetimeIndex(summary_asof['date']), summary_asof)
 
     stats = compute_stats(daily, races, now_utc)
     prs = compute_prs(races)
-    race_preds = compute_race_predictions(daily_summary, beta_long, d_thresh)
-    workout_preds = compute_workout_predictions(daily_summary, lr_in_aug,
+    race_preds = compute_race_predictions(summary_asof, beta_long, d_thresh,
+                                          front_med, front_lo, front_hi)
+    workout_preds = compute_workout_predictions(summary_asof, front_med,
                                                 beta_long, d_thresh)
 
     snapshot_path = DATA_DIR / 'drive_snapshot.csv'

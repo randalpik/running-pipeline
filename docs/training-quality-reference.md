@@ -133,14 +133,18 @@ sits next to CS without feeding back into it.
   removed from the model (June 2026): on the race-equivalent scale its
   beta flipped sign (−0.47, "altitude makes you faster") — era/route
   confounding again (Boulder-era runs are Boulder-era effort policy) —
-  and a cross-check on workouts found it honestly dead there (t = −0.2,
-  LOO-stable around zero), so there is no identified altitude effect
-  anywhere to pin from. The same-model-on-workouts spike (June 2026)
-  came back NULL across the board: temp +0.05 s/mi/°C (t = 0.7; +0.06
-  even restricted to sustained tempo/fartlek/hill efforts), race
-  fatigue −0.5 (t = −0.2, LOO sign-unstable), altitude −0.45 (t = −0.2)
-  — fit on 362 quality days with category intercepts, temps fully
-  populated. Quality days are environment/state-insensitive in this
+  and a cross-check on workouts found it honestly dead there (β −0.37,
+  t = −0.6 after Manhattan Track's 5400 ft was filled in — the one
+  at-altitude track tripled the regressor's precision, se 2.1 → 0.64,
+  without moving the estimate; the 2σ band [−1.7, +0.9] s/mi per
+  1000 ft excludes even textbook altitude costs, consistent with
+  residuals being measured against a CS curve whose races already
+  absorb altitude), so there is no identified altitude effect anywhere
+  to pin from. The same-model-on-workouts spike (June 2026) came back
+  NULL across the board: temp +0.05 s/mi/°C (t = 0.7; +0.06 even
+  restricted to sustained tempo/fartlek/hill efforts), race fatigue
+  −0.5 (t = −0.2, LOO sign-unstable) — fit on 362 quality days with
+  category intercepts, temps fully populated. Quality days are environment/state-insensitive in this
   corpus (effort compensates, and scheduling avoids hot/fatigued
   states), unlike long runs (temp +0.37, strongly identified) and
   recovery. So workouts and hills enter TQ with NO covariate
@@ -751,7 +755,12 @@ race residual = −0.16. Three reasons:
 
 - `parse_workouts.py` — daily.csv → workout_decomposed_v7.csv
 - `plot_training_quality.py` — workout_decomposed_v7.csv + daily.csv +
-  bayes_cs_summary_v11.csv → training_quality.html
+  bayes_cs_summary_v11.csv → training_quality.html. Also persists
+  `data/training_quality_corpus.csv` (the kept post-prune corpus: date, src,
+  category, corrected 5K-equiv pace `p5k_corr_min`, detail) — consumed by
+  the Fitness plot's performance frontier (June 2026,
+  `src/shared/performance_frontier.py`; see cs-model-reference.md), which is
+  why this script runs before bayes_cs_plot in run_plots.sh.
 
 Path resolution: both scripts try `./output/`, then current dir, then
 `/mnt/project/`. Outputs go to `./output/` if it exists, else

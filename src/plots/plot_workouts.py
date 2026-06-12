@@ -30,10 +30,12 @@ from src.shared.workouts import (
     load_cs, watch_log_demotions,
     project_workouts, project_hill_continuous, project_hill_reps,
 )
+from src.shared.cs_projection import load_cs_outputs
+from src.shared.performance_frontier import standard_demos, build_frontier
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             sec_to_mss, fmt_min, route_paren, CAT_COLORS, GRID,
-                            CS_LINE, TAG_COLORS, yearly_x_axis_kwargs,
-                            nice_time_ticks)
+                            CS_LINE, FRONTIER_LINE, TAG_COLORS,
+                            yearly_x_axis_kwargs, nice_time_ticks)
 
 
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -346,7 +348,14 @@ def main():
             hills_c['date'].dt.date.astype(str).map(h_excl))
         print(f'Training-exclusion note on {hills_c["tq_excluded_line"].notna().sum()} '
               f'hill hovers')
-    # Slow-outlier ring (amber) for hills Training pruned as outliers.
+    # Slow-outlier ring for sessions Training pruned as outliers — both
+    # workouts (track-relative prune) and hills (track prune + the hill
+    # model's easy-day prune). Workouts were missing this ring until June
+    # 2026 (only the hover note flagged them).
+    we = load_tq_exclusions('workout')
+    w_out = set(we.loc[we['reason'].isin(OUTLIER_REASONS), 'date'].astype(str))
+    workouts['tq_outlier'] = (
+        workouts['date'].dt.strftime('%Y-%m-%d').isin(w_out))
     if len(hills_c):
         he = load_tq_exclusions('hill')
         out_dates = set(he.loc[he['reason'].isin(OUTLIER_REASONS), 'date']
@@ -403,6 +412,21 @@ def main():
         x=cs_plot['date'], y=_y_safe(cs_plot['p5k_implied_min'].values),
         mode='lines', name='CS-implied 5K',
         line=dict(color=CS_LINE, width=2),
+        hoverinfo='skip',
+    ))
+
+    # Performance frontier (red): demonstrated 5K capability, same canonical
+    # construction as Fitness (src/shared/performance_frontier.py; corpus
+    # artifact written by plot_training_quality, which runs earlier).
+    daily_summary, _beta_long, _d_thresh, _xc = load_cs_outputs(str(DATA_DIR))
+    front_plot = daily_summary[daily_summary['date'] >= daily_floor()].copy()
+    front_demos = standard_demos(daily_summary, _beta_long, _d_thresh, _xc)
+    frontier, _ = build_frontier(front_demos, pd.DatetimeIndex(front_plot['date']),
+                                 front_plot['p5k_implied_min'])
+    fig.add_trace(go.Scatter(
+        x=front_plot['date'], y=_y_safe(frontier['frontier_pace_min'].values),
+        mode='lines', name='Performance frontier (5K)',
+        line=dict(color=FRONTIER_LINE, width=2),
         hoverinfo='skip',
     ))
 

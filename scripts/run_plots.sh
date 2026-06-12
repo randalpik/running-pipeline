@@ -68,8 +68,10 @@ quiet_step() {
   echo "    done in $((SECONDS - t0))s"
 }
 
-quiet_step "bayes_cs_plot"           python src/plots/bayes_cs_plot.py
+# Training quality runs FIRST: it persists training_quality_corpus.csv,
+# which bayes_cs_plot consumes for the performance-frontier line.
 quiet_step "plot_training_quality"   python src/plots/plot_training_quality.py
+quiet_step "bayes_cs_plot"           python src/plots/bayes_cs_plot.py
 quiet_step "plot_workouts"           python src/plots/plot_workouts.py
 quiet_step "plot_long_runs"          python src/plots/plot_long_runs.py
 quiet_step "plot_qualitative_trends" python src/plots/plot_qualitative_trends.py

@@ -117,10 +117,14 @@ LR_COVARIATES = ['temp_centered', 'fat_race']
 # 1000 ft, "altitude makes you faster") — the same era/route confounding,
 # in a third costume (Boulder-era long runs are also Boulder-era effort
 # policy). A cross-check on quality workouts, where Max's approach is
-# more consistent across eras, found altitude honestly dead there too
-# (β −0.45, t = −0.2, LOO-stable around zero) — so there is no identified
-# altitude effect anywhere to pin from. LR_PHYS_FITTED stays as the
-# (now empty) extension point.
+# more consistent across eras, found altitude honestly dead there too:
+# β −0.37, t = −0.6 with Manhattan Track's 5400 ft filled in (the one
+# at-altitude track tripled the regressor's precision, se 2.1 → 0.64,
+# without moving the estimate; 2σ bounds ≈ [−1.7, +0.9] s/mi per 1000 ft,
+# excluding even textbook altitude costs — consistent with residuals
+# being measured against a CS curve whose races already absorb altitude).
+# So there is no identified altitude effect anywhere to pin from.
+# LR_PHYS_FITTED stays as the (now empty) extension point.
 LR_ELEV_SLOPE = 0.17
 LR_PHYS_FITTED: list = []
 

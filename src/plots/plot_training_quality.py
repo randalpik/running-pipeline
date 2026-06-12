@@ -29,10 +29,13 @@ from src.shared.long_run_model import (
     fit_long_run_model, PRUNE_SIGMA,
 )
 from src.shared.hill_model import fit_hill_model
+from src.shared.cs_projection import load_cs_outputs
+from src.shared.performance_frontier import standard_demos, build_frontier
 from src.plotting import widgets
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box, route_paren,
                             sec_to_mss, fmt_min, CAT_COLORS, GRID, CS_LINE,
+                            FRONTIER_LINE,
                             SURFACES, GAP_BREAK_DAYS, adaptive_gauss_smoother,
                             yearly_x_axis_kwargs, nice_time_ticks,
                             nice_time_interval, time_ticks_at_interval)
@@ -487,6 +490,45 @@ def main():
     workouts['pos_min']  = workouts['p5k_cs_min']  + workouts['resid']  / 60.0
     long_runs['pos_min'] = long_runs['p5k_cs_min'] + long_runs['resid'] / 60.0
     hills['pos_min']     = hills['p5k_cs_min']     + hills['resid']     / 60.0
+
+    # Persist the kept corpus (post-filter, post-prune, corrected residuals)
+    # as a data artifact. Consumer: the performance frontier on the Fitness
+    # tab (src/shared/performance_frontier.py) — every kept point is a
+    # demonstration of 5K capability at p5k_corr_min. run_plots.sh runs this
+    # script before bayes_cs_plot so the artifact is fresh.
+    def _lr_detail(r):
+        name = r.get('display_name')
+        if pd.isna(name) or not str(name).strip():
+            name = r.get('location', '')
+        return f"{r['miles']:.1f}mi {name}"
+    corpus = pd.concat([
+        pd.DataFrame({'date': workouts['date'], 'src': 'workout',
+                      'category': workouts['category'],
+                      'p5k_corr_min': workouts['pos_min'],
+                      'detail': workouts['workout_raw'].astype(str)}),
+        pd.DataFrame({'date': long_runs['date'], 'src': 'long_run',
+                      'category': 'long',
+                      'p5k_corr_min': long_runs['pos_min'],
+                      'detail': [_lr_detail(r) for _, r in long_runs.iterrows()]}),
+        pd.DataFrame({'date': hills['date'], 'src': 'hill',
+                      'category': hills['category'],
+                      'p5k_corr_min': hills['pos_min'],
+                      'detail': hills['workout_raw'].astype(str)}),
+    ], ignore_index=True).sort_values('date').reset_index(drop=True)
+    corpus_csv = DATA_DIR / 'training_quality_corpus.csv'
+    corpus.to_csv(corpus_csv, index=False)
+    print(f'Wrote {corpus_csv} ({len(corpus)} kept points)')
+
+    # Performance frontier (red line), same canonical construction as the
+    # Fitness tab — corpus passed in-memory (this script just built it).
+    daily_summary, beta_long, d_thresh, xc_corr = load_cs_outputs(str(DATA_DIR))
+    corpus_demos = corpus.rename(columns={'p5k_corr_min': 'pace_min'})
+    demos = standard_demos(daily_summary, beta_long, d_thresh, xc_corr,
+                           corpus=corpus_demos)
+    front_plot = daily_summary[daily_summary['date'] >= daily_floor()].copy()
+    frontier, _ = build_frontier(demos, pd.DatetimeIndex(front_plot['date']),
+                                 front_plot['p5k_implied_min'])
+    print(f'Frontier: computed over {len(front_plot)} daily points')
     workouts['pos_norm']  = workouts['resid']
     long_runs['pos_norm'] = long_runs['resid']
     hills['pos_norm']     = hills['resid']
@@ -524,6 +566,21 @@ def main():
         connectgaps=False,
         hoverinfo='skip',
         meta={'raw_y': track_raw, 'norm_y': track_norm},
+    ))
+
+    # Performance frontier: normalized = excess vs the CS-implied 5K
+    # (<= 0, bulges below the zero line = demonstrated capability beyond
+    # CS); raw = the frontier pace itself.
+    front_raw = _y_safe(frontier['frontier_pace_min'].values)
+    front_norm = _y_safe((frontier['frontier_pace_min'].to_numpy(float)
+                          - front_plot['p5k_implied_min'].to_numpy(float)) * 60.0)
+    fig.add_trace(go.Scatter(
+        x=front_plot['date'], y=front_norm,
+        mode='lines', name='Performance frontier',
+        line=dict(color=FRONTIER_LINE, width=2),
+        connectgaps=False,
+        hoverinfo='skip',
+        meta={'raw_y': front_raw, 'norm_y': front_norm},
     ))
 
     # Workouts: one trace per category for legend filtering (reps excluded
@@ -600,6 +657,7 @@ def main():
         long_runs['pos_min'].to_numpy(dtype=float),
         hills['pos_min'].to_numpy(dtype=float),
         cs_plot['p5k_implied_min'].to_numpy(dtype=float),
+        frontier['frontier_pace_min'].to_numpy(dtype=float),
     ])
     raw_all = raw_all[np.isfinite(raw_all)]
     _rlo, _rhi = (float(raw_all.min()), float(raw_all.max())) if len(raw_all) else (4.0 + 20/60, 6.0)
@@ -615,6 +673,9 @@ def main():
         long_runs['pos_norm'].to_numpy(dtype=float),
         hills['pos_norm'].to_numpy(dtype=float),
         smoothed[np.isfinite(smoothed)],
+        np.asarray([v for v in ((frontier['frontier_pace_min'].to_numpy(float)
+                                 - front_plot['p5k_implied_min'].to_numpy(float))
+                                * 60.0) if np.isfinite(v)], dtype=float),
     ])
     _nlo, _nhi = float(np.nanmin(norm_data)), float(np.nanmax(norm_data))
     _niv = nice_time_interval(_nlo, _nhi, target=9)
