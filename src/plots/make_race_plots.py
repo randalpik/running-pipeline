@@ -66,28 +66,13 @@ DEFAULT_IN_DIR = str(DATA_DIR)
 DEFAULT_RACES  = str(DATA_DIR / 'races.csv')
 DEFAULT_OUT    = str(OUTPUT_DIR)
 
-# Plot-specific short-distance calibration. The CS+D' projection
-# severely underestimates fitness from sub-mile races (peak-speed and
-# anaerobic limits dominate, not sustained CS), so without a correction a
-# fast 400m projects to a 5K-equiv pace far slower than the same day's
-# CS line. β_short>0 inflates the effective race time for d<d_thresh_short
-# by (1 + β_short·log(d_thresh_short/d)) before projection.
-#
-# Recalibrated June 2026 (second pass) on TWO prediction anchors solved
-# simultaneously: today's frontier-derived 400m and 800m predictions land
-# exactly ON their lifetime PRs (57.0 / 2:04.1) — "race predictions must
-# not surpass all-time PRs". Two anchors pin both knobs in closed form:
-# beta_short=0.363, d_thresh_short=875m. The curve extends smoothly to any
-# short distance (300/600/1k — no per-event logic). Display sanity: ZERO
-# non-fatigued sub-1000m races project past the performance frontier
-# (closest +0.7 s/mi); the only ones past it are fatigued mid-meet doubles,
-# which are also excluded from PR competition (see compute_pr pools).
-# Honest caveat: beta_short remains a calibration knob, not physiology —
-# the principled replacement is the effort-aware anaerobic correction
-# unifying race and rep short-effort handling (see the cs-model-reference
-# frontier section's open items).
-BETA_SHORT     = 0.363
-D_THRESH_SHORT = 875.0
+# Short distances are handled structurally by the CP3 projection layer
+# (June 2026): cs_projection projects every race on its own Morton
+# 3-parameter curve, replacing the former β_short/d_thresh_short display
+# knobs. v_max is an uncertainty interval with one conservative edge per
+# direction (evidence-high for diamonds, prediction-low for the frontier
+# lines — see cs_projection's registry comment and
+# docs/short-effort-unification-plan.md).
 
 
 # ---------- distance grouping for the 8-panel plot (8% tolerance, may leave races unmatched) ----------
@@ -407,8 +392,6 @@ def add_race_traces_filterable(fig, df, *, marker_size=9):
                 legendgroup=surf, showlegend=False,
                 meta={'filter_bin': bin_name,
                       'pr_eligible': is_pr_eligible(surf),
-                      'pr_skip': [bool(f) for f in
-                                  s2['fatigued'].fillna(False)],
                       'snap_eligible': True}))
 
 
@@ -421,16 +404,13 @@ def add_pr_overlay_filterable(fig, df, *, value_col='pace_norm_min',
     Initial PR set is computed against the full pool (every checkbox starts
     checked). The JS recomputes on every visibility change.
     """
-    # PR pool excludes surfaces in PR_EXCLUDED_SURFACES (currently Downhill)
-    # AND fatigued races. NOTE (Max, June 2026): for short events this is a
-    # BAND-AID with a weak rationale (aerobic fatigue from an hour earlier
-    # doesn't affect a single 400m) — the real defect is the short-effort
-    # projection over-crediting fast 400s; see
-    # docs/short-effort-unification-plan.md. Revert this exclusion once
-    # that lands. The race markers stay visible — they just don't compete.
+    # PR pool excludes surfaces in PR_EXCLUDED_SURFACES (currently Downhill).
+    # Fatigued races compete again (June 2026): their exclusion was a
+    # band-aid for the short-effort projection over-crediting fast 400s,
+    # reverted once the CP3 unification landed — see
+    # docs/short-effort-unification-plan.md, gate 2.
     surf_col = 'surface_plot' if 'surface_plot' in df.columns else 'surface'
-    eligible = df[df[surf_col].apply(is_pr_eligible)
-                  & ~df['fatigued'].fillna(False).astype(bool)]
+    eligible = df[df[surf_col].apply(is_pr_eligible)]
     is_pr = compute_pr_mask(eligible, value_col=value_col, date_col=date_col)
     pr_df = eligible[is_pr].sort_values(date_col)
     # Actual PR markers — meta.is_pr_overlay flags this trace for the JS
@@ -524,8 +504,7 @@ def main():
 
     elig = project_races_to_5k_pace(
         elig, daily_summary, beta_long, d_thresh,
-        apply_xc_correction=False,  # ← key difference vs CS plot
-        beta_short=BETA_SHORT, d_thresh_short=D_THRESH_SHORT)
+        apply_xc_correction=False)  # ← key difference vs CS plot
 
     n_proj = elig['pace_norm_min'].notna().sum()
     print(f'Projection succeeded for {n_proj}/{len(elig)} races')
@@ -693,7 +672,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         title_slug='race_pace_all',
         page_title='Races',
         title='Lifetime races: 5K-equivalent pace',
-        subtitle='Hyperbolic CS projection with corrections applied for short and long distances',
+        subtitle='3-parameter critical-speed projection (long-distance fade corrected above 10K)',
         cursor_tooltip=CursorTooltip(
             payload=payload_all,
             build_js=smooth_build_js_all,
@@ -772,12 +751,11 @@ function buildTooltip(day, isSnap, pointHtml) {
         sub = elig[elig['group'] == name]
         anchor = bin_anchors[name]
 
-        # 1. Project races to this anchor (β_short and β_long applied
+        # 1. Project races to this anchor via CP3 (β_long applied
         #    symmetrically). For races already at the anchor, this is identity.
         sub_proj = project_races_to_5k_pace(
             sub, daily_summary, beta_long, d_thresh,
-            apply_xc_correction=False, norm_dist_m=anchor,
-            beta_short=BETA_SHORT, d_thresh_short=D_THRESH_SHORT)
+            apply_xc_correction=False, norm_dist_m=anchor)
         sub_proj = sub_proj[sub_proj['time_norm_sec'].notna()].copy()
         sub_proj['surface_plot'] = sub_proj['surface'].fillna('Unknown')
         if len(sub_proj) == 0:
@@ -787,8 +765,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         #    summary (the 5K frontier already carries the blended cubic
         #    floor pre-2013, so no separate hand-drawn series here).
         front_times = frontier_at_anchor(
-            frontier, daily_summary, anchor, beta_long, d_thresh,
-            beta_short=BETA_SHORT, d_thresh_short=D_THRESH_SHORT)
+            frontier, daily_summary, anchor, beta_long, d_thresh)
 
         # 3. Frontier-prediction lookup per race date
         front_by_date = pd.Series(front_times,
@@ -863,8 +840,6 @@ function buildTooltip(day, isSnap, pointHtml) {
                 legendgroup=surf, showlegend=show_legend,
                 meta={'panel_name': name,
                       'pr_eligible': bool(is_pr_eligible(surf)),
-                      'pr_skip': [bool(f) for f in
-                                  s2['fatigued'].fillna(False)],
                       'snap_eligible': True}),
                 row=r, col=c)
 
@@ -879,8 +854,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         #     off-range sentinel trace added once after this loop; that
         #     way the legend item never disappears when a panel's overlay
         #     goes empty (e.g. user hides the only surface in that bin).
-        eligible = sub_proj[sub_proj['surface_plot'].apply(is_pr_eligible)
-                            & ~sub_proj['fatigued'].fillna(False).astype(bool)]
+        eligible = sub_proj[sub_proj['surface_plot'].apply(is_pr_eligible)]
         is_pr_panel = compute_pr_mask(eligible, value_col='time_norm_sec')
         pr_panel = eligible[is_pr_panel].sort_values('date')
         if len(pr_panel) > 0:
@@ -1056,7 +1030,7 @@ function buildTooltip(day, isSnap, pointHtml, ctx) {
         title_slug='race_pace_by_distance',
         page_title='Races by distance',
         title='Lifetime races normalized by distance',
-        subtitle='Hyperbolic projection per distance with performance-frontier prediction lines',
+        subtitle='3-parameter critical-speed projection per distance with performance-frontier prediction lines',
         cursor_tooltip=CursorTooltip(
             payload=payload_by_dist,
             build_js=smooth_build_js_by_dist,

@@ -23,7 +23,9 @@ from datetime import date
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, DEBUG_DIR
-from src.shared.workouts import RECON_TAU_S, g_anaerobic, watch_log_demotions
+from src.shared.cs_projection import cp3_implied_cs
+from src.shared.workouts import (RECON_TAU_S, WORKOUT_VMAX_MPS, dp3_at_date,
+                                 watch_log_demotions)
 
 MILE_M = 1609.344
 
@@ -130,9 +132,10 @@ def _structure_label(dists):
     return ' + '.join(f'{n}×{d}' if n > 1 else f'{d}' for d, n in groups) + 'm'
 
 
-def _connected_core(dists, times, rests):
+def _connected_core(dists, times, rests, dp3=None):
     """Connected-fatigue (D_eff, t_eff) from per-rep arrays, with the
-    short-distance anaerobic correction applied per rep.
+    effort-aware anaerobic deflation applied per rep (CP3 unification,
+    June 2026 — replaces the distance-only g(d) pace add).
 
     Each rep extends a running "connected" effort by its distance; the rest
     AFTER it dissipates the accumulated connection by exp(-rest_s/RECON_TAU_S).
@@ -141,21 +144,30 @@ def _connected_core(dists, times, rests):
     deepest connected distance reached, bounded in [longest rep, total] with
     no floor (no rest -> total; full recovery -> longest rep).
 
-    The anaerobic correction g_anaerobic(d) slows each rep's pace before the
-    mean rep speed is taken, so short reps (sub-~800m) — whose pace the CP
-    hyperbola over-credits as CS — contribute a sustainable-equivalent speed.
-    Distance-only, so it preserves gain and acts per-segment on ladders. No
-    CS enters D_eff, so the implied CS the projection reads off stays an
-    independent fitness signal — see [[project-workout-enrichment]].
+    Anaerobic deflation: a rep's supra-CS speed is anaerobically assisted,
+    and the CP3 model prices anaerobic availability over a duration t as
+    D′·t/(t+τ) with τ = D′₃/(v_max − CS) — so each rep's speed above CS is
+    scaled by t/(t+τ) before the mean rep speed is taken. Two structural
+    rules: (1) the FIRST rep is exempt — its anaerobic deployment is the
+    one D′ the downstream CP3 projection already prices, which is exactly
+    what makes a single max rep analyze identically to a race of the same
+    distance/speed (the race/rep invariant); reps 2+ redeploy W′ that
+    reconstituted during rests, which the projection can't see. (2) CS here
+    is the workout's OWN implied CS, solved as a fixed point of
+    deflate → accumulate → project — the CS fit never enters, so the
+    implied CS the projection reads off stays an independent fitness
+    signal — see [[project-workout-enrichment]]. At rep paces this
+    reproduces the retired g(d) (≈+12 s/mi at 400m rep pace vs fitted
+    +14.3); at race paces it scales ~4×, as the invariant demands.
 
     ``dists``/``times``: per-rep arrays. ``rests``: rest-after seconds per rep
     (the final entry, if present, is unused — nothing accumulates after it).
+    ``dp3``: the date's CP3 anaerobic reservoir (metres); None (no CS fit
+    artifact) skips the deflation.
     """
     dists = np.asarray(dists, float)
     times = np.asarray(times, float)
     rests = np.asarray(rests, float)
-    paces = times * MILE_M / dists                       # s/mi
-    times_corr = (paces + g_anaerobic(dists)) * dists / MILE_M
     conn = d_eff = 0.0
     for i in range(len(dists)):
         conn += dists[i]
@@ -163,18 +175,39 @@ def _connected_core(dists, times, rests):
             d_eff = conn
         if i < len(rests):
             conn *= math.exp(-rests[i] / RECON_TAU_S)
-    v = dists.sum() / times_corr.sum()                   # corrected mean speed
-    return d_eff, d_eff / v
+
+    t_total = float(times.sum())
+    if dp3 is None or len(dists) < 2:
+        return d_eff, d_eff * t_total / dists.sum()
+
+    vmax = WORKOUT_VMAX_MPS
+    v = dists / times                                    # per-rep speeds
+    t_corr = times.copy()
+    for _ in range(20):
+        t_eff = d_eff * t_corr.sum() / dists.sum()       # D_eff / mean speed
+        cs = float(cp3_implied_cs(d_eff, t_eff, dp3, vmax))
+        if not np.isfinite(cs):
+            return d_eff, d_eff * t_total / dists.sum()  # off-model: no deflation
+        tau = dp3 / (vmax - cs)
+        # Deflate supra-CS speed only; sub-CS reps carry no anaerobic assist.
+        v_corr = np.where(v > cs, cs + (v - cs) * times / (times + tau), v)
+        t_new = dists / v_corr
+        t_new[0] = times[0]                              # first rep exempt
+        if np.allclose(t_new, t_corr, rtol=1e-6):
+            t_corr = t_new
+            break
+        t_corr = t_new
+    return d_eff, d_eff * t_corr.sum() / dists.sum()
 
 
-def _measured_d_eff(day):
+def _measured_d_eff(day, dp3=None):
     """(D_eff, t_eff) for a watch-measured day — see _connected_core. Rest is
     the recorded standing+jog seconds per interval (last rep has none)."""
     day = day.sort_values('rep_idx')
     rest = (day['rest_stand_s'].fillna(0)
             + day['rest_jog_s'].fillna(0)).to_numpy(float)
     return _connected_core(day['dist_m'].to_numpy(float),
-                           day['time_s'].to_numpy(float), rest)
+                           day['time_s'].to_numpy(float), rest, dp3=dp3)
 
 
 # ---------- rest-source policy (per Max's logging-behaviour audit) ----------
@@ -203,11 +236,13 @@ CF_HARD_M, CF_FLOAT_M = 500.0, 300.0
 CF_FLOAT_HARD_RATIO = 1.25
 
 
-def _cf_structure(total_m, blended_pace):
+def _cf_structure(total_m, blended_pace, dp3=None):
     """(d_eff, t_eff, structure_label) for a continuous fartlek, from its
     known 500/300 alternation — see CF_FLOAT_HARD_RATIO above. The floats
-    act as jog rests in the connected accumulator; the same g(d)-aware
-    machinery every structured workout uses."""
+    act as jog rests in the connected accumulator; the same effort-aware
+    machinery every structured workout uses (the 5K-effort hard 500s now
+    draw only the small supra-CS deflation, not the retired g(d)'s flat
+    +10.3 s/mi distance charge)."""
     hards, floats = [], []
     rem = float(total_m)
     while rem > 0:
@@ -220,7 +255,7 @@ def _cf_structure(total_m, blended_pace):
     times = [p_hard * d / MILE_M for d in hards]
     rests = [p_float * floats[i] / MILE_M if i < len(floats) else 0.0
              for i in range(len(hards))]
-    d_eff, t_eff = _connected_core(hards, times, rests)
+    d_eff, t_eff = _connected_core(hards, times, rests, dp3=dp3)
     n_full = sum(1 for h in hards if h == CF_HARD_M)
     label = f'{n_full}×(500+300f)'
     tail = total_m - n_full * (CF_HARD_M + CF_FLOAT_M)
@@ -295,7 +330,7 @@ def effective_rest_per_mile(rtype, rep_dist, year, logged_rpm, rest_model):
     return (dflt if dflt is not None else 0.0), False
 
 
-def measured_to_decomposed(measured, daily_df, cf_structure=True):
+def measured_to_decomposed(measured, daily_df, cf_structure=True, dp3_at=None):
     """Convert watch-measured reps (workout_measured.csv, written by
     src/coros/reps.py) into decomposed-schema rows.
 
@@ -372,6 +407,7 @@ def measured_to_decomposed(measured, daily_df, cf_structure=True):
         run_type = daily_types.get(dt)
         total = day['dist_m'].sum()
         watch_pace = day['time_s'].sum() / (total / MILE_M)
+        dp3 = dp3_at(dt) if dp3_at is not None else None
 
         # Normalize watch times to the logged pace (see docstring): one
         # scale factor on every rep time, rests untouched (wall-clock).
@@ -383,7 +419,7 @@ def measured_to_decomposed(measured, daily_df, cf_structure=True):
 
         if (day['kind'] == 'cf').all():
             if cf_structure:    # Max's 500/300 convention, hand-log only
-                d_eff, t_eff, label = _cf_structure(total, pace)
+                d_eff, t_eff, label = _cf_structure(total, pace, dp3=dp3)
             else:
                 d_eff, t_eff, label = float(total), day['time_s'].sum(), None
             rows.append({'date': dt, 'type': 'continuous_fartlek',
@@ -411,7 +447,7 @@ def measured_to_decomposed(measured, daily_df, cf_structure=True):
             final_type = run_type
         else:                           # fartlek collision / watch-only
             final_type = 'interval' if rep_dist >= 800 else 'rep'
-        d_eff, t_eff = _measured_d_eff(day)
+        d_eff, t_eff = _measured_d_eff(day, dp3=dp3)
         rows.append({'date': dt, 'type': final_type,
                      'rep_dist': int(rep_dist), 'rep_count': int(rep_count),
                      'pace_per_mile': pace, 'rest_per_mile': rest_per_mile,
@@ -422,10 +458,14 @@ def measured_to_decomposed(measured, daily_df, cf_structure=True):
     return rows, enriched
 
 
-def decompose(daily_df, continuous_fartlek_only=False, rest_model=None):
+def decompose(daily_df, continuous_fartlek_only=False, rest_model=None,
+              dp3_at=None):
     """
     Filter quality workouts, decompose each row.
     Returns (decomposed_df, pruned_df).
+
+    dp3_at: date -> D′₃ lookup (workouts.dp3_at_date) for the connected
+    accumulator's effort-aware deflation; None skips the deflation.
 
     continuous_fartlek_only: for watch-import profiles whose only quality
     coding is a single continuous fartlek (no rep structure is ever recorded),
@@ -451,6 +491,7 @@ def decompose(daily_df, continuous_fartlek_only=False, rest_model=None):
         raw = '' if pd.isna(row['workout_raw']) else str(row['workout_raw'])
         qd = row['quality_distance_m']
         qp = row['quality_pace_sec_per_mi']
+        dp3 = dp3_at(dt) if dp3_at is not None else None
 
         # ---------- pruning rules (in order) ----------
         # (1) Hardcoded anomaly (defensive; current parser excludes from quality anyway)
@@ -511,7 +552,7 @@ def decompose(daily_df, continuous_fartlek_only=False, rest_model=None):
             reps = LADDER_4800
             times = [qp * d / MILE_M for d in reps]
             rests = [explicit_rest_per_mile * d / MILE_M for d in reps[:-1]] + [0.0]
-            d_eff, t_eff = _connected_core(reps, times, rests)
+            d_eff, t_eff = _connected_core(reps, times, rests, dp3=dp3)
             tot = sum(reps)
             eff_rd = max(100, round((sum(d * d for d in reps) / tot) / 100) * 100)
             results.append({
@@ -540,7 +581,7 @@ def decompose(daily_df, continuous_fartlek_only=False, rest_model=None):
                 d_eff, t_eff = float(total_m), qp * total_m / MILE_M
                 label = None
             else:
-                d_eff, t_eff, label = _cf_structure(total_m, qp)
+                d_eff, t_eff, label = _cf_structure(total_m, qp, dp3=dp3)
             results.append({
                 'date': dt, 'type': 'continuous_fartlek',
                 'rep_dist': int(total_m), 'rep_count': 1,
@@ -638,7 +679,7 @@ def decompose(daily_df, continuous_fartlek_only=False, rest_model=None):
             rep_rest_s = rest_per_mile * rep_dist / MILE_M
             d_eff_m, t_eff_s = _connected_core(
                 [rep_dist] * rep_count, [rep_t] * rep_count,
-                [rep_rest_s] * (rep_count - 1) + [0.0])
+                [rep_rest_s] * (rep_count - 1) + [0.0], dp3=dp3)
 
         results.append({
             'date': dt, 'type': final_type,
@@ -683,16 +724,25 @@ def main():
     measured = pd.read_csv(measured_path) if measured_path.exists() else None
     rest_model = build_rest_model(measured, daily)
 
+    # D′₃ per date for the accumulator's effort-aware deflation (None when
+    # the profile has no CS fit yet — deflation is skipped, see
+    # _connected_core).
+    dp3_at = dp3_at_date()
+    if dp3_at is None:
+        print('No CS summary found — connected accumulator runs without '
+              'the anaerobic deflation.')
+
     decomposed, pruned = decompose(
         daily, continuous_fartlek_only=args.continuous_fartlek_only,
-        rest_model=rest_model)
+        rest_model=rest_model, dp3_at=dp3_at)
 
     # Watch enrichment: days the rep-extraction layer reconstructed exactly
     # replace their parsed rows (real structure + measured rest); watch-only
     # days are added outright. See measured_to_decomposed for the rules.
     if measured is not None:
         m_rows, enriched = measured_to_decomposed(
-            measured, daily, cf_structure=not args.continuous_fartlek_only)
+            measured, daily, cf_structure=not args.continuous_fartlek_only,
+            dp3_at=dp3_at)
         if m_rows:
             decomposed = decomposed[~decomposed['date'].isin(enriched)]
             decomposed = pd.concat(

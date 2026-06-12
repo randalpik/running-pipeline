@@ -111,19 +111,35 @@ Every race diamond projects to its 5K-equivalent pace. 5K chosen because
 ~92 of Max's races are 5Ks vs 7 at 10K — natural reference for the bulk
 of the data.
 
-### Projection method: hyperbolic CS, not Riegel
+### Projection method: 3-parameter critical speed (CP3), not Riegel
 
-For each race at (d_race, t_race), un-bias the time first if d > 10K:
-
-```
-t_unbiased  = t_race / (1 + β_long · log(d_race/10K))   if d_race > 10K
-            = t_race                                     otherwise
-t_5K_equiv  = (5000 - D'_date) · t_unbiased / (d_race - D'_date)
-```
+**June 2026 — CP3 replaced the plain hyperbola in the projection layer**
+(the fit itself stays 2-parameter; it excludes < 1500 m where the models
+differ). Each race is read as a sample of its own Morton curve
+`v(t) = CS + D′/(t + τ)`, `τ = D′/(v_max − CS)` — the hyperbola bent at
+short durations by a finite top speed v_max. **v_max is an uncertainty
+interval, two conservative edges per profile** (cs_projection registry;
+Max: evidence 9.5 / prediction 8.3, derived by scripts/calibrate_vmax.py
+from his own corpus — the 400-corpus sprint-credit envelope and the
+PR-sweep bounds respectively; rationale and trade-offs in
+short-effort-unification-plan.md "Outcome"). Reading a race as evidence
+uses the HIGH edge (short diamonds conservative — every 400 ever raced
+sits at/behind the frontier by construction); forward solves (dashboard
+predictions, lines-at-anchor) use the LOW edge (400/800 predictions never
+beat the lifetime PRs at any date in the sweep). For each race, un-bias
+the time first if d > 10K (β_long, unchanged), then solve the race's own
+implied CS (closed-form quadratic — SELF-consistent, the fit's CS never
+enters) and forward-solve the 5K time on that curve. The fit's D′ is
+bridged per date as the effective anaerobic distance at 5K
+(`D′₃ = D′₂/(1 − D′₂/((v_max−CS)·t5K))`, per edge), which preserves the
+fit's 5K prediction exactly on both edges and keeps the models within
+~1 s/mi over 3000m–10K; miles read ~2.5–4 s/mi fitter than under CP2,
+sub-800m efforts are where the bend really acts.
 
 - Race time IS the data — diamonds preserve race-to-race deviations.
-- D' anchors the short-distance physiology, so 800m and mile diamonds
-  project honestly without piecewise Riegel exponents.
+- The bend makes 400m/800m diamonds and predictions honest with ONE
+  physiological parameter — the former β_short display knob (two outcome-
+  pinned constants below 875 m) is retired, as is the workout-side g(d).
 - Un-biasing for d > 10K projects "the underlying fitness this race
   implies" rather than the raw race-execution pace (which would be
   near-asymptotic CS for marathons, making the projection useless).
@@ -191,13 +207,22 @@ line. Fitness: home tab (above). **Races + Race distances: the frontier is
 the ONLY line** — gold CS lines removed entirely; the hand-drawn pre-2013
 cubic survives invisibly as the frontier's floor in that era (the GP isn't
 really estimating CS there); per-panel lines via `frontier_at_anchor()`
-(hyperbola + β factors incl. the by-distance plot's β_short); hover Δs are
-vs the frontier. Training: purple line added (normalized mode shows
+(CP3 forward solve + β_long for anchors above 10K — β_short is retired,
+June 2026); hover Δs are vs the frontier. Training: purple line added (normalized mode shows
 frontier−CS-5K excess at/below zero). Workouts: purple 5K line. Long runs:
 frontier marathon (bright purple) + HM (faint purple) — the gold CS pair
 is REMOVED (frontier lines only; tooltip rows are frontier values).
 Recovery: deliberately untouched (recovery calibrates against sustainable
-physiology, not peak capability). **Dashboard: predictions are direct
+physiology, not peak capability). **Demo eligibility: time ≥ 120 s — 800s
+bind by design** (June 2026; a ≥ 1500 m cutoff was tried and reverted the
+same day). Max's 800s bind in 5 of 7 non-fatigued cases; the
+investigation showed this is the fit's own small D′ speaking (relative to
+HIS anaerobic capacity a 2:04.1 really is peak-level — the IAAF "weak at
+short" comparison is population-relative and already encoded in D′), and
+Max verified the binding cases are coherent peaks (the 2017-03-30 800 was
+his genuine lifetime best to that point, superseded weeks later by
+1600s). Only sub-120 s sprints stay display-only, read via the
+conservative evidence-edge v_max. **Dashboard: predictions are direct
 frontier projections** — "the fastest I could physically run this, given
 the current frontier", no empirical residual offsets (the old
 recency-weighted long-run residual machinery is gone) — evaluated AS OF

@@ -40,11 +40,9 @@
       var xs = asArray(t.x);
       var ys = asArray(t.y);
       if (!xs || !ys) return;
-      var skip = t.meta.pr_skip;
       for (var i = 0; i < xs.length; i++) {
         var y = ys[i];
         if (y == null || isNaN(y)) continue;
-        if (skip && skip[i]) continue;  // fatigued: visible, never a PR
         pts.push({ x: xs[i], y: y, ts: new Date(xs[i]).getTime() });
       }
     });

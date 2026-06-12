@@ -22,6 +22,12 @@ sits next to CS without feeding back into it.
 - **Projection: CS-hyperbolic for everything.** Same `t_5K = (5000 − D')·t /
   (d − D')` projection the CS model uses. Replaces the earlier Riegel-based
   approach. Theoretically grounded; doesn't require an unmotivated exponent.
+  *(June 2026: upgraded to the 3-parameter CP projection — implied CS via
+  `cp3_implied_cs(D_eff, t_eff, D′₃)`, then `cp3_time(5000, ·)` — the same
+  CP3 layer races use; see cs-model-reference.md. The D′₃ bridge preserves
+  the CS-implied-5K line exactly, so residual semantics are unchanged; the
+  shift is ≤ ~2 s/mi for typical workouts and matters most for short-rep
+  days, together with the effort-aware deflation below.)*
 - **No β_long anywhere.** β_long encodes max-effort long-distance fade,
   doesn't apply to sub-max efforts. Including it would inflate fitness
   implications beyond what the data demonstrates.
@@ -178,8 +184,9 @@ sits next to CS without feeding back into it.
     times are minute-rounded down, median −32 s, and exclude pauses).
   - **Pause-aware D_eff**: segments split at watch pauses/standstills
     feed the same `exp(−rest/RECON_TAU_S)` connected accumulator as
-    enriched workouts (NO anaerobic g(d) — long-run segments are
-    aerobic). Median pause is ~15 min/run and D_eff frac ~0.59, but the
+    enriched workouts (no anaerobic deflation — long-run segments are
+    sub-CS, so the June 2026 effort-aware correction is a no-op for
+    them by construction). Median pause is ~15 min/run and D_eff frac ~0.59, but the
     hyperbola is nearly flat at long-run distances so this is only
     ~+1–3 s/mi; it's kept for correctness, not magnitude.
   Pre-watch runs on the two staples (2018-01 → 2022-04-15) get a
@@ -227,10 +234,14 @@ older `workout_vdot_v6.csv`, with these rule changes:
   hard 5:08/mi even, float 6:26/mi remarkably consistent; the float runs
   ~34 s/mi SLOWER than era recovery-run pace, so a recovery-model anchor
   would have misfired). Hard pace falls out of the blended log pace in
-  closed form; the floats act as jog rests in the same g(d)-aware
-  connected accumulator every structured workout uses. Moves the CF
-  cluster from +18 to ~+11 raw (the remainder is the distance-only g(d)
-  applied to 5K-effort 500s — a documented structural compromise).
+  closed form; the floats act as jog rests in the same effort-aware
+  connected accumulator every structured workout uses. Moved the CF
+  cluster from +18 to ~+11 raw under g(d). *(June 2026, CP3 unification:
+  the distance-only g(d) — whose flat +10.3 s/mi charge on 5K-effort 500s
+  was the documented structural compromise — is replaced by the
+  effort-aware supra-CS deflation; CF median now +7.2 vs interval −0.9.
+  The remaining gap is honest: CF hards genuinely run ~0.3 m/s supra-CS,
+  plus 2019–20 era effort policy.)*
 - **Implicit decomposition**: workouts written as bare `Nt` / `Ni` / `Nf`
   with no `Nx` reps decompose to standard rep distances (interval ≥ 4800m
   → 1600m reps; 3200–4799 → 800m; rep → 400m; tempo < 7000 → 1000m,
@@ -251,10 +262,25 @@ Per workout (in the plot pipeline):
 1. `decay = exp(−rest_per_mile / 210)`
 2. `D_eff = rep_dist · (1 + (rep_count − 1) · decay)`
 3. `t_eff = pace_per_mile · D_eff / 1609.344` (seconds at workout pace)
-4. `t_5K = (5000 − D'_t) · t_eff / (D_eff − D'_t)` where `D'_t` is the CS
-   posterior median D' interpolated to the workout date
+4. `t_5K = cp3_time(5000, cp3_implied_cs(D_eff, t_eff, D′₃_t), D′₃_t)`
+   where `D′₃_t` is the CP3 reservoir at the workout date (June 2026 —
+   was the plain hyperbola `(5000 − D'_t)·t_eff/(D_eff − D'_t)`)
 5. `P5K = t_5K · 1609.344 / 5000` (sec/mi)
 6. `raw_resid = P5K − CS_implied_5K_pace_at_t` (sec/mi)
+
+Steps 1–3 are the legacy uniform-rep path (no watch data, untrusted rest).
+Trusted/enriched days carry `d_eff_m`/`t_eff_s` from the connected
+accumulator (`parse_workouts._connected_core`), which since June 2026
+applies the **effort-aware anaerobic deflation** in place of g(d): each
+rep's supra-CS speed is scaled by `t/(t+τ)` (`τ = D′₃/(v_max − CS)`), CS
+being the workout's own implied CS solved as a fixed point, first rep
+exempt. The workout side uses its own `WORKOUT_VMAX_MPS = 8.7`
+(workouts.py) — a measurement calibration anchored to the watch rep
+corpus, deliberately distinct from cs_projection's conservative race
+edges (evidence 9.5 / prediction 8.3); see the short-effort plan's
+Outcome section for why the race edges exist and what the split costs
+(the exact race≡rep invariant holds within each layer, approximately
+across them).
 
 ### Stage 3 — Long run projection
 
@@ -270,7 +296,9 @@ aren't displayed in the plot and don't feed the smoother.
 Per in-scope long run:
 1. `t_run = recovery_pace_sec_per_mi · miles` (seconds)
 2. `D_eff = miles · 1609.344` (continuous, no decay)
-3. `t_5K = (5000 − D'_t) · t_run / (D_eff − D'_t)`
+3. `t_5K = cp3_time(5000, cp3_implied_cs(D_eff, t_run/β_long, D′₃_t), D′₃_t)`
+   (June 2026 — same CP3 swap as workouts; sub-s/mi effect at long-run
+   durations, kept for cross-layer consistency)
 4. `P5K = t_5K · 1609.344 / 5000`
 5. `raw_resid = P5K − CS_implied_5K_pace`
 (There is no per-distance bin: the former 21mi lr_lo/lr_hi split was
@@ -512,10 +540,14 @@ policy, deliberately left in the signal; nothing is subtracted):
 
 | Category            | Median resid (sec/mi) | Reading                              |
 |---------------------|----------------------:|--------------------------------------|
-| interval            |                 +1.98 | The calibration anchor               |
-| rep                 |                 +5.43 | g(d)-corrected, scatter-weighted     |
-| continuous_fartlek  |                +11.58 | 500/300-reconstructed (was +17.9)    |
-| tempo               |                +19.51 | Mostly 2016–17 era effort policy     |
+| interval            |                 −0.91 | The calibration anchor               |
+| rep                 |                 +1.36 | effort-aware-deflated, scatter-weighted |
+| continuous_fartlek  |                 +7.18 | 500/300-reconstructed (was +11.6 under g(d), +17.9 before that) |
+| tempo               |                +19.31 | Mostly 2016–17 era effort policy     |
+
+*(June 2026, post-CP3: reps converged fully — +5.43 → +1.36, now sitting
+between interval and CF; CF narrowed +11.6 → +7.2, the remainder being
+honest supra-CS effort + era policy.)*
 
 Hill correction (Stage 3.5): Minetti net factor pinned (lc ≈ +14 s/mi,
 rc +26, pwr1 +48 at typical paces); fitted trail term **+26.94 s/mi**

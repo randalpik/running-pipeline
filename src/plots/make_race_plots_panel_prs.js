@@ -39,11 +39,9 @@
         var xs = asArray(t.x);
         var ys = asArray(t.y);
         if (!xs || !ys) return;
-        var skip = m.pr_skip;
         for (var k = 0; k < xs.length; k++) {
           var y = ys[k];
           if (y == null || isNaN(y)) continue;
-          if (skip && skip[k]) continue;  // fatigued: visible, never a PR
           p.races.push({ x: xs[k], y: y, ts: new Date(xs[k]).getTime() });
         }
       }

@@ -46,7 +46,9 @@ import numpy as np
 import pandas as pd
 
 from src.shared.paths import DATA_DIR
-from src.shared.cs_projection import _beta_factor, project_races_to_5k_pace
+from src.shared.cs_projection import (_beta_long_factor, cp3_implied_cs,
+                                      cp3_time, project_races_to_5k_pace,
+                                      vmax_predict)
 
 # FORWARD: first-order relaxation into the floor — excess decays at a rate
 # proportional to its current distance from the reference line. tau from
@@ -103,6 +105,18 @@ def standard_demos(daily_summary, beta_long, d_thresh, xc_correction,
         races['fatigued'] = False
     if 'surface' not in races.columns:
         races['surface'] = 'Unknown'
+    # time ≥ 120 s: every race of 2+ minutes is frontier evidence — 800s
+    # INCLUDED, and they may bind. A distance ≥ 1500 m cutoff was tried and
+    # reverted the same day (June 2026): Max initially read his 800s
+    # binding the frontier as the model overrating his short distances,
+    # but the 2017-03-30 800 case resolved it — it genuinely was his best
+    # lifetime effort to that point, superseded three weeks later by three
+    # 1600s and an interval workout (a coherent peak, not an aberration).
+    # The "3200s set me apart in HS" perception was competition density
+    # (more proficient HS milers than 2-milers), not absolute capability.
+    # Only sub-120 s races (400s) stay out: pure-sprint efforts read via
+    # the conservative evidence-edge v_max, displayed but never defining
+    # aerobic capability.
     elig = races[(~races['fatigued'].astype(bool))
                  & (races['surface'] != 'Downhill')
                  & (races['time_sec'] >= 120)].copy()
@@ -132,26 +146,27 @@ def standard_demos(daily_summary, beta_long, d_thresh, xc_correction,
     return pd.concat([race_demos, corpus], ignore_index=True)
 
 
-def frontier_at_anchor(frontier, daily_summary, anchor_m, beta_long, d_thresh,
-                       *, beta_short=0.0, d_thresh_short=800.0):
+def frontier_at_anchor(frontier, daily_summary, anchor_m, beta_long, d_thresh):
     """Frontier-implied total time (seconds) at anchor_m for each grid date.
 
     Mirror of cs_projection.cs_line_at_anchor, sourced from the frontier:
-    back out the frontier-implied CS at each date (via D'(t) and the 5K
-    frontier time), then project to the anchor with the same beta factors
-    the race plots use. NaN where anchor <= D' or the frontier is NaN.
+    back out the frontier-implied CS at each date (CP3 inversion of the 5K
+    frontier time against D′₃(t)), then forward-solve the anchor time on
+    that curve, with the β_long factor for anchors above d_thresh. NaN
+    where the frontier is NaN.
 
     frontier and daily_summary must share the same grid (both are built on
-    the summary's dates by every caller).
+    the summary's dates by every caller). Forward direction → the
+    prediction-edge v_max (conservative-low: short anchors never get a
+    time faster than the demonstrated capability warrants).
     """
-    dp = daily_summary['dp_med'].to_numpy(float)
+    vmax = vmax_predict()
+    dp3 = daily_summary['dp3_pred_med'].to_numpy(float)
     t5k_f = (frontier['frontier_pace_min'].to_numpy(float)
              * 60.0 * 5000.0 / 1609.344)
-    cs_mps_f = (5000.0 - dp) / t5k_f
-    beta_anchor = _beta_factor(anchor_m, beta_long, d_thresh,
-                               beta_short, d_thresh_short)
-    t = (anchor_m - dp) / cs_mps_f * beta_anchor
-    return np.where(anchor_m > dp, t, np.nan)
+    cs_mps_f = cp3_implied_cs(5000.0, t5k_f, dp3, vmax)
+    beta_anchor = _beta_long_factor(anchor_m, beta_long, d_thresh)
+    return cp3_time(anchor_m, cs_mps_f, dp3, vmax) * beta_anchor
 
 
 def build_frontier_band(demos, grid_dates, daily_summary):

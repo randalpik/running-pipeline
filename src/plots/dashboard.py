@@ -38,7 +38,9 @@ from src.shared.workouts import (
     load_cs, project_long_runs,
 )
 from src.shared.long_run_model import fit_long_run_model
-from src.shared.cs_projection import load_cs_outputs
+from src.shared.cs_projection import (load_cs_outputs, _beta_long_factor,
+                                      cp3_dprime, cp3_implied_cs, cp3_time,
+                                      vmax_predict)
 from src.shared.performance_frontier import (standard_demos,
                                               build_frontier_band,
                                               frontier_at_anchor)
@@ -67,11 +69,9 @@ TRAINING_SHOE_RUN_THRESHOLD = 3  # consecutive recovery runs to qualify
 # split a pair, and it works whether or not asterisks disambiguate the model.
 SHOE_BLOCK_DIFF_RUNS = 14
 
-# Short-distance correction matching make_race_plots.py — track distances
-# below 800m get stretched because the CS+D' model under-predicts time
-# (peak speed limits and anaerobic capacity dominate, not sustained CS).
-BETA_SHORT     = 0.363
-D_THRESH_SHORT = 875.0
+# Short distances are handled structurally by the CP3 projection layer
+# (cs_projection.cp3_*) — the former β_short stretch is gone; see
+# docs/short-effort-unification-plan.md.
 
 OUT_HTML = OUTPUT_DIR / 'dashboard.html'
 SCAFFOLD_DIR = Path(__file__).resolve().parents[1] / 'plotting' / '_scaffold'
@@ -314,41 +314,22 @@ def compute_prs(races):
 
 
 # ----- Race Predictions -----
-def _beta_factor(d, beta_long, d_thresh_long, beta_short=BETA_SHORT,
-                  d_thresh_short=D_THRESH_SHORT):
-    """Same shape as cs_projection._beta_factor — long-distance fade for
-    d > d_thresh_long, short-distance stretch for d < d_thresh_short."""
-    if d > d_thresh_long and beta_long > 0:
-        return 1.0 + beta_long * np.log(d / d_thresh_long)
-    if d < d_thresh_short and beta_short > 0:
-        return 1.0 + beta_short * np.log(d_thresh_short / d)
-    return 1.0
-
-
-def _time_at(d, dp, cs_mps, beta_long, d_thresh):
-    if d <= dp or cs_mps <= 0:
-        return float('nan')
-    return (d - dp) / cs_mps * _beta_factor(d, beta_long, d_thresh)
-
-
 def compute_race_predictions(daily_summary, beta_long, d_thresh,
                              front_med, front_lo, front_hi):
     """Per FILTER_BIN distance: predicted time direct from today's frontier
     ("the fastest I could physically race this distance"), with a band from
     the frontier swept across the CS 95% CrI. Where a recent demonstration
     binds, the three sweeps collapse onto it (proof pins the prediction);
-    on the floor the band equals the CS CrI."""
+    on the floor the band equals the CS CrI. Short distances ride the CP3
+    bend inside frontier_at_anchor — no β_short."""
     out = []
     for name, d in FILTER_BINS:
         t_med = frontier_at_anchor(front_med, daily_summary, d, beta_long,
-                                   d_thresh, beta_short=BETA_SHORT,
-                                   d_thresh_short=D_THRESH_SHORT)[-1]
+                                   d_thresh)[-1]
         t_fast = frontier_at_anchor(front_lo, daily_summary, d, beta_long,
-                                    d_thresh, beta_short=BETA_SHORT,
-                                    d_thresh_short=D_THRESH_SHORT)[-1]
+                                    d_thresh)[-1]
         t_slow = frontier_at_anchor(front_hi, daily_summary, d, beta_long,
-                                    d_thresh, beta_short=BETA_SHORT,
-                                    d_thresh_short=D_THRESH_SHORT)[-1]
+                                    d_thresh)[-1]
         half = (t_slow - t_fast) / 2.0
         out.append({'distance': name, 'time_sec': float(t_med),
                     'half_sec': float(half)})
@@ -393,7 +374,7 @@ def _long_run_residual(lr_in_aug):
     return float((w * keep['raw_resid']).sum() / w.sum())
 
 
-def _invert_projection(make_efforts, t5k_target, dp, lo=200.0, hi=600.0):
+def _invert_projection(make_efforts, t5k_target, dp3, lo=200.0, hi=600.0):
     """Find the pace (s/mi) at which a structured workout's connected
     projection equals the frontier's 5K capability. make_efforts(pace) must
     return (d_eff, t_eff) via THE SAME machinery the TQ corpus uses
@@ -402,8 +383,12 @@ def _invert_projection(make_efforts, t5k_target, dp, lo=200.0, hi=600.0):
     June 2026: 'I assumed those were aligned'). Bisection; the projection
     is monotone in pace."""
     def t5k_of(pace):
+        from src.shared.workouts import WORKOUT_VMAX_MPS
         d_eff, t_eff = make_efforts(pace)
-        return (5000.0 - dp) * t_eff / (d_eff - dp)
+        return float(cp3_time(5000.0,
+                              cp3_implied_cs(d_eff, t_eff, dp3,
+                                             WORKOUT_VMAX_MPS),
+                              dp3, WORKOUT_VMAX_MPS))
     for _ in range(60):
         mid = (lo + hi) / 2
         if t5k_of(mid) < t5k_target:
@@ -418,12 +403,17 @@ def compute_workout_predictions(daily_summary, front_med,
     """Direct frontier projections (Max, June 2026): "the fastest I could
     physically run this workout given the current frontier". Each structured
     prediction INVERTS the exact projection the TQ corpus applies to that
-    workout shape (connected accumulator, g(d), CF 500/300 reconstruction),
-    so a workout run at the predicted pace would plot exactly ON the
-    frontier. No empirical residual offsets anywhere."""
+    workout shape (connected accumulator with the effort-aware deflation,
+    CF 500/300 reconstruction, CP3 projection), so a workout run at the
+    predicted pace would plot exactly ON the frontier. No empirical
+    residual offsets anywhere."""
     from src.parsers.parse_workouts import _connected_core, _cf_structure
+    from src.shared.workouts import WORKOUT_VMAX_MPS
     latest = daily_summary.iloc[-1]
-    dp = float(latest['dp_med'])
+    # Workout predictions invert the TQ corpus machinery, so they use the
+    # WORKOUT-side v_max/D′₃ (a measurement calibration), not the race edges.
+    dp3 = float(cp3_dprime(latest['dp_med'], latest['cs_mps_med'],
+                           WORKOUT_VMAX_MPS))
     t5k_front = (float(front_med['frontier_pace_min'].iloc[-1])
                  * 60.0 * 5000.0 / 1609.344)
 
@@ -432,16 +422,16 @@ def compute_workout_predictions(daily_summary, front_med,
         dists = [1600.0] * 6
         times = [pace * 1600.0 / 1609.344] * 6
         rests = [180.0] * 5
-        return _connected_core(dists, times, rests)
-    pace_intervals = _invert_projection(_intervals, t5k_front, dp)
+        return _connected_core(dists, times, rests, dp3=dp3)
+    pace_intervals = _invert_projection(_intervals, t5k_front, dp3)
 
     # --- Continuous fartlek 8000m: the 500/300 reconstruction, inverted.
     #     The blended pace is what the log would read; the hard-500 pace
     #     (blended / structure ratio) is the actual prescription.
     def _cf(pace):
-        d_eff, t_eff, _ = _cf_structure(8000.0, pace)
+        d_eff, t_eff, _ = _cf_structure(8000.0, pace, dp3=dp3)
         return d_eff, t_eff
-    pace_fartlek = _invert_projection(_cf, t5k_front, dp)
+    pace_fartlek = _invert_projection(_cf, t5k_front, dp3)
     from src.parsers.parse_workouts import CF_HARD_M, CF_FLOAT_M, CF_FLOAT_HARD_RATIO
     hards = 8000.0 // (CF_HARD_M + CF_FLOAT_M) * CF_HARD_M + 8000.0 % (CF_HARD_M + CF_FLOAT_M)
     floats = 8000.0 - hards
@@ -450,9 +440,13 @@ def compute_workout_predictions(daily_summary, front_med,
 
     # --- Long run at the card's distance: race-equivalent projection with
     #     the long-distance fade restored at the run's full distance.
-    cs_mps_f = (5000.0 - dp) / t5k_front
+    #     Forward direction -> prediction edge (v_max-irrelevant at 20 mi).
+    vp = vmax_predict()
+    dp3_p = float(latest['dp3_pred_med'])
+    cs_mps_f = float(cp3_implied_cs(5000.0, t5k_front, dp3_p, vp))
     d_long = LR_PRED_MILES * 1609.344
-    t_long = (d_long - dp) / cs_mps_f * _beta_factor(d_long, beta_long, d_thresh)
+    t_long = (float(cp3_time(d_long, cs_mps_f, dp3_p, vp))
+              * _beta_long_factor(d_long, beta_long, d_thresh))
     pace_long = t_long * 1609.344 / d_long
 
     return {

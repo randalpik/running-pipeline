@@ -28,6 +28,7 @@ import pandas as pd
 
 from src.shared.paths import DATA_DIR
 from src.shared.hill_model import minetti_net_factor
+from src.shared.cs_projection import cp3_dprime, cp3_implied_cs, cp3_time
 from src.parsers.snapshot import find_snapshot, read_snapshot
 
 
@@ -56,23 +57,35 @@ DECAY_FLOOR = 0.17
 # bounded in [longest rep, total] by construction. Provisional pending the
 # race-residual weighting step (workout effort runs sub-max vs races — a
 # longest-rep-correlated bias, +0.25 Spearman, still in the residual).
+# Re-checked June 2026 under the CP3 + effort-aware-deflation model: 540
+# remains the RMS optimum on the enriched corpus (rms 8.15 s/mi, vs
+# 8.51/8.52 at 420/660) — the anchor held without refitting.
 RECON_TAU_S = 540.0
-# Short-distance anaerobic correction g(d) = ANAEROBIC_K*(1/d - 1/ANAEROBIC_D0)+,
-# a per-rep pace add (s/mi) applied INSIDE the connected accumulator. It removes
-# the 2-param CP hyperbola's short-effort CS overshoot, which biases sub-~800m
-# reps fast (uniform 400m days read ~16 s/mi too fit; 800m ~3; >=1600m ~0). Fit
-# June 2026 scatter-weighted with a free offset (the offset = the workout-vs-race
-# sub-max effort gap, absorbed downstream by the TQ category offset): K=8000,
-# d0=1400 -> g(400)=+14.3, g(800)=+4.3, g(>=1400)=0 s/mi. Distance-only, so it
-# shifts the level the hyperbola misplaces without touching responsiveness (gain
-# stays ~1). Because it depends on rep distance, a ladder's 400 segments get the
-# correction and its 1600 doesn't.
-# NOT for races: calibrated on rep-PACE 400s (~72s); all-out race 400s (~57s) sit
-# far deeper in the anaerobic regime and need ~4x more correction (the effect
-# scales with speed-above-CS, not distance), so make_race_plots keeps its own
-# BETA_SHORT display term. See [[project-workout-enrichment]].
-ANAEROBIC_K = 8000.0
-ANAEROBIC_D0 = 1400.0
+# v_max for the WORKOUT side of CP3 — the accumulator's effort-aware
+# deflation and the TQ projections (workouts / long runs / hills). This is
+# deliberately NOT one of cs_projection's conservative race edges: it's a
+# MEASUREMENT calibration, anchored to the watch rep corpus (the τ=540
+# re-validation above ran at this value; the deflation reproduces the
+# retired empirically-fitted g(d) at rep paces here). The race edges
+# encode evidence/prediction conservatism policy; this encodes "what a
+# rep day actually demonstrates", and the TQ corpus's accuracy is owned
+# by its own gates (course verification, implausibility ceiling).
+WORKOUT_VMAX_MPS = 8.7
+# Short-effort anaerobic handling (June 2026, CP3 unification): the former
+# distance-only pace add g(d) = K·(1/d − 1/d0)+ is GONE, replaced by the
+# effort-aware per-rep deflation inside parse_workouts._connected_core —
+# each rep's supra-CS speed is scaled by t/(t+τ) (the CP3 model's anaerobic
+# availability ratio at the rep's duration, τ = D′₃/(v_max − CS)), with CS
+# the workout's OWN implied CS solved self-consistently (no CS-fit input —
+# the accumulator stays an independent fitness signal) and the FIRST rep
+# exempt (its anaerobic deployment is priced by the projection's D′ term;
+# this is also what makes a single max rep analyze identically to a race).
+# At rep paces the deflation reproduces the retired g(d) almost exactly
+# (≈+12 s/mi at 400m rep pace vs g's +14.3; +4.6 vs +4.3 at 800); at race
+# paces it scales ~4× — the race/rep invariant the distance-only form
+# violated. CF hard 500s at 5K effort now draw ≈+2 s/mi instead of g's
+# +10.3 (the documented structural compromise, resolved). See
+# docs/short-effort-unification-plan.md and [[project-workout-enrichment]].
 # Watch-vs-log disagreement gate (Max, June 2026): a large RAW watch-vs-log
 # pace gap means the watch data is wrong in some way (GPS error large enough
 # that the rep decomposition can't be trusted). The consequence is DEMOTION,
@@ -95,10 +108,6 @@ ANAEROBIC_D0 = 1400.0
 WATCH_LOG_MISMATCH_PER_REP_S = 1.75
 
 
-def g_anaerobic(d_m):
-    """Per-rep anaerobic pace correction (s/mi) added to a rep of distance d_m
-    metres; 0 for d_m >= ANAEROBIC_D0. Accepts scalars or numpy arrays."""
-    return ANAEROBIC_K * np.maximum(0.0, 1.0 / d_m - 1.0 / ANAEROBIC_D0)
 # Global long-run slice (June 2026, replacing the per-profile distance
 # slice). The two bounds deliberately mix units because they encode
 # different mechanisms:
@@ -246,13 +255,35 @@ def load_cs():
 
 
 def add_cs(df, cs, epoch):
-    """Add per-row CS context: day-since-epoch, p5k_cs_min, dp_t, year."""
+    """Add per-row CS context: day-since-epoch, p5k_cs_min, dp_t, dp3_t, year."""
     df = df.copy()
     df['day'] = (df['date'] - epoch).dt.days.astype(float)
     df['p5k_cs_min'] = np.interp(df['day'], cs['day'].values, cs['p5k_implied_min'].values)
     df['dp_t']       = np.interp(df['day'], cs['day'].values, cs['dp_med'].values)
+    dp3 = cp3_dprime(cs['dp_med'].values, cs['cs_mps_med'].values,
+                     WORKOUT_VMAX_MPS)
+    df['dp3_t']      = np.interp(df['day'], cs['day'].values, dp3)
     df['year']       = df['date'].dt.year
     return df
+
+
+def dp3_at_date():
+    """date -> D′₃ (the CP3 anaerobic reservoir) interpolated from the
+    profile's CS summary, for parse-time consumers (the connected
+    accumulator's effort-aware deflation). Returns None when no CS fit
+    exists yet — callers then skip the deflation, which is fine: a profile
+    without a CS fit has no projection layer to feed anyway."""
+    if not CS_PATH.exists():
+        return None
+    cs, epoch = load_cs()
+    dp3 = cp3_dprime(cs['dp_med'].values, cs['cs_mps_med'].values,
+                     WORKOUT_VMAX_MPS)
+    days = cs['day'].to_numpy(float)
+
+    def at(dt):
+        d = float((pd.Timestamp(dt) - epoch).days)
+        return float(np.interp(d, days, dp3))
+    return at
 
 
 # ---------- hill loop metadata (snapshot-driven) ----------
@@ -374,7 +405,9 @@ def project_workouts(cs, epoch):
         w.loc[has, 'D_eff'] = w.loc[has, 'd_eff_m']
         w.loc[has, 't_eff'] = (w.loc[has, 't_eff_s']
                                / np.where(w.loc[has, 'xc_corrected'], 1.06, 1.0))
-    w['t_5k_hyp'] = (5000 - w['dp_t']) * w['t_eff'] / (w['D_eff'] - w['dp_t'])
+    cs_imp = cp3_implied_cs(w['D_eff'], w['t_eff'], w['dp3_t'],
+                            WORKOUT_VMAX_MPS)
+    w['t_5k_hyp'] = cp3_time(5000.0, cs_imp, w['dp3_t'], WORKOUT_VMAX_MPS)
     w['p5k_min']  = w['t_5k_hyp'] * 1609.344 / 5000 / 60.0
     w['raw_resid'] = (w['p5k_min'] - w['p5k_cs_min']) * 60
     w['category'] = w['type']
@@ -509,7 +542,8 @@ def project_long_runs(cs, epoch):
                                              / d_thresh),
                     1.0)
     t_eff = t_eff / beta
-    lr['t_5k_hyp'] = (5000 - lr['dp_t']) * t_eff / (d_eff - lr['dp_t'])
+    cs_imp = cp3_implied_cs(d_eff, t_eff, lr['dp3_t'], WORKOUT_VMAX_MPS)
+    lr['t_5k_hyp'] = cp3_time(5000.0, cs_imp, lr['dp3_t'], WORKOUT_VMAX_MPS)
     lr['p5k_min']  = lr['t_5k_hyp'] * 1609.344 / 5000.0 / 60.0
     lr['raw_resid'] = (lr['p5k_min'] - lr['p5k_cs_min']) * 60
     return lr
@@ -652,7 +686,9 @@ def project_hill_continuous(cs, epoch):
     h['watch_measured'] = has_watch
 
     h = add_cs(h, cs, epoch)
-    h['t_5k_hyp'] = (5000 - h['dp_t']) * h['t_eff'] / (h['d_m'] - h['dp_t'])
+    cs_imp = cp3_implied_cs(h['d_m'], h['t_eff'], h['dp3_t'],
+                            WORKOUT_VMAX_MPS)
+    h['t_5k_hyp'] = cp3_time(5000.0, cs_imp, h['dp3_t'], WORKOUT_VMAX_MPS)
     h['p5k_min']  = h['t_5k_hyp'] * 1609.344 / 5000.0 / 60.0
     h['raw_resid'] = (h['p5k_min'] - h['p5k_cs_min']) * 60
     # Informational grouping only — corrections come from the hill model
@@ -686,7 +722,9 @@ def project_hill_continuous(cs, epoch):
     per_loop_climb = h['loop_elev_up'].fillna(0) + h['loop_elev_down'].fillna(0)
     h['minetti_factor'] = minetti_net_factor(per_loop_climb, h['loop_distance_m'])
     t_eff_corr = h['t_eff'] / h['minetti_factor']
-    t5k_corr = (5000 - h['dp_t']) * t_eff_corr / (h['d_m'] - h['dp_t'])
+    cs_imp_corr = cp3_implied_cs(h['d_m'], t_eff_corr, h['dp3_t'],
+                                 WORKOUT_VMAX_MPS)
+    t5k_corr = cp3_time(5000.0, cs_imp_corr, h['dp3_t'], WORKOUT_VMAX_MPS)
     h['p5k_min_hillcorr'] = t5k_corr * 1609.344 / 5000.0 / 60.0
     h['minetti_resid'] = (h['p5k_min_hillcorr'] - h['p5k_cs_min']) * 60
 
