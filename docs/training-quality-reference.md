@@ -125,12 +125,27 @@ sits next to CS without feeding back into it.
   displays right at PR pace); easy ones read honestly slow; era effort
   policy stays visible (modern medians +8 to +21, 2016–19 at +28 to
   +83). The model's PHYSICAL + STATE terms ARE always applied (Max,
-  June 2026): resid = raw − (elev + altitude + temp + race-fatigue
-  contributions) — verified, physically grounded effects, the same
-  family as the hills' Minetti term, and a template Max intends to test
-  on workouts next. Only the INTERCEPT (the long-run effort level,
-  ~+24 on the race-equivalent scale) is never subtracted — that's the
-  class constant that claimed long runs out-predict races. Long runs
+  June 2026): resid = raw − (elev + temp + race-fatigue contributions) —
+  verified, physically grounded effects, the same family as the hills'
+  Minetti term. Only the INTERCEPT (the long-run effort level,
+  ~+23 on the race-equivalent scale) is never subtracted — that's the
+  class constant that claimed long runs out-predict races. ALTITUDE was
+  removed from the model (June 2026): on the race-equivalent scale its
+  beta flipped sign (−0.47, "altitude makes you faster") — era/route
+  confounding again (Boulder-era runs are Boulder-era effort policy) —
+  and a cross-check on workouts found it honestly dead there (t = −0.2,
+  LOO-stable around zero), so there is no identified altitude effect
+  anywhere to pin from. The same-model-on-workouts spike (June 2026)
+  came back NULL across the board: temp +0.05 s/mi/°C (t = 0.7; +0.06
+  even restricted to sustained tempo/fartlek/hill efforts), race
+  fatigue −0.5 (t = −0.2, LOO sign-unstable), altitude −0.45 (t = −0.2)
+  — fit on 362 quality days with category intercepts, temps fully
+  populated. Quality days are environment/state-insensitive in this
+  corpus (effort compensates, and scheduling avoids hot/fatigued
+  states), unlike long runs (temp +0.37, strongly identified) and
+  recovery. So workouts and hills enter TQ with NO covariate
+  adjustment — not because it would be a class constant (it wouldn't),
+  but because nothing is identified to subtract. Long runs
   enter the smoother at that adjusted residual with a pooled scatter
   weight ((sd_ref/sd)², ~0.53) and ride the shared track-relative prune
   like every other category (the slow 2016 education-hill runs prune

@@ -245,7 +245,7 @@ def main():
     # MAD prune only robustifies its betas; exclusion from TQ rides the
     # shared track-relative prune below, like every other category.
     print(f'\n--- Long-run model (level NOT applied): raw_resid ~ '
-          f'elev/altitude + temp/fatigue ---')
+          f'elev + temp/fatigue ---')
     long_runs, lr_fit, _qualifying_routes = fit_long_run_model(long_runs)
     long_runs['model_adj'] = (long_runs['phys_contrib']
                               + long_runs['cov_contrib'])
