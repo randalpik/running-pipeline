@@ -1,47 +1,71 @@
-// Normalize toggle for the Long Runs plot.
+// Watch-correction + Normalize toggles for the Long Runs plot.
 //
-// One checkbox subtracts the TQ long-run model's covariate contributions
-// (temperature, marathon/short-race fatigue — betas fit on the long runs
-// themselves) from each point's pace. Per-point adjustments arrive
-// index-aligned with the markers trace via window.__PLOT_LR_NORM_ADJ
-// (sec/mi, positive = modeled slower than baseline, so normalizing moves
-// the point faster).
+// Watch correction swaps the markers' display base from logged values to
+// the watch-corrected ones (y = pace AND marker.color = distance gradient),
+// both carried index-aligned in the markers trace's meta (raw_y / corr_y /
+// raw_color / corr_color — built in plot_long_runs.py). Points without a
+// correction keep their logged values in the corr arrays' fallbacks.
 //
-// window.__lrNormOn mirrors the checkbox so the cursor-tooltip build_js
-// (which lives in plot_long_runs.py's payload, keyed by day) can show the
-// applied shift only while normalization is active.
+// Normalize subtracts the TQ long-run model's covariate contributions
+// (temperature, race fatigue) via window.__PLOT_LR_NORM_ADJ (sec/mi). It
+// stacks on top of whichever base the Watch toggle selects.
+//
+// The condition-tag halo rings are separate traces whose meta.idx maps
+// each ring point to its marker-trace position; their y is recomputed from
+// the same base so rings track the markers through both toggles. The rings
+// ship visible:false; the Show-tags checkbox flips their visibility (which
+// also shows/hides their legend entries).
+//
+// window.__lrWatchOn / window.__lrNormOn mirror the checkboxes so the
+// cursor-tooltip build_js (keyed by day in plot_long_runs.py's payload)
+// can render the matching variant.
 (function () {
   window.__lrNormOn = false;
+  window.__lrWatchOn = false;
   var ADJ = window.__PLOT_LR_NORM_ADJ;
-  var cb = document.querySelector('#lr-gradient input[data-lrnorm]');
-  if (!ADJ || !cb) return;
+  var normCb = document.querySelector('#lr-gradient input[data-lrnorm]');
+  var watchCb = document.querySelector('#lr-gradient input[data-lrwatch]');
+  var tagsCb = document.querySelector('#lr-gradient input[data-lrtags]');
+  if (!normCb && !watchCb && !tagsCb) return;
 
   function getPlot() { return document.querySelector('.plotly-graph-div'); }
-
-  function findTrace(plot) {
-    for (var i = 0; i < plot.data.length; i++) {
-      var t = plot.data[i];
-      if (t.meta && t.meta.role === 'long_runs') return i;
-    }
-    return -1;
-  }
 
   function update() {
     var plot = getPlot();
     if (!plot || !plot.data || !window.Plotly) { setTimeout(update, 100); return; }
-    var ti = findTrace(plot);
-    if (ti < 0) return;
-    var raw = plot.data[ti].meta.raw_y;
-    var on = cb.checked;
-    window.__lrNormOn = on;
-    var y = raw.slice();
-    if (on) {
-      for (var i = 0; i < y.length; i++) {
-        if (y[i] != null && ADJ[i] != null) y[i] = raw[i] - ADJ[i] / 60;
-      }
+    var main = -1, rings = [];
+    for (var i = 0; i < plot.data.length; i++) {
+      var m = plot.data[i].meta;
+      if (m && m.role === 'long_runs') main = i;
+      if (m && m.role === 'lr_ring') rings.push(i);
     }
-    Plotly.restyle(plot, { y: [y] }, [ti]);
+    if (main < 0) return;
+    var meta = plot.data[main].meta;
+    var watchOn = !!(watchCb && watchCb.checked);
+    var normOn = !!(normCb && normCb.checked);
+    window.__lrWatchOn = watchOn;
+    window.__lrNormOn = normOn;
+
+    var base = watchOn ? meta.corr_y : meta.raw_y;
+    var y = [];
+    for (var k = 0; k < meta.raw_y.length; k++) {
+      // corr_y is null where no correction exists — fall back to logged.
+      var v = (base[k] != null) ? base[k] : meta.raw_y[k];
+      if (v != null && normOn && ADJ && ADJ[k] != null) v = v - ADJ[k] / 60;
+      y.push(v);
+    }
+    var color = watchOn ? meta.corr_color : meta.raw_color;
+    Plotly.restyle(plot, { y: [y], 'marker.color': [color] }, [main]);
+    var tagsOn = !!(tagsCb && tagsCb.checked);
+    for (var rI = 0; rI < rings.length; rI++) {
+      var idx = plot.data[rings[rI]].meta.idx;
+      var ry = [];
+      for (var j = 0; j < idx.length; j++) ry.push(y[idx[j]]);
+      Plotly.restyle(plot, { y: [ry], visible: tagsOn }, [rings[rI]]);
+    }
   }
 
-  cb.addEventListener('change', update);
+  if (normCb) normCb.addEventListener('change', update);
+  if (watchCb) watchCb.addEventListener('change', update);
+  if (tagsCb) tagsCb.addEventListener('change', update);
 })();

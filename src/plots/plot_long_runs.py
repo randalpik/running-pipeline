@@ -2,10 +2,19 @@
 plot_long_runs.py — Qualitative "every long run" plot at absolute pace.
 
 Shows every `run_type == 'long'` session — including those outside the TQ
-model's [LONG_MIN_MINUTES, LONG_CEIL_MILES) slice — at absolute pace (no 5K-equivalent
-projection, no per-route correction). Two CS-derived reference curves give
-the equivalent half-marathon and marathon paces from the model: how fast a
+model's [LONG_MIN_MINUTES, LONG_CEIL_MILES) slice — at absolute pace (no
+5K-equivalent projection). Two CS-derived reference curves give the
+equivalent half-marathon and marathon paces from the model: how fast a
 given fitness predicts you could run those distances.
+
+Displayed values default to what was LOGGED. The Watch-correction toggle
+swaps distance and pace to the corrected values project_long_runs computed
+(calibrated watch measurements; route-era deflation for pre-watch mislogged
+routes). The Show-tags toggle (off by default — the distance gradient is
+the primary encoding) overlays halo rings: gray = watch-enriched, red =
+uncertain accuracy (rule-corrected, no watch data), amber = points the TQ
+fit's MAD prune excluded (tooltip carries the residual). Corrections are
+display/projection-side only — the log columns are never rewritten.
 
 Marker color encodes distance via a continuous lavender→deep-purple gradient,
 bracketed at the dataset's miles min/max.
@@ -28,8 +37,9 @@ from src.shared.long_run_model import (fit_long_run_model, load_quality_dates,
 from src.plotting import widgets
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box, route_paren,
-                            sec_to_mss, GRID, CAT_COLORS, CS_LINE, rgba,
-                            yearly_x_axis_kwargs, nice_time_ticks, marker_half_px)
+                            sec_to_mss, GRID, CAT_COLORS, CS_LINE, TAG_COLORS,
+                            rgba, yearly_x_axis_kwargs, nice_time_ticks,
+                            marker_half_px)
 
 # Width of the distance-gradient box (#lr-gradient); also used to size margin.r.
 # Holds a 160px gradient bar with 10px horizontal padding + 1px border per side.
@@ -60,15 +70,74 @@ def _y_safe(arr):
             else float(v) for v in arr]
 
 
-def long_run_hover(r):
+# Correction-tag halo rings — same construction (and 'enriched' gray) as the
+# Workouts plot's condition tags. Marker is 8px + 0.5px outline here: outer
+# edge 8/2 + 0.25 = 4.25px, 1px halo gap → inner stroke edge 5.25px →
+# size = 2 × (5.25 + 0.5) = 11.5.
+TAG_RING_SIZE  = 11.5
+TAG_RING_WIDTH = 1
+LR_TAG_LEGEND = {
+    'enriched':           'Watch-enriched',
+    'uncertain accuracy': 'Uncertain accuracy',
+    'outlier':            'Pruned outlier',
+}
+
+
+def lr_tag(r):
+    """Ring tag for a long run, or None. The TQ fit's MAD-pruned outliers
+    outrank the informational tags (the ring answers "why is this excluded");
+    'enriched' means the projection used calibrated watch values (the size
+    of the adjustment is visible via the Watch-correction toggle);
+    'uncertain accuracy' marks rule-corrected days with NO watch data (the
+    route-era ratio is a population estimate, not a measurement)."""
+    if r.get('tq_outlier'):
+        return 'outlier'
+    if r.get('lr_watch'):
+        return 'enriched'
+    if r.get('lr_rule'):
+        return 'uncertain accuracy'
+    return None
+
+
+LR_TAG_NOTE = {
+    'uncertain accuracy': 'Uncertain accuracy — known mislogged route',
+}
+
+
+def long_run_hover(r, watch_mode=False):
+    """Tooltip html for one long run. ``watch_mode`` renders the variant the
+    Watch-correction toggle shows: corrected figures lead, logged move to a
+    secondary line. Uncorrected rows render identically in both modes."""
     title = f"Long run{route_paren(r.get('display_name'), r.get('city_state'))}"
-    pace_sec = float(r['recovery_pace_sec_per_mi'])
-    parts = [
-        f"<b>{title}</b>",
-        f"{r['miles']:.1f} mi @ {sec_to_mss(pace_sec)}/mi",
-        f"<b>Temp:</b> {r['temp_c']:.0f}°C",
-    ]
-    return "<br>".join(parts)
+    logged = (f"{r['miles']:.1f} mi @ "
+              f"{sec_to_mss(float(r['recovery_pace_sec_per_mi']))}/mi")
+    has_corr = pd.notna(r.get('corr_miles'))
+    corr = (f"{r['corr_miles']:.1f} mi @ "
+            f"{sec_to_mss(float(r['corr_pace_sec_per_mi']))}/mi"
+            if has_corr else '')
+    pause = ''
+    if r.get('lr_watch') and pd.notna(r.get('pause_s')) and r['pause_s'] >= 30:
+        pause = f" · {sec_to_mss(float(r['pause_s']))} paused"
+    if watch_mode and has_corr:
+        main, alt = corr, f"<b>Logged:</b> {logged}{pause}"
+    elif has_corr:
+        main, alt = logged, f"<b>Corrected:</b> {corr}{pause}"
+    else:
+        main, alt = logged, ''
+    tag = lr_tag(r)
+    note = ''
+    if tag == 'outlier':
+        # Why Training's track-relative prune dropped it: the residual vs
+        # the surrounding smoother track.
+        note = (f'<i style="color:{TAG_COLORS["outlier"]}">Excluded from '
+                f'Training: outlier ({r["tq_vs_track"]:+.0f} s/mi vs '
+                f'track)</i>')
+    elif tag in LR_TAG_NOTE:
+        note = (f'<i style="color:{TAG_COLORS[tag]}">'
+                f'{LR_TAG_NOTE[tag]}</i>')
+    parts = [f"<b>{title}</b>", main, alt,
+             f"<b>Temp:</b> {r['temp_c']:.0f}°C", note]
+    return "<br>".join(p for p in parts if p)
 
 
 def main():
@@ -96,6 +165,11 @@ def main():
 
     pace_min = lr['recovery_pace_sec_per_mi'].astype(float) / 60.0
     miles    = lr['miles'].astype(float)
+    # Watch-corrected display values (NaN where no correction exists). The
+    # color fallback keeps the gradient continuous when the toggle is on.
+    corr_pace_min = lr['corr_pace_sec_per_mi'].astype(float) / 60.0
+    corr_miles    = lr['corr_miles'].astype(float).fillna(miles)
+    has_corr      = corr_pace_min.notna().any()
 
     # ---------- normalization (long-run-sourced covariates) ----------
     # Betas come from the TQ long-run model (same fit plot_training_quality
@@ -118,6 +192,22 @@ def main():
             if np.abs(adj).max() > 0.05:
                 norm_adj = adj
 
+    # Training's actual exclusions for the amber ring — the shared
+    # track-relative prune (written by plot_training_quality, which runs
+    # earlier in run_plots.sh), NOT the covariate fit above. The ring shows
+    # what Training really dropped, with the vs-track residual as the why.
+    lr['tq_outlier'] = False
+    lr['tq_vs_track'] = np.nan
+    excl_csv = DATA_DIR / 'training_quality_exclusions.csv'
+    if excl_csv.exists():
+        excl = pd.read_csv(excl_csv, parse_dates=['date'])
+        excl = excl[excl['src'] == 'long_run'].set_index('date')
+        hit = lr['date'].isin(excl.index)
+        if hit.any():
+            lr.loc[hit, 'tq_outlier'] = True
+            lr.loc[hit, 'tq_vs_track'] = excl.loc[
+                lr.loc[hit, 'date'], 'resid'].to_numpy()
+
     # ---------- figure ----------
     fig = go.Figure()
 
@@ -137,6 +227,8 @@ def main():
     ))
 
     # Long-run markers: single trace, continuous purple gradient by distance.
+    # meta carries both display bases (logged / watch-corrected y and color)
+    # so plot_long_runs.js can swap them without re-deriving anything.
     cd = [long_run_hover(r) for _, r in lr.iterrows()]
     fig.add_trace(go.Scatter(
         x=lr['date'], y=_y_safe(pace_min.values),
@@ -153,8 +245,37 @@ def main():
         hoverinfo='skip',
         meta={'role': 'long_runs',
               'snap_eligible': True,
-              'raw_y': _y_safe(pace_min.values)},
+              'raw_y': _y_safe(pace_min.values),
+              'corr_y': _y_safe(corr_pace_min.values),
+              'raw_color': [round(float(v), 2) for v in miles],
+              'corr_color': [round(float(v), 2) for v in corr_miles]},
     ))
+
+    # Condition-tag halo rings (same construction as the Workouts plot).
+    # meta.idx maps ring points back to marker-trace positions so the JS
+    # toggles can move the rings with the markers. Rings start HIDDEN — the
+    # distance gradient is this plot's primary encoding and the Show-tags
+    # checkbox opts into the overlay (visible=False also hides the legend
+    # entries until then).
+    tags = [lr_tag(r) for _, r in lr.iterrows()]
+    has_tags = any(t for t in tags)
+    dates = lr['date'].tolist()
+    raw_y_list = _y_safe(pace_min.values)
+    for tag, label in LR_TAG_LEGEND.items():
+        idx = [i for i, t in enumerate(tags) if t == tag]
+        if not idx:
+            continue
+        fig.add_trace(go.Scatter(
+            x=[dates[i] for i in idx], y=[raw_y_list[i] for i in idx],
+            mode='markers', name=f'{label} (n={len(idx)})',
+            visible=False,
+            marker=dict(symbol='circle', size=TAG_RING_SIZE,
+                        color='rgba(0,0,0,0)',
+                        line=dict(width=TAG_RING_WIDTH, color=TAG_COLORS[tag])),
+            hoverinfo='skip',
+            legendgroup='tags', legendgrouptitle_text='Tags',
+            meta={'role': 'lr_ring', 'idx': idx},
+        ))
 
     # ---------- layout ----------
     # Absolute pace axis (descending = faster up): closest 30s (0.5 min/mi)
@@ -165,6 +286,9 @@ def main():
         np.asarray(mar_pace_min, dtype=float),
         np.asarray(hm_pace_min, dtype=float),
         np.asarray(pace_min.values, dtype=float),
+        # Corrected paces are slower than logged; include them so the Watch
+        # correction toggle never pushes a point off-axis.
+        np.asarray(corr_pace_min.values, dtype=float),
     ])
     _ys = _ys[np.isfinite(_ys)]
     _lo, _hi = (float(_ys.min()), float(_ys.max())) if len(_ys) else (4.5, 8.5)
@@ -213,6 +337,26 @@ def main():
         f'font-size:10.5px;color:#aaa"><span>{miles_min_int}</span>'
         f'<span>{miles_max_int}</span></div>'
     )
+    watch_section = ''
+    if has_corr:
+        watch_section = (
+            widgets.divider()
+            + widgets.checkbox_rows([('watch', 'Watch correction')],
+                                    data_attr='lrwatch', checked=False)
+            + widgets.subtitle('Show corrected distance and pace: calibrated '
+                               'watch measurements, or the mislogged-route '
+                               'deflation where no watch data exists.')
+        )
+    tags_section = ''
+    if has_tags:
+        tags_section = (
+            widgets.divider()
+            + widgets.checkbox_rows([('tags', 'Show tags')],
+                                    data_attr='lrtags', checked=False)
+            + widgets.subtitle('Halo rings: watch-enriched, '
+                               'mislogged-route corrections, and points the '
+                               'Training fit pruned as outliers.')
+        )
     norm_section = ''
     if norm_adj is not None:
         norm_section = (
@@ -223,7 +367,8 @@ def main():
                                'recent-race effects (long-run-fit betas).')
         )
     overlay_html = widgets.sidebar(
-        'lr-gradient', body=gradient_bar + norm_section,
+        'lr-gradient',
+        body=gradient_bar + watch_section + norm_section + tags_section,
         compact=True, width_px=GRADIENT_BOX_WIDTH,
     )
     if norm_adj is not None:
@@ -246,6 +391,9 @@ def main():
     for i, (_, r) in enumerate(lr.iterrows()):
         s = {'day': int((r['date'] - js_epoch).days),
              'html': long_run_hover(r)}
+        if pd.notna(r.get('corr_miles')):
+            # Variant shown while the Watch-correction toggle is on.
+            s['whtml'] = long_run_hover(r, watch_mode=True)
         if norm_adj is not None:
             s['adj'] = round(float(norm_adj[i]), 1)
         sessions.append(s)
@@ -324,7 +472,13 @@ function buildTooltip(day, isSnap, pointHtml) {
                          :  dd2 + ' day' + (dd2 === -1 ? '' : 's'));
       html += '<div class="tt-section-title">Nearest long run [' + lbl + ']</div>';
     }
-    html += (isSnap && pointHtml ? pointHtml : run.html);
+    // Watch-correction toggle swaps in the corrected-variant html. Snap
+    // mode's pointHtml is the raw variant baked into customdata, so prefer
+    // the session lookup whenever the toggle is on and a variant exists.
+    var runHtml = run && window.__lrWatchOn && run.whtml ? run.whtml
+                : (run ? run.html : null);
+    html += (isSnap && pointHtml && !(run && window.__lrWatchOn && run.whtml)
+             ? pointHtml : runHtml);
     if (window.__lrNormOn && run && run.adj != null) {
       // Shift applied to the point by the Normalize toggle: y = raw − adj.
       // One decimal: adjustments are small (often < 5 s/mi), whole seconds

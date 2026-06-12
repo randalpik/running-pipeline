@@ -109,6 +109,84 @@ sits next to CS without feeding back into it.
   (pwr3, hj, 106th) the n>7 offset rule had to drop.)* Hill repeats
   remain categorically excluded (no per-rep distance is logged, so no
   pace can be recovered).
+- **Long runs carry NO model offset — race-equivalent projection only
+  (June 2026).** The long-run intercept+covariate model is GONE from TQ:
+  its constant (+48 at the end) was subtracted from every long run's
+  position and smoother contribution, which amounts to claiming a long
+  run predicts a faster 5K than a race at the same distance/pace —
+  physically indefensible, and the same class-constant design already
+  rejected for workouts. Instead `project_long_runs` projects each long
+  run AS IF IT WERE A RACE: time un-biased by the CS fit's β_long
+  (divide by 1 + β_long·log(d/d_thresh) for d > 10K, exactly the race
+  projection in cs_projection.py; β at the run's full distance — the
+  fade is total-work depletion a stoplight pause doesn't reset), then
+  through the hyperbola. The hardest long runs (true race-effort
+  simulations) land at/near CS on their own (the all-time fastest
+  displays right at PR pace); easy ones read honestly slow; era effort
+  policy stays visible (modern medians +8 to +21, 2016–19 at +28 to
+  +83). The model's PHYSICAL + STATE terms ARE always applied (Max,
+  June 2026): resid = raw − (elev + altitude + temp + race-fatigue
+  contributions) — verified, physically grounded effects, the same
+  family as the hills' Minetti term, and a template Max intends to test
+  on workouts next. Only the INTERCEPT (the long-run effort level,
+  ~+24 on the race-equivalent scale) is never subtracted — that's the
+  class constant that claimed long runs out-predict races. Long runs
+  enter the smoother at that adjusted residual with a pooled scatter
+  weight ((sd_ref/sd)², ~0.53) and ride the shared track-relative prune
+  like every other category (the slow 2016 education-hill runs prune
+  there naturally; the model's internal MAD prune only robustifies its
+  betas). The TQ sidebar table documents the applied terms. The
+  dashboard's familiar-route recency mean still uses raw_resid, and its
+  20-mi card re-applies β on the way back out (remove the fade going
+  in, restore it going out).
+- **Long-run watch reconciliation (June 2026).** Long runs were the last
+  slice projecting from raw logged values, and a cluster projected
+  *faster than any race ever run* (worst corrected residual −48.8). Root
+  cause: logged-distance inflation on the two Nashville staples until Max
+  re-measured them in April 2022 — log/watch distance ratio 1.09–1.17
+  there vs a tight 1.05 baseline everywhere else. Three fixes, owned by
+  `src/coros/long_runs.py` (artifacts `long_run_measured.csv`,
+  `long_run_calibration.csv`) and consumed in
+  `workouts.project_long_runs`:
+  - **Distance calibration** (the dominant fix): watch-covered days
+    project from `watch_mi·(1+slope) + intercept` — the profile's
+    logged-excess curve (`0.267 + 0.0350·mi` for Max; fixed endpoint/
+    turnaround slack + proportional GPS underread), MAD-prune-fit on the
+    paved recovery+long corpus (the prune ejects the mislogged days
+    without a manual list). Recovery and long runs sit on ONE curve —
+    long-run logging is not systematically worse than recovery logging.
+  - **True times**: watch moving seconds replace pace×miles (logged
+    times are minute-rounded down, median −32 s, and exclude pauses).
+  - **Pause-aware D_eff**: segments split at watch pauses/standstills
+    feed the same `exp(−rest/RECON_TAU_S)` connected accumulator as
+    enriched workouts (NO anaerobic g(d) — long-run segments are
+    aerobic). Median pause is ~15 min/run and D_eff frac ~0.59, but the
+    hyperbola is nearly flat at long-run distances so this is only
+    ~+1–3 s/mi; it's kept for correctness, not magnitude.
+  Pre-watch runs on the two staples (2018-01 → 2022-04-15) get a
+  route-era deflation instead (`MISLOGGED_LR_ROUTES`: belle meade 1.068,
+  greenway 1.056 — median logged-over-honest-logged inflation of each
+  route's watch-covered era). Watch enrichment wins over the rule.
+  Overread guard: enrichment may never make a run FASTER than logged —
+  the log is optimistic, never pessimistic, so a corrected pace below
+  the logged pace means the watch overread distance (loud GPS failures,
+  e.g. 2025-03-27's 24.4-mi reading of a 23.8-mi run); the calibrated
+  distance is clamped so the corrected pace floors at the logged pace.
+  Corrections are projection/display-side only — logged columns are
+  never rewritten; the Long Runs plot defaults to logged values with a
+  Watch-correction toggle and an opt-in Show-tags ring overlay
+  (gray = watch-enriched, red = rule-corrected without watch data,
+  amber = Training's track-relative prune exclusions, vs-track residual
+  in the tooltip). A "spurious log" >1σ ring was tried and killed
+  same-day: it hit more than half the watch-enriched corpus — an
+  arbitrary threshold, and the Watch-correction toggle already shows
+  each adjustment directly. Corrected rows stay IN the smoother —
+  corrected, never dropped. Combined with the race-equivalent
+  projection (previous bullet), no long run projects meaningfully past
+  CS anymore (pre-correction the worst claimed a 5K ~2 min faster than
+  the PR). Known softness: the 2018–19 rule extension may overcorrect
+  by ~10 s/mi (corrected rows sit slightly slower than untouched
+  same-era routes); era-specific factors are a possible refinement.
 
 ## Pipeline (April 2026)
 

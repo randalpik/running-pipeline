@@ -37,7 +37,9 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             yearly_x_axis_kwargs, nice_time_ticks,
                             nice_time_interval, time_ticks_at_interval)
 
-# Width of the route-betas box (#tq-routes); also used to size margin.r.
+# Right-rail width reserved next to the plot (sizes margin.r; the long-run
+# model table that used to live there is gone — the margin keeps the legend
+# clear of the plot area).
 ROUTES_BOX_WIDTH = 196
 
 _PLOTS_DIR = Path(__file__).resolve().parent
@@ -151,15 +153,43 @@ def workout_hover(r, single_type=False):
     return "<br>".join(p for p in parts if p)
 
 
+def lr_correction_line(r):
+    """Secondary descriptor for a watch/rule-corrected long run — same role
+    as the workouts' 'Watch:' measured_line. Empty string when the row is
+    uncorrected. The primary Distance/Pace line shows the corrected values
+    (what the projection consumed); this line keeps the logged figures
+    visible and says where the correction came from."""
+    logged = (f"logged {r['miles']:.1f}mi @ "
+              f"{sec_to_mss(r['recovery_pace_sec_per_mi'])}/mi")
+    if r.get('lr_watch'):
+        pause = ''
+        if pd.notna(r.get('pause_s')) and r['pause_s'] >= 30:
+            pause = f" · {sec_to_mss(r['pause_s'])} paused"
+        return f"<b>Watch:</b> {logged}{pause}"
+    if r.get('lr_rule'):
+        return f"<b>Mislogged route:</b> {logged}"
+    return ''
+
+
 def long_run_hover(r):
     title = f"Long{route_paren(r.get('display_name'), r.get('city_state'))}"
+    # Corrected rows lead with the corrected figures — those are what the
+    # P5K projection below consumed; the logged values move to the
+    # correction line.
+    if pd.notna(r.get('corr_miles')):
+        dist_pace = (f"<b>Distance:</b> {r['corr_miles']:.1f}mi   "
+                     f"<b>Pace:</b> {sec_to_mss(r['corr_pace_sec_per_mi'])}/mi")
+    else:
+        dist_pace = (f"<b>Distance:</b> {r['miles']:.1f}mi   "
+                     f"<b>Pace:</b> {sec_to_mss(r['recovery_pace_sec_per_mi'])}/mi")
     parts = [
         f"<b>{title}</b>",
-        f"<b>Distance:</b> {r['miles']:.1f}mi   "
-        f"<b>Pace:</b> {sec_to_mss(r['recovery_pace_sec_per_mi'])}/mi",
+        dist_pace,
+        lr_correction_line(r),
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
         f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
-        residual_line(r['raw_resid'], r['corrected']),
+        # Race-equivalent raw vs model-adjusted (phys+cov, level untouched).
+        residual_line(r['raw_resid'], r['resid']),
     ]
     return "<br>".join(p for p in parts if p)
 
@@ -203,35 +233,31 @@ def main():
     long_runs = long_runs[long_runs['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
     hills     = hills[hills['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
 
-    # Long-run model: fit raw_resid ~ C(bin) + C(route) on the in-slice set
-    # with iterative MAD-based outlier prune. Outliers are dropped from the
-    # figure entirely (not displayed); kept rows carry per-row model offset
-    # and corrected residual.
-    print(f'\n--- Long-run model: raw_resid ~ elev/altitude + temp/fatigue, '
-          f'iterative MAD prune (sigma={PRUNE_SIGMA}) ---')
-    long_runs, lr_fit, qualifying_routes = fit_long_run_model(long_runs)
-    n_in = len(long_runs)
-    n_out = int(long_runs['is_outlier'].sum())
-    print(f'  In-scope long runs: {n_in}  ({n_out} pruned as outliers)')
-    print(f'  Intercept (elev={lr_fit.elev_ref:.0f}ft/mi, sea level): '
-          f'{lr_fit.intercept:+6.2f}')
+    # Long-run model, WITHOUT its intercept (Max, June 2026): the projection
+    # itself is race-equivalent (β_long un-bias + watch/rule corrections in
+    # project_long_runs) and carries no class constant — but the model's
+    # physical terms (elevation, altitude) and covariates (temperature,
+    # race fatigue) are verified, physically grounded effects, the same
+    # family as the hills' Minetti correction, and are ALWAYS applied:
+    # resid = raw − (phys + cov). The intercept — the long-run effort level
+    # — is never subtracted; that constant would claim a long run
+    # out-predicts a race at the same distance/pace. The model's internal
+    # MAD prune only robustifies its betas; exclusion from TQ rides the
+    # shared track-relative prune below, like every other category.
+    print(f'\n--- Long-run model (level NOT applied): raw_resid ~ '
+          f'elev/altitude + temp/fatigue ---')
+    long_runs, lr_fit, _qualifying_routes = fit_long_run_model(long_runs)
+    long_runs['model_adj'] = (long_runs['phys_contrib']
+                              + long_runs['cov_contrib'])
+    print(f'  In-scope long runs: {len(long_runs)}')
+    print(f'  Intercept (fit, NOT subtracted): {lr_fit.intercept:+6.2f}')
     for c, b in lr_fit.phys_coefs.items():
         tag = ' (pinned)' if c == 'elev_pm_c' else ''
         print(f'  Phys {c:<16} beta={b:+6.2f}{tag}')
     for c, b in lr_fit.cov_coefs.items():
         print(f'  Cov {c:<16} beta={b:+6.2f}')
-    print(f'  R^2 = {lr_fit.rsquared:.3f}   resid SD = {lr_fit.resid_sd:.2f} sec/mi   '
-          f'(n_kept = {lr_fit.n_kept})')
-    if n_out:
-        print('  Outlier rows pruned:')
-        for _, row in long_runs[long_runs['is_outlier']].iterrows():
-            print(f'    LR {row["date"].date()}  route={row["route"]:<22}  '
-                  f'raw={row["raw_resid"]:+6.1f}  corrected={row["corrected"]:+6.1f}  '
-                  f'miles={row["miles"]:.1f}')
-
-    # Drop pruned long runs from the working frame — they don't contribute to
-    # the smoother and aren't rendered.
-    long_runs = long_runs[~long_runs['is_outlier']].copy()
+    print(f'  R^2 = {lr_fit.rsquared:.3f}   resid SD = {lr_fit.resid_sd:.2f} '
+          f'sec/mi   (n_kept = {lr_fit.n_kept})')
 
     # Hill correction: pinned Minetti net gain cost (already applied in
     # project_hill_continuous as minetti_resid) + ONE fitted trail term
@@ -274,26 +300,30 @@ def main():
     # value at its date, drop the slow side beyond median+PRUNE_SIGMA*MAD of
     # the detrended residuals, refit. Era effort policy stays in (a soft
     # 2016 tempo sits near the soft 2016 track and survives); a session that
-    # sticks out from its own surroundings goes. Long runs contribute to the
-    # track but were already pruned by their own model.
+    # sticks out from its own surroundings goes.
     workouts = workouts.copy()
-    rep_w = hill_w = 1.0
+    rep_w = hill_w = lr_w = 1.0
     thr = float('nan')
-    pruned_w_idx, pruned_h_idx = set(), set()
+    pruned_w_idx, pruned_h_idx, pruned_lr_idx = set(), set(), set()
     print(f'\n--- Track-relative prune (one-sided, '
           f'median+{PRUNE_SIGMA}*MAD on detrended residuals) ---')
     for it in range(12):
         w_keep = workouts.drop(index=list(pruned_w_idx)).copy()
         h_keep = hills.drop(index=list(pruned_h_idx)).copy()
+        lr_keep = long_runs.drop(index=list(pruned_lr_idx)).copy()
         # No class constants anywhere: every point on this graph AND the
         # Workouts tab is the same number — the best attempt at predicting
         # 5K race pace from that session (Max's contract). Workouts enter
-        # raw; hills enter Minetti+trail-corrected raw.
+        # raw; hills enter Minetti+trail-corrected raw; long runs enter
+        # race-equivalent raw (β_long in project_long_runs) minus the
+        # long-run model's physical+covariate terms, level untouched.
         w_keep['resid'] = w_keep['raw_resid']
         h_keep['resid'] = h_keep['corrected']
+        lr_keep['resid'] = lr_keep['raw_resid'] - lr_keep['model_adj']
 
-        # Scatter weights (reps and hills are noisier CS signals; same
-        # (sd_ref/sd)^2 construction as always), recomputed on survivors.
+        # Scatter weights (reps, hills, and long runs are noisier CS
+        # signals; same (sd_ref/sd)^2 construction as always), recomputed
+        # on survivors.
         rep_mask = w_keep['category'] == 'rep'
         sd_ref = w_keep.loc[~rep_mask, 'resid'].std()
         rep_w = 1.0
@@ -307,11 +337,16 @@ def main():
             sd_hill = h_keep['resid'].std()
             if sd_hill and sd_hill > 0 and sd_ref and sd_ref > 0:
                 hill_w = float(np.clip((sd_ref / sd_hill) ** 2, 0.1, 1.0))
+        lr_w = 1.0
+        if len(lr_keep):
+            sd_lr = lr_keep['resid'].std()
+            if sd_lr and sd_lr > 0 and sd_ref and sd_ref > 0:
+                lr_w = float(np.clip((sd_ref / sd_lr) ** 2, 0.1, 1.0))
 
         combined = pd.concat([
             w_keep[['date', 'resid', 'weight']].assign(src='w', orig=w_keep.index),
-            long_runs[['date', 'corrected']].rename(columns={'corrected': 'resid'})
-                .assign(weight=1.0, src='lr', orig=long_runs.index),
+            lr_keep[['date', 'resid']].assign(weight=lr_w, src='lr',
+                                              orig=lr_keep.index),
             h_keep[['date', 'resid']].assign(weight=hill_w, src='h',
                                              orig=h_keep.index),
         ], ignore_index=True).sort_values('date').reset_index(drop=True)
@@ -336,11 +371,10 @@ def main():
             break
         track_at = np.interp(ds, grid_days[finite], smoothed[finite])
         detrended = res - track_at
-        prunable = (combined['src'] != 'lr').to_numpy()
-        vals = detrended[prunable]
+        vals = detrended
         med = float(np.median(vals))
         thr = med + PRUNE_SIGMA * 1.4826 * float(np.median(np.abs(vals - med)))
-        over = prunable & (detrended > thr)
+        over = detrended > thr
         if not over.any():
             print(f'  Iteration {it+1}: stable (thr +{thr:.1f} vs track). Done.')
             break
@@ -356,6 +390,15 @@ def main():
                 print(f'    W  {r["date"].date()}  {r["category"]:<20} '
                       f'vs-track={detrended[pos]:+5.1f}  raw={r["raw_resid"]:+5.1f}  '
                       f'pace={int(r["pace_per_mile"])}s/mi')
+            elif row['src'] == 'lr':
+                r = long_runs.loc[row['orig']]
+                pruned_lr_idx.add(row['orig'])
+                tq_excluded.append({'date': r['date'], 'reason': 'outlier',
+                                    'resid': round(float(detrended[pos]), 1),
+                                    'src': 'long_run'})
+                print(f'    LR {r["date"].date()}  {r["location"]:<20} '
+                      f'vs-track={detrended[pos]:+5.1f}  raw={r["raw_resid"]:+5.1f}  '
+                      f'miles={r["miles"]:.1f}')
             else:
                 r = hills.loc[row['orig']]
                 pruned_h_idx.add(row['orig'])
@@ -367,7 +410,9 @@ def main():
 
     workouts = workouts.drop(index=list(pruned_w_idx)).copy()
     hills = hills.drop(index=list(pruned_h_idx)).copy()
+    long_runs = long_runs.drop(index=list(pruned_lr_idx)).copy()
     workouts['resid'] = workouts['raw_resid']
+    long_runs['resid'] = long_runs['raw_resid'] - long_runs['model_adj']
     rep_mask = workouts['category'] == 'rep'
     workouts['weight'] = np.where(rep_mask, rep_w, 1.0)
     if len(hills):
@@ -377,7 +422,8 @@ def main():
 
     print(f'\nKept: {len(workouts)} workouts, {len(long_runs)} long runs, '
           f'{len(hills)} hills')
-    print(f'  Reps scatter-weight {rep_w:.2f}; hills pooled weight {hill_w:.2f}')
+    print(f'  Reps scatter-weight {rep_w:.2f}; hills pooled weight {hill_w:.2f}; '
+          f'long runs pooled weight {lr_w:.2f}')
     print('Per-category median resid (diagnostic only — effort policy, '
           'NOT corrected):')
     for c, g in workouts.groupby('category')['resid']:
@@ -438,11 +484,11 @@ def main():
     # Position each session at CS-implied + corrected residual.
     # `pos_min` is the raw min/mi position (CS line + residual/60), `pos_norm`
     # is the residual in sec/mi used when the "Normalize to CS" toggle is on.
-    workouts['pos_min']  = workouts['p5k_cs_min']  + workouts['resid']     / 60.0
-    long_runs['pos_min'] = long_runs['p5k_cs_min'] + long_runs['corrected'] / 60.0
-    hills['pos_min']     = hills['p5k_cs_min']     + hills['resid']        / 60.0
+    workouts['pos_min']  = workouts['p5k_cs_min']  + workouts['resid']  / 60.0
+    long_runs['pos_min'] = long_runs['p5k_cs_min'] + long_runs['resid'] / 60.0
+    hills['pos_min']     = hills['p5k_cs_min']     + hills['resid']     / 60.0
     workouts['pos_norm']  = workouts['resid']
-    long_runs['pos_norm'] = long_runs['corrected']
+    long_runs['pos_norm'] = long_runs['resid']
     hills['pos_norm']     = hills['resid']
 
     # ---------- build figure ----------
@@ -762,10 +808,9 @@ function buildTooltip(day, isSnap, pointHtml) {
         '<input type="checkbox" id="tq-norm-cb" checked> Normalize to CS'
         '</label></div>'
     )
-    # Long-run model coefficients (physical route terms + covariates) —
-    # replaces the former per-route beta table (route dummies were
-    # era-confounded; see long_run_model docstring). Distance carries no
-    # term (June 2026 sweep).
+    # Long-run model terms actually subtracted from long-run points
+    # (physical + covariate; the intercept/level is fit but NEVER applied —
+    # see the model block in main). Documents the always-on adjustment.
     model_rows = []
     if 'elev_pm_c' in lr_fit.phys_coefs:
         model_rows.append((f'elev, per ft/mi (ref {lr_fit.elev_ref:.0f})',
@@ -777,25 +822,27 @@ function buildTooltip(day, isSnap, pointHtml) {
         model_rows += [
             ('temp, per °C (ref 12)',
              f'{lr_fit.cov_coefs["temp_centered"]:+.2f}'),
-            (f'marathon fatigue, peak',
+            ('marathon fatigue, peak',
              f'{lr_fit.cov_coefs["fat_marathon"]:+.1f}'),
             ('short-race fatigue, peak',
              f'{lr_fit.cov_coefs["fat_race_short"]:+.1f}'),
         ]
-    routes_panel = widgets.sidebar(
-        'tq-routes',
-        body=(
-            widgets.title('Long-run model (sec/mi)')
-            + widgets.subtitle(
-                f'intercept {lr_fit.intercept:+.1f} at '
-                f'{lr_fit.elev_ref:.0f} ft/mi, sea level; '
-                f'marathon fatigue pinned at {lr_fit.fatigue_ratio:.2f}× short race')
-            + widgets.table(('Term', 'β'), model_rows,
-                            align=('left', 'right'))
-        ),
-        compact=True,
-        width_px=ROUTES_BOX_WIDTH,
-    )
+    routes_panel = ''
+    if model_rows:
+        routes_panel = widgets.sidebar(
+            'tq-routes',
+            body=(
+                widgets.title('Long-run adjustments (sec/mi)')
+                + widgets.subtitle(
+                    'Physical + state terms subtracted from long runs; '
+                    'the effort level (intercept '
+                    f'{lr_fit.intercept:+.0f}) is never applied.')
+                + widgets.table(('Term', 'β'), model_rows,
+                                align=('left', 'right'))
+            ),
+            compact=True,
+            width_px=ROUTES_BOX_WIDTH,
+        )
     overlay_html = (
         widgets.js_globals({'AXIS_RAW': axis_raw, 'AXIS_NORM': axis_norm})
         + '\n' + norm_toggle_html + '\n' + routes_panel

@@ -124,6 +124,112 @@ def g_anaerobic(d_m):
 LONG_MIN_MINUTES = 80.0
 LONG_CEIL_MILES  = 26.2
 
+# ---------- long-run watch enrichment ----------
+LR_MEASURED_PATH = DATA_DIR / 'long_run_measured.csv'
+LR_CAL_PATH      = DATA_DIR / 'long_run_calibration.csv'
+
+# Route-era mislogged-distance rules (Max-specific carve-out, June 2026 —
+# same precedent as the race plots' handdrawn curve: hand-derived knowledge
+# the data can't reconstruct). The two Nashville long-run staples were
+# logged with inflated distances until Max re-measured them in April 2022
+# (the log snaps to a constant 17.6 / 20.7 mi at the baseline log/watch
+# ratio from 2022-04-28 / 2022-05-13 on). Factors are the median
+# logged-over-honest-logged inflation across the routes' pre-2022-04-15
+# watch-covered runs (honest = watch distance through the profile's
+# calibration curve): belle meade 1.068 (n=18), greenway 1.056 (n=11).
+# Applied per Max's call back to 2018 — the era's pre-watch runs on these
+# routes top the residual charts the same way. Watch enrichment, when
+# present, wins over the rule (it measures the actual day; the rule is the
+# route-era median).
+MISLOGGED_LR_ROUTES = (
+    ('belle meade', '2018-01-01', '2022-04-15', 1.068),
+    ('greenway',    '2018-01-01', '2022-04-15', 1.056),
+)
+
+
+def _load_lr_calibration():
+    """(intercept_mi, slope) of the profile's log-vs-watch distance curve,
+    or None when the artifact is absent (no watch corpus)."""
+    if not LR_CAL_PATH.exists():
+        return None
+    cal = pd.read_csv(LR_CAL_PATH)
+    if cal.empty:
+        return None
+    r = cal.iloc[0]
+    return float(r['intercept_mi']), float(r['slope'])
+
+
+def _lr_watch_corrections(lr):
+    """Watch/rule corrections for long-run rows (see long_run_measured /
+    MISLOGGED_LR_ROUTES). Adds, NaN/False where not applicable:
+
+      lr_watch     : watch-enriched (measured, complete, calibration present)
+      lr_rule      : corrected via a route-era mislogged-distance rule
+      corr_miles, corr_time_s, corr_pace_sec_per_mi : corrected values on
+                     the honest-log scale (distance = watch through the
+                     calibration curve + watch moving time; rule days keep
+                     the logged time over the deflated distance)
+      d_eff_m      : pause-aware connected-fatigue effective distance
+                     (watch days only; rule days have no pause structure)
+      watch_miles, watch_moving_s, pause_s, stall_s, n_segs : raw watch
+                     measurements for hover lines (watch days only)
+
+    The logged columns (miles, recovery_pace_sec_per_mi) are never touched —
+    what Max logged stays what the plots show by default."""
+    lr = lr.copy()
+    lr['lr_watch'] = False
+    lr['lr_rule'] = False
+    for col in ('corr_miles', 'corr_time_s', 'corr_pace_sec_per_mi', 'd_eff_m',
+                'watch_miles', 'watch_moving_s', 'pause_s', 'stall_s', 'n_segs'):
+        lr[col] = np.nan
+
+    cal = _load_lr_calibration()
+    if cal is not None and LR_MEASURED_PATH.exists():
+        c, m = cal
+        meas = pd.read_csv(LR_MEASURED_PATH, parse_dates=['date'])
+        meas = meas[meas['complete']].set_index('date')
+        hit = lr['date'].isin(meas.index)
+        if hit.any():
+            sub = meas.loc[lr.loc[hit, 'date']]
+            corr_mi = (sub['watch_miles'] * (1 + m) + c).to_numpy()
+            mov_s = sub['watch_moving_s'].to_numpy()
+            # Overread guard (Max, June 2026): enrichment may never make a
+            # run FASTER than it was logged. The log can be optimistic but
+            # never pessimistic, so a corrected pace below the logged pace
+            # means the watch overread distance (loud GPS failures — e.g.
+            # 2025-03-27, corrected 24.4 mi vs 23.8 logged). Clamp the
+            # calibrated distance so the corrected pace floors at the
+            # logged pace; for the many sub-s/mi violations this is the
+            # calibration curve's noise floor and the clamp is a no-op in
+            # all but the impossible direction.
+            qp = lr.loc[hit, 'recovery_pace_sec_per_mi'].to_numpy(float)
+            corr_mi = np.minimum(corr_mi, mov_s / qp)
+            lr.loc[hit, 'lr_watch'] = True
+            lr.loc[hit, 'corr_miles'] = corr_mi
+            lr.loc[hit, 'corr_time_s'] = mov_s
+            lr.loc[hit, 'corr_pace_sec_per_mi'] = mov_s / corr_mi
+            lr.loc[hit, 'd_eff_m'] = (sub['d_eff_frac'].to_numpy()
+                                      * corr_mi * 1609.344)
+            for col in ('watch_miles', 'watch_moving_s', 'pause_s',
+                        'stall_s', 'n_segs'):
+                lr.loc[hit, col] = sub[col].to_numpy()
+
+    loc = lr['location'].astype(str).str.strip().str.lower()
+    for route, start, end, factor in MISLOGGED_LR_ROUTES:
+        rule = (~lr['lr_watch'] & (loc == route)
+                & (lr['date'] >= pd.Timestamp(start))
+                & (lr['date'] < pd.Timestamp(end)))
+        if not rule.any():
+            continue
+        corr_mi = lr.loc[rule, 'miles'] / factor
+        t_log = (lr.loc[rule, 'recovery_pace_sec_per_mi']
+                 * lr.loc[rule, 'miles'])
+        lr.loc[rule, 'lr_rule'] = True
+        lr.loc[rule, 'corr_miles'] = corr_mi
+        lr.loc[rule, 'corr_time_s'] = t_log
+        lr.loc[rule, 'corr_pace_sec_per_mi'] = t_log / corr_mi
+    return lr
+
 # ---------- CS basis ----------
 def load_cs():
     """Load bayes_cs_summary.csv and derive the CS-implied 5K pace per day.
@@ -330,11 +436,44 @@ def project_workouts(cs, epoch):
 
 
 # ---------- long runs ----------
+def _load_beta_long():
+    """(beta_long, d_thresh_long) from the profile's bayes_cs_params.csv —
+    the same long-distance fade the race plots un-bias with. Falls back to
+    (0, 10000) when the params artifact is absent (no CS fit yet)."""
+    path = DATA_DIR / 'bayes_cs_params.csv'
+    if not path.exists():
+        return 0.0, 10000.0
+    p = pd.read_csv(path)
+    return (float(p['beta_long_med'].iloc[0]),
+            float(p['d_thresh_long'].iloc[0]))
+
+
 def project_long_runs(cs, epoch):
     """Return ALL `run_type == 'long'` rows with absolute pace + 5K-equiv
     projection + `excluded_reason` flag. No filtering by miles or snow.
     Rows missing recovery_pace_sec_per_mi or miles are dropped (no
     decomposable signal).
+
+    The projection treats the run AS IF IT WERE A RACE of that distance
+    (Max's contract, June 2026): time is un-biased by the CS fit's
+    long-distance fade — divide by 1 + β_long·log(d/d_thresh) for
+    d > d_thresh, exactly what cs_projection does for HM/marathon races —
+    then projected through the hyperbola. No fitted offset of any kind:
+    the former long-run model intercept (a constant ~+48 subtracted from
+    every run) claimed a long run predicts a faster 5K than a race at the
+    same distance/pace, which is physically indefensible. With β_long the
+    hardest long runs (true race-effort simulations) project at/near CS on
+    their own, and easy ones honestly slow.
+
+    Watch-enriched and route-rule-corrected rows (see _lr_watch_corrections)
+    feed the projection their corrected distance/time and, for watch days, a
+    pause-aware connected-fatigue D_eff — so p5k_min/raw_resid (and every
+    downstream consumer: the TQ smoother, the dashboard's long-run
+    prediction) are correction-aware. β uses the run's full corrected
+    distance, not D_eff: the fade is total-work/glycogen depletion, which
+    a stoplight pause doesn't reset. The slice gate stays on LOGGED values:
+    the 26.2 ceiling is a logging convention (training marathons are logged
+    as exactly 26.2) and corrections never move a run across either bound.
     """
     d = pd.read_csv(DAILY_PATH, parse_dates=['date'])
     lr = d[d['run_type'] == 'long'].copy().dropna(subset=['recovery_pace_sec_per_mi', 'miles'])
@@ -350,9 +489,27 @@ def project_long_runs(cs, epoch):
     lr.loc[snow_w | snow_c, 'excluded_reason'] = 'snow'
 
     lr = add_cs(lr, cs, epoch)
-    lr['t_run']    = lr['recovery_pace_sec_per_mi'] * lr['miles']
-    lr['d_m']      = lr['miles'] * 1609.344
-    lr['t_5k_hyp'] = (5000 - lr['dp_t']) * lr['t_run'] / (lr['d_m'] - lr['dp_t'])
+    lr = _lr_watch_corrections(lr)
+    lr['t_run'] = np.where(lr['corr_time_s'].notna(), lr['corr_time_s'],
+                           lr['recovery_pace_sec_per_mi'] * lr['miles'])
+    lr['d_m']   = np.where(lr['corr_miles'].notna(),
+                           lr['corr_miles'] * 1609.344,
+                           lr['miles'] * 1609.344)
+    # Connected D_eff (watch days; full distance elsewhere) enters the
+    # hyperbola the same way enriched workouts do: t_eff = D_eff / v with v
+    # the run's mean moving speed. At long-run distances the hyperbola is
+    # nearly flat in D_eff so this is a small, one-directional refinement
+    # (~+1-3 s/mi) — the distance calibration does the heavy lifting.
+    d_eff = np.where(lr['d_eff_m'].notna(), lr['d_eff_m'], lr['d_m'])
+    t_eff = d_eff / (lr['d_m'] / lr['t_run'])
+    # Race-equivalent un-bias (see docstring): β at the run's full distance.
+    beta_long, d_thresh = _load_beta_long()
+    beta = np.where(lr['d_m'] > d_thresh,
+                    1.0 + beta_long * np.log(np.maximum(lr['d_m'], d_thresh)
+                                             / d_thresh),
+                    1.0)
+    t_eff = t_eff / beta
+    lr['t_5k_hyp'] = (5000 - lr['dp_t']) * t_eff / (d_eff - lr['dp_t'])
     lr['p5k_min']  = lr['t_5k_hyp'] * 1609.344 / 5000.0 / 60.0
     lr['raw_resid'] = (lr['p5k_min'] - lr['p5k_cs_min']) * 60
     return lr

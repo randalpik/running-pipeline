@@ -386,7 +386,8 @@ def _long_run_residual(lr_in_aug):
     return float((w * keep['raw_resid']).sum() / w.sum())
 
 
-def compute_workout_predictions(daily_summary, lr_in_aug):
+def compute_workout_predictions(daily_summary, lr_in_aug,
+                                beta_long=0.0, d_thresh=10000.0):
     latest = daily_summary.iloc[-1]
     cs_mps = float(latest['cs_mps_med'])
     dp = float(latest['dp_med'])
@@ -411,7 +412,11 @@ def compute_workout_predictions(daily_summary, lr_in_aug):
 
     # --- Long runs: recency-weighted mean raw_resid over familiar-route,
     #     non-pruned long runs. Treat it as the expected 5K-equivalent pace
-    #     residual; project from CS to the card's distance.
+    #     residual; project from CS to the card's distance. raw_resid is the
+    #     race-equivalent projection (β_long un-biased going in), so the
+    #     round trip back to a long-run PACE must re-apply β at the card's
+    #     distance — otherwise the fade we removed going in stays removed
+    #     and the predicted pace reads too fast.
     lr_resid = _long_run_residual(lr_in_aug)
 
     def project_long(miles, resid_sec_per_mi):
@@ -419,7 +424,7 @@ def compute_workout_predictions(daily_summary, lr_in_aug):
         p5k_pred_sec = p5k_cs_sec + resid_sec_per_mi
         t_5k_pred_sec = p5k_pred_sec * 5000.0 / 1609.344
         cs_mps_lr = (5000.0 - dp) / t_5k_pred_sec
-        t_d = (d - dp) / cs_mps_lr
+        t_d = (d - dp) / cs_mps_lr * _beta_factor(d, beta_long, d_thresh)
         return t_d * 1609.344 / d
 
     pace_long = (project_long(LR_PRED_MILES, lr_resid)
@@ -629,7 +634,8 @@ def main():
     stats = compute_stats(daily, races, now_utc)
     prs = compute_prs(races)
     race_preds = compute_race_predictions(daily_summary, beta_long, d_thresh)
-    workout_preds = compute_workout_predictions(daily_summary, lr_in_aug)
+    workout_preds = compute_workout_predictions(daily_summary, lr_in_aug,
+                                                beta_long, d_thresh)
 
     snapshot_path = DATA_DIR / 'drive_snapshot.csv'
     # Anchor the timestamp in UTC at build time. The dashboard JS hydrates

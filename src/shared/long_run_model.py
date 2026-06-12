@@ -52,10 +52,20 @@ here. ``cov_coefs`` still exposes per-category ``fat_marathon`` /
 ``fat_race_short`` keys (the ratio-expanded scale) so downstream consumers
 (``transferable_contributions``, the TQ sidebar) see the familiar shape.
 
-Lifted out of ``src/plots/plot_training_quality.py`` so both the Training
-plot and the Dashboard tab can import the same fit without one having to
-import the other (which would drag plot-rendering imports into the
-dashboard's no-Plotly path).
+ROLE CHANGED (June 2026): the INTERCEPT is display-dead. Long runs enter
+TQ at their race-equivalent raw residual (``project_long_runs`` applies
+the CS fit's β_long un-bias) minus this model's PHYSICAL + COVARIATE
+contributions only (``phys_contrib + cov_contrib`` — verified, physically
+grounded, always applied; Max intends to test the same template on
+workouts). The intercept/level is fit (it centers the regressors and
+robustifies the prune) but NEVER subtracted from any 5K-equivalent
+position — a constant subtracted from every long run claims a long run
+out-predicts a race at the same distance/pace, which is physically
+indefensible (Max's no-class-constants contract). Long-run TQ pruning
+rides the shared track-relative prune; this fit's internal MAD prune only
+robustifies its betas. Other consumers: the Long Runs plot's Normalize
+toggle (covariate betas) and the Dashboard's familiar-route
+recency-weighted residual (``route`` labels + ``is_outlier``).
 """
 from __future__ import annotations
 
