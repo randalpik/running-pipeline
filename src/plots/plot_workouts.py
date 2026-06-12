@@ -32,13 +32,14 @@ from src.shared.workouts import (
 )
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             sec_to_mss, fmt_min, route_paren, CAT_COLORS, GRID,
-                            CS_LINE, SURFACES, yearly_x_axis_kwargs, nice_time_ticks)
+                            CS_LINE, TAG_COLORS, yearly_x_axis_kwargs,
+                            nice_time_ticks)
 
 
 OUTPUT_DIR.mkdir(exist_ok=True)
 OUT_HTML    = str(OUTPUT_DIR / 'workouts.html')
 TRACK_CSV   = DATA_DIR / 'training_quality_track.csv'
-OFFSETS_CSV = DATA_DIR / 'training_quality_offsets.csv'
+HILL_MODEL_CSV = DATA_DIR / 'hill_model.csv'
 
 
 CAT_LABEL = {
@@ -50,8 +51,47 @@ CAT_LABEL = {
     'hill_rep':           'Hill repeats',
 }
 
-HILL_CONT_COLOR = CAT_COLORS['hill_lc']
+HILL_CONT_COLOR = CAT_COLORS['hill_cont']
 HILL_REP_COLOR  = CAT_COLORS['hill_rep']
+
+# Condition-tag rings: tagged sessions get a colored halo ring (TAG_COLORS)
+# drawn as a per-tag overlay trace — same construction as the race plots'
+# PR ring, but sized to float OUTSIDE the 7px marker (visible gap) so it
+# pops on the dark background. Each tag gets its own legend entry. Ring
+# color matches the tag's tooltip text color.
+# Exactly a 1px halo gap: marker outer edge = 7/2 + 0.5/2 outline = 3.75px;
+# the 1px ring stroke straddles the size boundary, so inner stroke edge
+# 3.75 + 1 = 4.75px → size = 2 * (4.75 + 0.5) = 10.5.
+TAG_RING_SIZE  = 10.5
+TAG_RING_WIDTH = 1     # the halo offset does the work; thin stroke suffices
+TAG_LEGEND = {
+    'uncertain accuracy': 'Uncertain accuracy',
+    'snow':               'Snow',
+    'xc':                 'XC-corrected',
+}
+
+
+def session_tag(r):
+    """TAG_COLORS key for a session, or None when untagged. Exclusion tags
+    win over the XC ring — XC green marks sessions that are XC-corrected
+    AND kept in Training."""
+    er = r.get('excluded_reason')
+    if er == 'uncertain accuracy':
+        return 'uncertain accuracy'
+    if er == 'snow':
+        return 'snow'
+    if r.get('xc_corrected') and not isinstance(er, str):
+        return 'xc'
+    return None
+
+
+def collect_ring_points(ring_pts, df, ycol):
+    """Append each tagged session's (date, y) to its tag's ring-point list."""
+    for _, r in df.iterrows():
+        tag = session_tag(r)
+        if tag and pd.notna(r[ycol]):
+            ring_pts[tag][0].append(r['date'])
+            ring_pts[tag][1].append(float(r[ycol]))
 
 
 def _y_safe(arr):
@@ -66,7 +106,7 @@ def workout_hover(r, single_type=False):
     label = 'Workout' if single_type else CAT_LABEL.get(cat, cat)
     title = f"<b>{label}</b>"
     title += route_paren(r.get('display_name'), r.get('city_state'))
-    xc_note = f' <span style="color:{SURFACES["XC"]}">(XC-corrected)</span>' if r.get('xc_corrected') else ''
+    xc_note = f' <span style="color:{TAG_COLORS["xc"]}">(XC-corrected)</span>' if r.get('xc_corrected') else ''
     rep_count = int(r['rep_count'])
     rep_dist = int(r['rep_dist'])
     structure = r.get('structure')
@@ -89,7 +129,17 @@ def workout_hover(r, single_type=False):
                 f"<b>CS 5K:</b> {fmt_min(r['p5k_cs_min'])}/mi")
     temp_line = f"<b>Temp:</b> {r['temp_c']:.0f}°C"
     parts = [f"{title}{xc_note}", body, temp_line, p5k_line]
+    excl = r.get('tq_excluded_line')
+    if isinstance(excl, str) and excl:
+        parts.append(excl)
     return "<br>".join(parts)
+
+
+def excluded_line(note, reason=None):
+    """Italic 'Excluded from Training' tooltip tag. Ringed tags (uncertain
+    accuracy, snow) take their ring color; other reasons stay amber."""
+    color = TAG_COLORS.get(reason, '#E8A33C')
+    return f'<i style="color:{color}">Excluded from Training: {note}</i>'
 
 
 def hill_cont_hover(r):
@@ -98,15 +148,21 @@ def hill_cont_hover(r):
     nreps = int(r['nreps'])
     loops_word = 'loop' if nreps == 1 else 'loops'
     ft_gained = int(round(float(r.get('ft_gained') or 0)))
+    body = (f"{nreps} {loops_word}, {int(r['session_min'])} min total"
+            + (f", {ft_gained} ft gained" if ft_gained else ''))
+    measured = r.get('hill_measured_line')
+    if isinstance(measured, str) and measured:
+        body += f"<br>{measured}"
     parts = [
         title,
-        f"{nreps} {loops_word}, {int(r['session_min'])} min total"
-        + (f", {ft_gained} ft gained" if ft_gained else ''),
+        body,
         f"<b>Temp:</b> {r['temp_c']:.0f}°C",
         f"<b>Actual pace:</b> {sec_to_mss(r['actual_pace_s'])}/mi",
-        f"<b>5K-equiv:</b> {fmt_min(r['p5k_min_elev_corr'])}/mi   "
+        f"<b>5K-equiv:</b> {fmt_min(r['p5k_display_min'])}/mi   "
         f"<b>CS 5K:</b> {fmt_min(r['p5k_cs_min'])}/mi",
     ]
+    if r.get('excluded_reason') == 'snow':
+        parts.append(excluded_line('snow', 'snow'))
     return "<br>".join(parts)
 
 
@@ -128,6 +184,10 @@ def hill_rep_hover(r):
         body += f", {int(round(float(elev)))} ft gained"
     temp_line = f"<b>Temp:</b> {r['temp_c']:.0f}°C"
     parts = [title, body, temp_line]
+    # Hill reps never feed Training (no CS projection), so the snow tag is a
+    # plain condition note rather than an exclusion line.
+    if r.get('excluded_reason') == 'snow':
+        parts.append(f'<i style="color:{TAG_COLORS["snow"]}">Snow</i>')
     return "<br>".join(parts)
 
 
@@ -149,6 +209,47 @@ def measured_lines():
     return lines
 
 
+def hill_measured_lines():
+    """Per-date watch-measured hill-block line for hover (kind='loop' rows in
+    workout_measured.csv). hill-exact days show per-loop splits; hill-total
+    days show the measured block time only."""
+    path = DATA_DIR / 'workout_measured.csv'
+    if not path.exists():
+        return {}
+    m = pd.read_csv(path)
+    m = m[(m['rep_idx'] > 0)
+          & (m['status'].isin(['hill-exact', 'hill-total']))]
+    lines = {}
+    for date, day in m.groupby('date'):
+        total = sec_to_mss(day['time_s'].sum())
+        if (day['status'] == 'hill-exact').all() and len(day) > 1:
+            splits = ' · '.join(sec_to_mss(t) for t in day['time_s'])
+            lines[date] = (f'<b>Watch:</b> {total} moving, '
+                           f'loops {splits}')
+        else:
+            lines[date] = f'<b>Watch:</b> {total} moving'
+    return lines
+
+
+def tq_exclusion_lines():
+    """Per-date hover note for workouts Training excluded (training_quality_
+    exclusions.csv, written by plot_training_quality.py). Flags WHY, so the
+    slow sessions that survive only on the Workouts plot are explained. For
+    residual outliers, shows the corrected residual against the prune cutoff."""
+    path = DATA_DIR / 'training_quality_exclusions.csv'
+    if not path.exists():
+        return {}
+    e = pd.read_csv(path)
+    lines = {}
+    for _, r in e.iterrows():
+        if r['reason'] == 'outlier' and pd.notna(r.get('resid')):
+            note = (f"residual {r['resid']:+.1f} s/mi > +{r['cutoff']:.1f} cutoff")
+        else:
+            note = str(r['reason'])
+        lines[str(r['date'])] = excluded_line(note, str(r['reason']))
+    return lines
+
+
 def main():
     cs, epoch = load_cs()
 
@@ -163,29 +264,36 @@ def main():
         print(f'Watch decomposition on {workouts["measured_line"].notna().sum()} '
               f'workout hovers')
 
-    # Load TQ's final per-category offsets so each category's markers sit at
-    # the same per-category baseline TQ uses. Categories not in the CSV (rep,
-    # hc_loop_other, etc.) get 0 offset.
-    if not OFFSETS_CSV.exists():
-        raise SystemExit(f'Missing {OFFSETS_CSV} — run plot_training_quality.py first.')
-    offsets_df = pd.read_csv(OFFSETS_CSV)
-    cat_offset = dict(zip(offsets_df['category'], offsets_df['offset_sec_per_mi']))
+    hlines = hill_measured_lines()
+    if hlines:
+        hills_c['hill_measured_line'] = (
+            hills_c['date'].dt.date.astype(str).map(hlines))
+        print(f'Watch hill block on {hills_c["hill_measured_line"].notna().sum()} '
+              f'hill hovers')
 
-    def _apply_offset(df, offset_col='category'):
-        off_sec = df[offset_col].map(cat_offset).fillna(0.0)
-        return df['p5k_min'] - off_sec / 60.0
+    excl = tq_exclusion_lines()
+    if excl:
+        workouts['tq_excluded_line'] = (
+            workouts['date'].dt.date.astype(str).map(excl))
+        print(f'Training-exclusion note on {workouts["tq_excluded_line"].notna().sum()} '
+              f'workout hovers')
 
-    workouts['p5k_display_min'] = _apply_offset(workouts)
-    # Reps are excluded from the TQ model so cat_offset has no entry; bolt
-    # the manual rep-anaerobic offset on top.
-    is_rep = workouts['category'] == 'rep'
-    workouts.loc[is_rep, 'p5k_display_min'] = workouts.loc[is_rep, 'p5k_display_min']
+    # One shared CS predictor, no per-category offsets (June 2026): every
+    # workout displays its raw 5K-equivalent projection — intent and era
+    # effort policy stay visible instead of being subtracted by label.
+    workouts['p5k_display_min'] = workouts['p5k_min']
 
-    # Hills use the route-agnostic elevation-corrected projection from the
-    # shared module (HILL_ELEV_COST_SEC_PER_FT × ft_climbed). NO per-loop
-    # offset is applied — those are TQ-only. Same formula for every loop,
-    # parameterized by amount climbed.
-    hills_c['p5k_display_min'] = hills_c['p5k_min_elev_corr']
+    # Hills display: pinned Minetti net gain cost (p5k_min_hillcorr, from
+    # the shared projection) minus the fitted trail term (hill_model.csv,
+    # written by plot_training_quality). No centering — the hill-class
+    # effort gap stays visible, exactly like tempos display their raw
+    # sub-max level.
+    hills_c['p5k_display_min'] = hills_c['p5k_min_hillcorr'].fillna(
+        hills_c['p5k_min'])
+    if HILL_MODEL_CSV.exists() and len(hills_c):
+        hm = pd.read_csv(HILL_MODEL_CSV).set_index('term')['coef']
+        trail_sec = hm.get('is_trail', 0.0) * hills_c['is_trail'].fillna(0.0)
+        hills_c['p5k_display_min'] = hills_c['p5k_display_min'] - trail_sec / 60.0
 
     # Position hill_rep sessions at the TQ smoother track on their date.
     if not TRACK_CSV.exists():
@@ -222,9 +330,10 @@ def main():
         hoverinfo='skip',
     ))
 
-    # Workouts: one trace per category. Identical styling regardless of
-    # excluded_reason — pruned sessions are visually indistinguishable from
-    # in-scope sessions.
+    # Workouts: one trace per category. Condition tags (uncertain accuracy /
+    # snow / XC-corrected-and-kept) are drawn as halo-ring overlay traces
+    # after the marker traces — ring points are collected here per trace so
+    # they exactly track what's plotted.
     #
     # Single-type collapse: when the dataset has exactly one workout/hill
     # category (the watch continuous-fartlek case), present it generically as
@@ -237,11 +346,13 @@ def main():
                 + (1 if (not hills_r.empty
                          and len(hills_r.dropna(subset=['p5k_track_min']))) else 0))
     single_type = n_legend == 1
+    ring_pts = {tag: ([], []) for tag in TAG_LEGEND}
     for cat in ['interval', 'tempo', 'rep', 'continuous_fartlek']:
         sub = workouts[workouts['category'] == cat]
         if sub.empty:
             continue
         cd = [workout_hover(r, single_type) for _, r in sub.iterrows()]
+        collect_ring_points(ring_pts, sub, 'p5k_display_min')
         fig.add_trace(go.Scatter(
             x=sub['date'], y=_y_safe(sub['p5k_display_min'].values),
             mode='markers',
@@ -260,6 +371,7 @@ def main():
     # Continuous hills (one trace, all loops together).
     if len(hills_c):
         cd = [hill_cont_hover(r) for _, r in hills_c.iterrows()]
+        collect_ring_points(ring_pts, hills_c, 'p5k_display_min')
         fig.add_trace(go.Scatter(
             x=hills_c['date'], y=_y_safe(hills_c['p5k_display_min'].values),
             mode='markers',
@@ -278,6 +390,7 @@ def main():
         plottable = hills_r.dropna(subset=['p5k_track_min'])
         if len(plottable):
             cd = [hill_rep_hover(r) for _, r in plottable.iterrows()]
+            collect_ring_points(ring_pts, plottable, 'p5k_track_min')
             fig.add_trace(go.Scatter(
                 x=plottable['date'], y=_y_safe(plottable['p5k_track_min'].values),
                 mode='markers',
@@ -290,6 +403,23 @@ def main():
                 legendgroup='hills',
                 meta={'snap_eligible': True},
             ))
+
+    # Condition-tag halo rings, one overlay trace (and legend entry) per tag.
+    # Transparent fill so the underlying marker stays hover-snappable; drawn
+    # after the marker traces so the rings sit on top.
+    for tag, label in TAG_LEGEND.items():
+        xs, ys = ring_pts[tag]
+        if not xs:
+            continue
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys, mode='markers',
+            name=f'{label} (n={len(xs)})',
+            marker=dict(symbol='circle', size=TAG_RING_SIZE,
+                        color='rgba(0,0,0,0)',
+                        line=dict(width=TAG_RING_WIDTH, color=TAG_COLORS[tag])),
+            hoverinfo='skip',
+            legendgroup='tags', legendgrouptitle_text='Tags',
+        ))
 
     # ---------- layout ----------
     # 5K-equivalent pace axis range derived from the actual data so the

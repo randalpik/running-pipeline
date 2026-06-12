@@ -5,7 +5,9 @@ script upgrades the records that were cached slim before that existed, plus
 plain Runs on hand-logged workout days (road workouts need the stream too).
 
 Targets: every Track Run (sportType 103), and — when --daily is given — every
-run activity whose local date carries a hand-logged quality workout.
+run activity whose local date carries a hand-logged quality workout or a
+continuous-hill workout (hill_cont; all of that day's runs are targeted since
+the loop block may be merged with a jog).
 
 Full details come from --import-dir when a previously fetched raw JSON is
 available there (no API call), otherwise from the Coros API via the cached
@@ -40,6 +42,12 @@ def quality_dates(daily_path):
     return set(pd.to_datetime(q["date"]).dt.date.astype(str))
 
 
+def hill_dates(daily_path):
+    daily = pd.read_csv(daily_path)
+    h = daily[daily["run_type"] == "hill_cont"]
+    return set(pd.to_datetime(h["date"]).dt.date.astype(str))
+
+
 def main():
     p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     p.add_argument("--details-dir", required=True, type=Path)
@@ -53,10 +61,15 @@ def main():
     p.add_argument("--import-dir", type=Path, default=None,
                    help="Directory of previously fetched RAW detail JSONs "
                         "(<labelId>.json) to convert without API calls.")
+    p.add_argument("--dates", default="",
+                   help="Comma-separated YYYY-MM-DD list; restrict targets "
+                        "to these local dates (probe runs).")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
 
     qdates = quality_dates(args.daily) if args.daily else set()
+    hdates = hill_dates(args.daily) if args.daily else set()
+    only_dates = {s.strip() for s in args.dates.split(",") if s.strip()}
     client = None
 
     # inventory pass: which dates have a Track Run (their plain runs are
@@ -76,9 +89,14 @@ def main():
     targets, already, upgraded, fetched, failed = 0, 0, 0, 0, []
     for path, rec, act in records:
         date = act.local_date.isoformat()
+        # Hill days have no Track Run and the loop block may hide in any of
+        # the day's activities (sometimes merged with a jog) — target them all.
         is_target = (act.sport_type == M.SPORT_TRACK_RUN
-                     or (date in qdates and date not in track_dates))
+                     or (date in qdates and date not in track_dates)
+                     or date in hdates)
         if not is_target:
+            continue
+        if only_dates and date not in only_dates:
             continue
         targets += 1
         if "freq" in rec:

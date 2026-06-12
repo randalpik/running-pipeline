@@ -28,6 +28,7 @@ from src.shared.workouts import (
 from src.shared.long_run_model import (
     fit_long_run_model, PRUNE_SIGMA,
 )
+from src.shared.hill_model import fit_hill_model
 from src.plotting import widgets
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box, route_paren,
@@ -62,10 +63,12 @@ GAUSS_MAX_BW_DAYS  = 400
 GRID_FREQ          = '7D'
 
 # ---------- visual config ----------
+# Workout categories only — hill categories are runtime-derived per loop
+# (hill_<loop>, informational grouping only) and render as one combined
+# trace with their own hover title, so they never need registered labels.
 CAT_LABEL = {
     'interval': 'Interval', 'tempo': 'Tempo', 'rep': 'Rep',
     'continuous_fartlek': 'Cont. fartlek',
-    'hill_lc': 'Hill (lc)', 'hill_rc': 'Hill (rc)', 'hill_pwr1': 'Hill (pwr1)',
 }
 
 
@@ -74,27 +77,21 @@ CAT_LABEL = {
 # HC_LOOPS, HILL_LOOP_META are imported from src.shared.workouts.
 
 
-def apply_offsets(workouts, hills=None) -> tuple:
-    """Compute per-category median offsets across workouts (+ optional hills),
-    return both frames augmented with offset/resid columns plus the offsets
-    dict. Long runs are corrected by `fit_long_run_model` instead of pooled
-    here, so they don't appear in this dict."""
-    parts = [workouts[['date', 'category', 'raw_resid']]]
-    if hills is not None and len(hills):
-        parts.append(hills[['date', 'category', 'raw_resid']])
-    combined = pd.concat(parts, ignore_index=True)
-    offsets = combined.groupby('category')['raw_resid'].median().to_dict()
-
-    workouts = workouts.copy()
-    workouts['offset'] = workouts['category'].map(offsets)
-    workouts['resid']  = workouts['raw_resid'] - workouts['offset']
-
-    if hills is not None:
-        hills = hills.copy()
-        hills['offset'] = hills['category'].map(offsets)
-        hills['resid']  = hills['raw_resid'] - hills['offset']
-
-    return workouts, hills, offsets
+# Per-category offsets were REMOVED in June 2026: every quality workout
+# (interval / tempo / rep / cont. fartlek) shares one CS predictor with no
+# label terms. The old per-category medians (tempo +19.7, cf +17.9) were
+# label dummies absorbing ERA EFFORT POLICY — fitted almost entirely on
+# 2016-17 threshold tempos and the 2019-20 fartlek block, then mis-applied
+# to any modern day wearing the label (a 2024 long-interval day logged as
+# tempo got a −19.7 era discount and displayed as the fastest workout in
+# the set). Duration and piece-structure terms were tested and rejected:
+# broken 3-5min-piece tempos still read +19 vs intervals at the same piece
+# length — the gap tracks intent-as-executed per era, which is exactly the
+# "training ahead of / behind capability" signal this plot exists to show.
+# Same precedent as the long-run route-dummy removal (long_run_model.py).
+# There are NO class constants either (a brief global-median centering was
+# removed same-day): every point here and on the Workouts tab is the same
+# number — the best attempt at predicting 5K race pace from that session.
 
 
 # ---------- hover string builders ----------
@@ -163,9 +160,12 @@ def hill_hover(r):
     nreps = int(r['nreps'])
     loops_word = 'loop' if nreps == 1 else 'loops'
     ft_gained = int(round(float(r.get('ft_gained') or 0)))
+    time_part = (f"{sec_to_mss(r['t_eff'])} total (watch)"
+                 if r.get('watch_measured')
+                 else f"{int(r['session_min'])} min total")
     parts = [
         f"<b>{title}</b>",
-        f"{nreps} {loops_word}, {ft_gained} ft gained, {int(r['session_min'])} min total",
+        f"{nreps} {loops_word}, {ft_gained} ft gained, {time_part}",
         f"<b>Actual pace:</b> {sec_to_mss(r['actual_pace_s'])}/mi",
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
         f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
@@ -185,6 +185,11 @@ def main():
     workouts  = project_workouts(cs, epoch)
     long_runs = project_long_runs(cs, epoch)
     hills     = project_hill_continuous(cs, epoch)
+    # Record why each quality workout is excluded from Training so the Workouts
+    # plot can annotate it (the slow-"outlier" sessions show only there). Snow
+    # is a category flag here; outliers are added during the prune below.
+    tq_excluded = [{'date': r['date'], 'reason': r['excluded_reason'], 'resid': np.nan}
+                   for _, r in workouts[workouts['excluded_reason'].notna()].iterrows()]
     workouts  = workouts[workouts['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
     long_runs = long_runs[long_runs['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
     hills     = hills[hills['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
@@ -219,106 +224,157 @@ def main():
     # the smoother and aren't rendered.
     long_runs = long_runs[~long_runs['is_outlier']].copy()
 
-    # Workouts/hills iterative resid-cutoff prune (long runs handled above).
-    CUTOFF = 23.3
-    print(f'\n--- Iterative resid > +{CUTOFF} prune (workouts/hills) ---')
-    pruned_w_idx = set()
-    pruned_h_idx = set()
-    initial_offsets = None
-    for it in range(15):
-        w_keep = workouts.drop(index=list(pruned_w_idx))
-        h_keep = hills.drop(index=list(pruned_h_idx))
-        _, _, offsets = apply_offsets(w_keep, h_keep)
-        if initial_offsets is None:
-            initial_offsets = offsets
-        w_keep = w_keep.copy()
-        h_keep = h_keep.copy()
-        w_keep['resid'] = w_keep['raw_resid'] - w_keep['category'].map(offsets)
-        h_keep['resid'] = h_keep['raw_resid'] - h_keep['category'].map(offsets)
+    # Hill correction: pinned Minetti net gain cost (already applied in
+    # project_hill_continuous as minetti_resid) + ONE fitted trail term
+    # (src/shared/hill_model.py). No intercept — the hill-class effort gap
+    # stays visible like tempo-era effort policy. Outliers (egregious easy
+    # hill days, one-sided) are dropped from the figure entirely.
+    print(f'\n--- Hill model: pinned Minetti net cost + fitted trail term, '
+          f'iterative one-sided MAD prune (sigma={PRUNE_SIGMA}) ---')
+    hills, hill_fit = fit_hill_model(hills)
+    if hill_fit:
+        print(f'  Trail term (fitted): {hill_fit["trail_coef"]:+6.2f} s/mi '
+              f'(era-confounding caveat documented)')
+        print(f'  resid SD = {hill_fit["resid_sd"]:.2f} sec/mi   '
+              f'(n_kept = {hill_fit["n_kept"]})')
+        n_hout = int(hills['is_outlier'].sum())
+        if n_hout:
+            print(f'  Easy-day rows pruned ({n_hout}):')
+            for _, row in hills[hills['is_outlier']].iterrows():
+                print(f'    H  {row["date"].date()}  loop={row["loop"]:<6} '
+                      f'raw={row["raw_resid"]:+6.1f}  '
+                      f'corrected={row["corrected"]:+6.1f}')
+        hills = hills[~hills['is_outlier']].copy()
+        # Persist the trail term so the Workouts plot shares the correction
+        # (the Minetti factor is recomputed from loop covariates there).
+        hm_csv = DATA_DIR / 'hill_model.csv'
+        pd.DataFrame({
+            'term': ['is_trail'],
+            'coef': [hill_fit['trail_coef']],
+        }).to_csv(hm_csv, index=False)
+        print(f'Wrote {hm_csv}')
+    else:
+        hills['corrected'] = pd.Series(dtype=float)
 
-        new_w = w_keep.index[w_keep['resid'] > CUTOFF].tolist()
-        new_h = h_keep.index[h_keep['resid'] > CUTOFF].tolist()
-        if not new_w and not new_h:
-            print(f'  Iteration {it+1}: stable. Done.')
+    # Track-relative prune + smoother, iterated to a fixed point. Outliers
+    # are judged against the SURROUNDING track, not against CS or a label
+    # baseline: fit the smoother, detrend every prunable point by the track
+    # value at its date, drop the slow side beyond median+PRUNE_SIGMA*MAD of
+    # the detrended residuals, refit. Era effort policy stays in (a soft
+    # 2016 tempo sits near the soft 2016 track and survives); a session that
+    # sticks out from its own surroundings goes. Long runs contribute to the
+    # track but were already pruned by their own model.
+    workouts = workouts.copy()
+    rep_w = hill_w = 1.0
+    thr = float('nan')
+    pruned_w_idx, pruned_h_idx = set(), set()
+    print(f'\n--- Track-relative prune (one-sided, '
+          f'median+{PRUNE_SIGMA}*MAD on detrended residuals) ---')
+    for it in range(12):
+        w_keep = workouts.drop(index=list(pruned_w_idx)).copy()
+        h_keep = hills.drop(index=list(pruned_h_idx)).copy()
+        # No class constants anywhere: every point on this graph AND the
+        # Workouts tab is the same number — the best attempt at predicting
+        # 5K race pace from that session (Max's contract). Workouts enter
+        # raw; hills enter Minetti+trail-corrected raw.
+        w_keep['resid'] = w_keep['raw_resid']
+        h_keep['resid'] = h_keep['corrected']
+
+        # Scatter weights (reps and hills are noisier CS signals; same
+        # (sd_ref/sd)^2 construction as always), recomputed on survivors.
+        rep_mask = w_keep['category'] == 'rep'
+        sd_ref = w_keep.loc[~rep_mask, 'resid'].std()
+        rep_w = 1.0
+        if rep_mask.any():
+            sd_rep = w_keep.loc[rep_mask, 'resid'].std()
+            if sd_rep and sd_rep > 0 and sd_ref and sd_ref > 0:
+                rep_w = float(np.clip((sd_ref / sd_rep) ** 2, 0.1, 1.0))
+        w_keep['weight'] = np.where(rep_mask, rep_w, 1.0)
+        hill_w = 1.0
+        if len(h_keep):
+            sd_hill = h_keep['resid'].std()
+            if sd_hill and sd_hill > 0 and sd_ref and sd_ref > 0:
+                hill_w = float(np.clip((sd_ref / sd_hill) ** 2, 0.1, 1.0))
+
+        combined = pd.concat([
+            w_keep[['date', 'resid', 'weight']].assign(src='w', orig=w_keep.index),
+            long_runs[['date', 'corrected']].rename(columns={'corrected': 'resid'})
+                .assign(weight=1.0, src='lr', orig=long_runs.index),
+            h_keep[['date', 'resid']].assign(weight=hill_w, src='h',
+                                             orig=h_keep.index),
+        ], ignore_index=True).sort_values('date').reset_index(drop=True)
+
+        ds = (combined['date'] - epoch).dt.days.astype(float).values
+        res = combined['resid'].values
+        grid_dates = pd.date_range(combined['date'].min(),
+                                   combined['date'].max(),
+                                   freq=GRID_FREQ)
+        grid_days = (grid_dates - epoch).days.astype(float).values
+        smoothed = adaptive_gauss_smoother(
+            ds, res, grid_days,
+            target_ess=GAUSS_TARGET_ESS,
+            base_bw=GAUSS_BASE_BW_DAYS,
+            max_bw=GAUSS_MAX_BW_DAYS,
+            point_weights=combined['weight'].values,
+        )
+
+        finite = np.isfinite(smoothed)
+        if not finite.any():
+            print('  Track all-NaN (tiny corpus) — prune skipped.')
             break
-
-        pruned_w_idx.update(new_w)
-        pruned_h_idx.update(new_h)
-        print(f'  Iteration {it+1}: +{len(new_w)} workouts, +{len(new_h)} hills')
-        for i in new_w:
-            r = workouts.loc[i]
-            print(f'    W  {r["date"].date()}  {r["category"]:<22} resid={w_keep.loc[i,"resid"]:+5.1f}  '
-                  f'raw={r["raw_resid"]:+5.1f}  pace={int(r["pace_per_mile"])}s/mi')
-        for i in new_h:
-            r = hills.loc[i]
-            print(f'    H  {r["date"].date()}  {r["category"]:<22} resid={h_keep.loc[i,"resid"]:+5.1f}  '
-                  f'raw={r["raw_resid"]:+5.1f}  loop={r["loop"]}  {int(r["nreps"])}x{int(r["session_min"])}min')
+        track_at = np.interp(ds, grid_days[finite], smoothed[finite])
+        detrended = res - track_at
+        prunable = (combined['src'] != 'lr').to_numpy()
+        vals = detrended[prunable]
+        med = float(np.median(vals))
+        thr = med + PRUNE_SIGMA * 1.4826 * float(np.median(np.abs(vals - med)))
+        over = prunable & (detrended > thr)
+        if not over.any():
+            print(f'  Iteration {it+1}: stable (thr +{thr:.1f} vs track). Done.')
+            break
+        print(f'  Iteration {it+1}: +{int(over.sum())} pruned (thr +{thr:.1f})')
+        for pos in np.nonzero(over)[0]:
+            row = combined.iloc[pos]
+            if row['src'] == 'w':
+                r = workouts.loc[row['orig']]
+                pruned_w_idx.add(row['orig'])
+                tq_excluded.append({'date': r['date'], 'reason': 'outlier',
+                                    'resid': round(float(detrended[pos]), 1)})
+                print(f'    W  {r["date"].date()}  {r["category"]:<20} '
+                      f'vs-track={detrended[pos]:+5.1f}  raw={r["raw_resid"]:+5.1f}  '
+                      f'pace={int(r["pace_per_mile"])}s/mi')
+            else:
+                r = hills.loc[row['orig']]
+                pruned_h_idx.add(row['orig'])
+                print(f'    H  {r["date"].date()}  loop={r["loop"]:<6} '
+                      f'vs-track={detrended[pos]:+5.1f}  raw={r["raw_resid"]:+5.1f}')
 
     workouts = workouts.drop(index=list(pruned_w_idx)).copy()
     hills = hills.drop(index=list(pruned_h_idx)).copy()
-    workouts, hills, offsets = apply_offsets(workouts, hills)
-
-    print('\n--- Offset shifts (initial -> final) ---')
-    assert initial_offsets is not None  # set on first iteration of the loop above
-    for cat in sorted(set(initial_offsets) | set(offsets)):
-        i_off = initial_offsets.get(cat, float('nan'))
-        f_off = offsets.get(cat, float('nan'))
-        print(f'  {cat:<22} {i_off:+6.2f}  ->  {f_off:+6.2f}  (Δ {f_off-i_off:+.2f})')
-    print(f'\nKept: {len(workouts)} workouts, {len(long_runs)} long runs, {len(hills)} hills')
-
-    print('Per-category offsets (median raw resid):')
-    for c, o in sorted(offsets.items()):
-        print(f'  {c:<22} offset={o:+6.2f}')
-
-    # Persist final per-category offsets so the Workouts plot can position
-    # markers on the same per-category baseline TQ uses for its smoother.
-    offsets_csv = DATA_DIR / 'training_quality_offsets.csv'
-    pd.DataFrame({
-        'category': list(offsets.keys()),
-        'offset_sec_per_mi': [float(v) for v in offsets.values()],
-    }).to_csv(offsets_csv, index=False)
-    print(f'Wrote {offsets_csv}')
-
-    # Per-point smoother weight: reps are an intrinsically noisier CS signal
-    # even after the anaerobic g(d) correction (their residual scatter runs
-    # ~50% wider than intervals'), so they enter the track scatter-weighted —
-    # weight = (reference resid SD / rep resid SD)^2, clipped — rather than at
-    # full strength, where ~24 early-era rep days would over-steer exactly the
-    # early track. Every other category stays weight 1.
-    workouts = workouts.copy()
+    workouts['resid'] = workouts['raw_resid']
     rep_mask = workouts['category'] == 'rep'
-    rep_w = 1.0
-    if rep_mask.any():
-        sd_rep = workouts.loc[rep_mask, 'resid'].std()
-        sd_ref = workouts.loc[~rep_mask, 'resid'].std()
-        if sd_rep and sd_rep > 0:
-            rep_w = float(np.clip((sd_ref / sd_rep) ** 2, 0.1, 1.0))
-        print(f'  Reps in TQ: {int(rep_mask.sum())} days, scatter-weight {rep_w:.2f} '
-              f'(SD rep {sd_rep:.1f} vs ref {sd_ref:.1f} s/mi)')
     workouts['weight'] = np.where(rep_mask, rep_w, 1.0)
+    if len(hills):
+        hills['resid'] = hills['corrected']
+    else:
+        hills['resid'] = pd.Series(dtype=float)
 
-    # Combined for the smoother. Long runs use the model-corrected residual.
-    combined = pd.concat([
-        workouts[['date', 'resid', 'weight']],
-        long_runs[['date', 'corrected']].rename(columns={'corrected': 'resid'})
-            .assign(weight=1.0),
-        hills[['date', 'resid']].assign(weight=1.0),
-    ], ignore_index=True).sort_values('date').reset_index(drop=True)
+    print(f'\nKept: {len(workouts)} workouts, {len(long_runs)} long runs, '
+          f'{len(hills)} hills')
+    print(f'  Reps scatter-weight {rep_w:.2f}; hills pooled weight {hill_w:.2f}')
+    print('Per-category median resid (diagnostic only — effort policy, '
+          'NOT corrected):')
+    for c, g in workouts.groupby('category')['resid']:
+        print(f'  {c:<22} {g.median():+6.2f}  (n={len(g)})')
 
-    ds = (combined['date'] - epoch).dt.days.astype(float).values
-    res = combined['resid'].values
-
-    grid_dates = pd.date_range(combined['date'].min(),
-                               combined['date'].max(),
-                               freq=GRID_FREQ)
-    grid_days = (grid_dates - epoch).days.astype(float).values
-    smoothed = adaptive_gauss_smoother(
-        ds, res, grid_days,
-        target_ess=GAUSS_TARGET_ESS,
-        base_bw=GAUSS_BASE_BW_DAYS,
-        max_bw=GAUSS_MAX_BW_DAYS,
-        point_weights=combined['weight'].values,
-    )
+    # Persist which quality workouts Training excluded (snow flag + residual
+    # outliers), so the Workouts plot can annotate them in hover. cutoff is
+    # the track-relative prune threshold; resid is the vs-track residual.
+    excl_csv = DATA_DIR / 'training_quality_exclusions.csv'
+    excl_df = pd.DataFrame(tq_excluded, columns=['date', 'reason', 'resid'])
+    excl_df['cutoff'] = round(thr, 1)
+    excl_df.to_csv(excl_csv, index=False)
+    print(f'Wrote {excl_csv}  ({len(excl_df)} excluded workouts)')
 
     # Break the track in any gap > GAP_BREAK_DAYS in the training data.
     # NaN values create disconnected line segments naturally in plotly.
@@ -463,7 +519,7 @@ def main():
             x=hills['date'], y=norm_y,
             mode='markers',
             name=f'Cont. hills (n={len(hills)})',
-            marker=dict(color=CAT_COLORS['hill_lc'], size=7,
+            marker=dict(color=CAT_COLORS['hill_cont'], size=7,
                         line=dict(color='rgba(255,255,255,0.4)', width=0.5),
                         opacity=0.85),
             customdata=cd,

@@ -7,12 +7,13 @@ prune are flagged via the ``excluded_reason`` column (None when in-scope) so
 both consumers can share the same upstream pipeline.
 
 Excluded reasons used:
-    - 'snow'              : snow in workout_raw or conditions
-    - 'rep_anaerobic'     : type == 'rep' (Training drops; Workouts shows w/ offset)
+    - 'snow'              : snow in workout_raw or conditions (quality workouts)
     - 'long_out_of_slice' : long run under LONG_MIN_MINUTES or at/over
                             LONG_CEIL_MILES
     - 'hc_rep_hybrid'     : 2016-09 hybrid 'hc/rep' sessions
     - 'hc_loop_other'     : hill_cont on a loop outside HC_LOOPS (n<7)
+(Workouts have no category-based exclusion beyond snow; sub-threshold quality
+days are removed by the Training plot's residual-cutoff outlier prune instead.)
 
 Training plot consumes ``project_*(...)`` and immediately filters to
 ``df[df['excluded_reason'].isna()]`` (with the long-run slice + outlier prune
@@ -26,6 +27,7 @@ import numpy as np
 import pandas as pd
 
 from src.shared.paths import DATA_DIR
+from src.shared.hill_model import minetti_net_factor
 from src.parsers.snapshot import find_snapshot, read_snapshot
 
 
@@ -102,16 +104,6 @@ def g_anaerobic(d_m):
 LONG_MIN_MINUTES = 80.0
 LONG_CEIL_MILES  = 26.2
 
-# Route-agnostic elevation cost coefficient for hill_cont 5K-equivalent
-# projection on the Workouts plot. Subtracts time saved by climbing (sec) =
-# HILL_ELEV_COST_SEC_PER_FT × total feet climbed, then runs the hyperbolic
-# projection on the corrected effective time.
-# Training plot does not use this — TQ uses per-loop offsets to absorb
-# loop-specific systematics including elevation, so a uniform coefficient
-# would over-correct on top of those.
-HILL_ELEV_COST_SEC_PER_FT = 0.20
-
-
 # ---------- CS basis ----------
 def load_cs():
     """Load bayes_cs_summary.csv and derive the CS-implied 5K pace per day.
@@ -138,9 +130,10 @@ def add_cs(df, cs, epoch):
 
 
 # ---------- hill loop metadata (snapshot-driven) ----------
-# HC_LOOPS captures the loops with sufficient training data (n>=7) for the
-# Training plot's per-loop offset calibration. Sessions outside this set are
-# flagged ``hc_loop_other`` so the Workouts plot can still show them.
+# HC_LOOPS is a distance-resolution fallback only (surveyed meters for the
+# core loops, checked before the snapshot). Training-plot eligibility is NOT
+# keyed on membership here — it's the runtime n>7 session count in
+# project_hill_continuous, so a new route anywhere qualifies by itself.
 HC_LOOPS = {
     'lc':   {'distance_m': 1290},
     'rc':   {'distance_m':  850},
@@ -149,11 +142,11 @@ HC_LOOPS = {
 
 
 def load_hill_loop_meta():
-    """Return {abbrev: {display_name, city_state, elev_up, elev_down,
-    distance_m, type, elev_per_min}} from the snapshot's `hills` + `locations`
-    sections. Loop abbrev → location via the hills sheet; location →
-    display_name + city_state via the locations sheet. Falls back to empty
-    dict if snapshot missing.
+    """Return {abbrev: {display_name, city_state, terrain_type, elev_up,
+    elev_down, distance_m, type, elev_per_min}} from the snapshot's `hills` +
+    `locations` sections. Loop abbrev → location via the hills sheet;
+    location → display_name + city_state + terrain_type via the locations
+    sheet. Falls back to empty dict if snapshot missing.
 
     Includes ALL loops from the snapshot, not just HC_LOOPS — the Workouts
     plot needs metadata for hill_rep loops (evst/ev/pwr2) too.
@@ -170,7 +163,8 @@ def load_hill_loop_meta():
         for _, r in locs_df.iterrows():
             ll = str(r.get('log_location', '')).strip().lower()
             if ll:
-                loc_lookup[ll] = (r.get('display_name'), r.get('city_state'))
+                loc_lookup[ll] = (r.get('display_name'), r.get('city_state'),
+                                  r.get('terrain_type'))
 
     out = {}
     for _, r in hills_df.iterrows():
@@ -178,10 +172,12 @@ def load_hill_loop_meta():
             if not ab:
                 continue
             loc = str(r.get('location', '')).strip().lower()
-            display_name, city_state = loc_lookup.get(loc, (None, None))
+            display_name, city_state, terrain_type = loc_lookup.get(
+                loc, (None, None, None))
             out[ab] = {
                 'display_name': display_name,
                 'city_state':   city_state,
+                'terrain_type': terrain_type,
                 'elev_up':      r.get('elev_gain_up'),
                 'elev_down':    r.get('elev_gain_down'),
                 'distance_m':   r.get('distance_m'),
@@ -216,14 +212,24 @@ def project_workouts(cs, epoch):
     """
     w = pd.read_csv(WORKOUTS_PATH, parse_dates=['date'])
     daily = pd.read_csv(DAILY_PATH, parse_dates=['date'])
-    w = w.merge(daily[['date', 'workout_raw', 'conditions', 'quality_distance_m',
-                       'display_name', 'city_state', 'temp_c']],
-                on='date', how='left')
+    daily_cols = ['date', 'workout_raw', 'conditions', 'quality_distance_m',
+                  'display_name', 'city_state', 'temp_c']
+    for opt in ('partners', 'terrain_type'):
+        if opt in daily.columns:
+            daily_cols.append(opt)
+        else:
+            w[opt] = np.nan
+    w = w.merge(daily[daily_cols], on='date', how='left')
+    w['is_track'] = w['terrain_type'].astype(str).str.lower() == 'track'
 
     # XC correction (always applied — same convention as XC race correction).
+    # Track locations are categorically exempt: the rules target XC-course
+    # efforts (fall season window; HS 5K course tempos run as 5×segments),
+    # and a workout on an actual track is neither (2021-04-26, a 5000m track
+    # tempo, was the one mis-hit).
     fall_2016 = (w['date'] >= pd.Timestamp('2016-07-01')) & (w['date'] <= pd.Timestamp('2016-10-31'))
     hs_5k = (w['type'] == 'tempo') & (w['quality_distance_m'] == 5000)
-    xc_mask = fall_2016 | hs_5k
+    xc_mask = (fall_2016 | hs_5k) & ~w['is_track']
     w.loc[xc_mask, 'pace_per_mile'] = w.loc[xc_mask, 'pace_per_mile'] / 1.06
     w['xc_corrected'] = xc_mask
 
@@ -246,18 +252,55 @@ def project_workouts(cs, epoch):
     w['raw_resid'] = (w['p5k_min'] - w['p5k_cs_min']) * 60
     w['category'] = w['type']
 
-    # Flag (don't drop) reps and snow. Reps now rejoin the TQ fit IF they carry
-    # a trustworthy per-rep projection (d_eff_m present: watch-measured, or
-    # reconstructed from recorded log rest) — the anaerobic g(d) correction
-    # (applied in parse_workouts._connected_core) has removed their short-effort
-    # CS bias. Reps WITHOUT a connected projection (defaulted/estimated rest)
-    # stay excluded: their pace alone is not a reliable CS signal.
+    # Exclusion flags (rows are flagged, never dropped, so the Workouts plot
+    # still shows them while Training skips them). Reps are NOT excluded —
+    # they all carry a connected projection now and rejoin Training
+    # scatter-weighted; sub-threshold/outlier workouts are removed by
+    # Training's own track-relative prune, not a category flag.
+    #
+    # Course-verification gate (Max, June 2026 — sign-blind): the projection
+    # is only as trustworthy as the course measurement, and mismeasurement
+    # cuts both ways (a short course reads fast, a long one slow — solo 2020
+    # Powerline intervals were measured short: gravel yet not slower than
+    # surrounding workouts, and never replicated once the watch arrived).
+    # A workout needs watch verification, a track location, or partners
+    # (non-solo) to be trusted outright. Within the unverified remainder,
+    # two rescues:
+    #   - continuous efforts (0 rest): mismeasurement bites on back-and-
+    #     forth reps with badly marked start/finish lines, not on a single
+    #     unbroken course;
+    #   - pre-2018 well-understood staples (5000t / 6400t / 4800f strings —
+    #     these were likely rhs track under the education-hill catch-all).
+    # Everything else is flagged 'uncertain accuracy' (shown on the
+    # Workouts plot, dropped from Training).
+    verified = _watch_verified_dates()
+    partners = w['partners'].astype(str).str.strip().str.lower()
+    non_solo = partners.ne('solo') & partners.ne('') & partners.ne('nan')
+    watch = w['date'].dt.strftime('%Y-%m-%d').isin(verified)
+    unverified = ~watch & ~w['is_track'] & ~non_solo
+    continuous = w['rest_per_mile'].fillna(-1) == 0
+    staple = ((w['date'].dt.year <= 2017)
+              & w['workout_raw'].astype(str).str.contains(
+                  r'5000t@|6400t@|4800f@', regex=True, na=False))
+    suspect = unverified & ~continuous & ~staple
+
+    # Implausibility ceiling (Max, June 2026): the watch-verified corpus
+    # bounds how much a genuine workout can beat SAME-DAY CS (currently
+    # 8.6 s/mi, 2022-12-05, mid-peak — the real "workouts lead the smoothed
+    # CS curve" effect). A non-verified day beating CS by more is a bad
+    # decomposition the string can't recover (reps that included 100s/150s,
+    # intervals that included 800s) — only watch verification shields here,
+    # NOT track/partners/staple trust (2017-03-28, varsity, read 4:46/mi —
+    # faster than any capability ever demonstrated). Margin is data-derived
+    # and self-adjusts as the verified corpus grows; skipped when no
+    # verified rows exist to establish the bound.
+    if watch.any():
+        vmax = float(-w.loc[watch, 'raw_resid'].min())
+        suspect |= ~watch & (w['raw_resid'] < -vmax)
     snow_w = w['workout_raw'].astype(str).str.contains('snow', case=False, na=False)
     snow_c = w['conditions'].astype(str).str.contains('snow', case=False, na=False)
-    has_conn = (w['d_eff_m'].notna() if 'd_eff_m' in w.columns
-                else pd.Series(False, index=w.index))
     w['excluded_reason'] = None
-    w.loc[(w['type'] == 'rep') & ~has_conn, 'excluded_reason'] = 'rep_anaerobic'
+    w.loc[suspect, 'excluded_reason'] = 'uncertain accuracy'
     w.loc[snow_w | snow_c, 'excluded_reason'] = 'snow'
 
     return w
@@ -298,7 +341,44 @@ _HC_NREPS_RX = re.compile(r'hc-(\d+)x')
 _HC_LOOP_RX  = re.compile(r'hc-\d+x\s+([a-zA-Z0-9]+)')
 
 
-def _parse_hc(row):
+def _watch_verified_dates():
+    """Dates whose structure the watch verified (workout_measured.csv,
+    statuses exact / watch-only). Empty set when no enrichment exists."""
+    path = DATA_DIR / 'workout_measured.csv'
+    if not path.exists():
+        return set()
+    m = pd.read_csv(path)
+    return set(m.loc[m['status'].isin(['exact', 'watch-only']), 'date'])
+
+
+def _load_hill_measured_t():
+    """date -> watch-measured moving seconds for the hill block, from
+    workout_measured.csv (statuses hill-exact / hill-total; loop rows sum to
+    the block total in both). Empty dict when nothing is measured."""
+    path = DATA_DIR / 'workout_measured.csv'
+    if not path.exists():
+        return {}
+    m = pd.read_csv(path)
+    m = m[(m['rep_idx'] > 0)
+          & (m['status'].isin(['hill-exact', 'hill-total']))]
+    if m.empty:
+        return {}
+    return m.groupby('date')['time_s'].sum().to_dict()
+
+
+def hc_loop_distance(loop):
+    """Surveyed meters for a hill-loop abbrev (HC_LOOPS first, snapshot
+    fallback). None when the loop has no measured distance."""
+    if loop in HC_LOOPS:
+        return HC_LOOPS[loop]['distance_m']
+    meta = HILL_LOOP_META.get(loop, {})
+    dm = meta.get('distance_m')
+    if dm in (None, '') or (isinstance(dm, float) and np.isnan(dm)):
+        return None
+    return float(dm)
+
+
+def parse_hc(row):
     s = str(row['workout_raw'])
     m_min = _HC_PARSE_RX.search(s)
     minutes = int(m_min.group(1)) if m_min else None
@@ -336,38 +416,38 @@ def project_hill_continuous(cs, epoch):
         h['nreps'] = pd.Series(dtype=float)
         h['loop'] = pd.Series(dtype=object)
     else:
-        h[['session_min', 'nreps', 'loop']] = h.apply(_parse_hc, axis=1)
+        h[['session_min', 'nreps', 'loop']] = h.apply(parse_hc, axis=1)
     h = h.dropna(subset=['session_min', 'nreps', 'loop']).copy()
 
     # distance_m: prefer HC_LOOPS hardcoded constant, fall back to snapshot.
-    def _loop_distance(loop):
-        if loop in HC_LOOPS:
-            return HC_LOOPS[loop]['distance_m']
-        meta = HILL_LOOP_META.get(loop, {})
-        dm = meta.get('distance_m')
-        return float(dm) if dm not in (None, '') and not (isinstance(dm, float) and np.isnan(dm)) else None
-
-    h['loop_distance_m'] = h['loop'].map(_loop_distance)
+    h['loop_distance_m'] = h['loop'].map(hc_loop_distance)
     h = h.dropna(subset=['loop_distance_m']).copy()
 
     h['quality_dist_m'] = h['nreps'] * h['loop_distance_m']
     h['actual_pace_s'] = (h['session_min'] * 60.0) / (h['quality_dist_m'] / 1609.344)
     h['d_m']     = h['quality_dist_m']
     h['t_eff']   = h['actual_pace_s'] * h['d_m'] / 1609.344
+
+    # Watch-measured override: exact moving seconds for the loop block
+    # (reps.py extract_hill_day) replace the hand log's whole-minute session
+    # time, which also silently includes standing rest. Distance stays
+    # authoritative — only time moves; everything downstream computes from
+    # the overridden t_eff.
+    meas = _load_hill_measured_t()
+    h['watch_t_eff'] = h['date'].dt.strftime('%Y-%m-%d').map(meas)
+    has_watch = h['watch_t_eff'].notna()
+    h.loc[has_watch, 't_eff'] = h.loc[has_watch, 'watch_t_eff']
+    h.loc[has_watch, 'actual_pace_s'] = (h.loc[has_watch, 't_eff']
+                                         / (h.loc[has_watch, 'd_m'] / 1609.344))
+    h['watch_measured'] = has_watch
+
     h = add_cs(h, cs, epoch)
     h['t_5k_hyp'] = (5000 - h['dp_t']) * h['t_eff'] / (h['d_m'] - h['dp_t'])
     h['p5k_min']  = h['t_5k_hyp'] * 1609.344 / 5000.0 / 60.0
     h['raw_resid'] = (h['p5k_min'] - h['p5k_cs_min']) * 60
+    # Informational grouping only — corrections come from the hill model
+    # (gain + terrain), never from per-loop categories.
     h['category'] = 'hill_' + h['loop'].astype(str)
-
-    # Flag (don't drop) hybrids, snow, and out-of-scope loops.
-    hybrid = h['workout_raw'].astype(str).str.contains(r'hc/rep', regex=True, na=False)
-    snow_w = h['workout_raw'].astype(str).str.contains('snow', case=False, na=False)
-    snow_c = h['conditions'].astype(str).str.contains('snow', case=False, na=False)
-    h['excluded_reason'] = None
-    h.loc[~h['loop'].isin(HC_LOOPS.keys()), 'excluded_reason'] = 'hc_loop_other'
-    h.loc[hybrid, 'excluded_reason'] = 'hc_rep_hybrid'
-    h.loc[snow_w | snow_c, 'excluded_reason'] = 'snow'
 
     def _meta(loop, key):
         return HILL_LOOP_META.get(loop, {}).get(key)
@@ -380,15 +460,39 @@ def project_hill_continuous(cs, epoch):
     # Total amount gained per session = (elev_up + elev_down) × nreps.
     h['ft_gained'] = (h['loop_elev_up'].fillna(0) + h['loop_elev_down'].fillna(0)) * h['nreps']
 
-    # Route-agnostic elevation-corrected 5K-equivalent for the Workouts plot.
-    # Effort cost of climbing is removed from t_eff via a uniform coefficient
-    # (HILL_ELEV_COST_SEC_PER_FT × ft_gained), then the corrected effective
-    # time is projected hyperbolically. Same formula for all loops — no
-    # per-loop calibration. Training plot ignores this column and continues
-    # to use the uncorrected p5k_min plus per-loop offsets.
-    h['t_eff_elev_corr']    = h['t_eff'] - HILL_ELEV_COST_SEC_PER_FT * h['ft_gained']
-    h['t_5k_hyp_elev_corr'] = (5000 - h['dp_t']) * h['t_eff_elev_corr'] / (h['d_m'] - h['dp_t'])
-    h['p5k_min_elev_corr']  = h['t_5k_hyp_elev_corr'] * 1609.344 / 5000.0 / 60.0
+    # Hill-model covariates: total gain per quality mile, and the binary
+    # terrain class from the locations sheet (paved vs trail; anything
+    # non-paved counts as trail).
+    h['ft_per_mi'] = h['ft_gained'] / (h['quality_dist_m'] / 1609.344)
+    terrain = h['loop'].map(lambda l: _meta(l, 'terrain_type'))
+    h['is_trail'] = (terrain.astype(str).str.lower()
+                     .map(lambda t: np.nan if t in ('nan', 'none', '')
+                          else float(t != 'paved')))
+
+    # Pinned Minetti net up+down cost at each loop's grade (multiplicative
+    # on t_eff — see src/shared/hill_model.py). p5k_min_hillcorr is the
+    # gain-corrected projection both plots build on; the trail term is
+    # fitted downstream and applied on top.
+    per_loop_climb = h['loop_elev_up'].fillna(0) + h['loop_elev_down'].fillna(0)
+    h['minetti_factor'] = minetti_net_factor(per_loop_climb, h['loop_distance_m'])
+    t_eff_corr = h['t_eff'] / h['minetti_factor']
+    t5k_corr = (5000 - h['dp_t']) * t_eff_corr / (h['d_m'] - h['dp_t'])
+    h['p5k_min_hillcorr'] = t5k_corr * 1609.344 / 5000.0 / 60.0
+    h['minetti_resid'] = (h['p5k_min_hillcorr'] - h['p5k_cs_min']) * 60
+
+    # Flag (don't drop) hybrids, snow, and loops the model can't cover.
+    # TQ scope is covariate-based: any loop with surveyed distance (required
+    # above), elevation data, and a terrain class is correctable by the hill
+    # model — no per-loop session-count gate, so a brand-new route qualifies
+    # on its first session.
+    no_cov = (h['loop_elev_up'].isna() & h['loop_elev_down'].isna()) | h['is_trail'].isna()
+    hybrid = h['workout_raw'].astype(str).str.contains(r'hc/rep', regex=True, na=False)
+    snow_w = h['workout_raw'].astype(str).str.contains('snow', case=False, na=False)
+    snow_c = h['conditions'].astype(str).str.contains('snow', case=False, na=False)
+    h['excluded_reason'] = None
+    h.loc[no_cov, 'excluded_reason'] = 'hc_no_covariates'
+    h.loc[hybrid, 'excluded_reason'] = 'hc_rep_hybrid'
+    h.loc[snow_w | snow_c, 'excluded_reason'] = 'snow'
     return h
 
 

@@ -36,6 +36,13 @@ Per-100m pace is a classification signal ONLY — never a measurement
 (track mode verifies distance per lap; finer pace is GPS noise). All
 reported numbers are block-level aggregates anchored to watch events.
 
+Continuous-hill days (run_type hill_cont) take a separate GPS-anchored path
+(see extract_hill_day): find the loop point — the hand log fixes the loop
+count, the surveyed loop distance stays authoritative — and measure the
+block's exact moving time plus per-loop splits. Statuses hill-exact /
+hill-total / hill-no-block; loop rows carry kind='loop'. Flat-workout
+consumers filter on status exact|watch-only and never see hill rows.
+
 Reads from DATA_DIR (per-profile via RP_DATA_DIR): daily.csv,
 bayes_cs_summary.csv, races.csv (watch-only mode); rich details from
 --details-dir. Writes DATA_DIR/workout_measured.csv with one status row
@@ -58,6 +65,7 @@ import pandas as pd
 from src.coros import mappings as M
 from src.coros.build_current_log import Activity
 from src.shared.paths import DATA_DIR
+from src.shared.workouts import hc_loop_distance, parse_hc
 
 MILE = 1609.344
 QUALITY_TYPES = {'tempo', 'interval', 'rep', 'fartlek'}
@@ -193,6 +201,175 @@ def seg_lap_ratios(recs):
             if laps:
                 ratios[round(seg[0][0])] = statistics.median(laps)
     return ratios
+
+
+# ---------- continuous hills (loop-point detection) ----------
+# A hill_cont day is loops of one surveyed circuit. The hand log fixes the
+# loop count, the surveyed loop distance stays authoritative (GPS reads ~5%
+# short under tree cover) — the watch contributes exact TIME. Max starts and
+# stops the hill-block recording at the loop point, so activity bounds pin
+# loop 1's start / loop N's end and the anchor's nreps-1 interior crossings
+# pin the rest; on merged recordings (warmup/cooldown in the same activity)
+# the block bounds are the first/last crossing of a regular run instead.
+# Mid-block watch pauses are subtracted from time, nothing more.
+
+HILL_RADIUS = 20.0            # m, anchor pass radius (seg_lap_ratios')
+HILL_CAND_STEP = 30           # try an anchor candidate every ~30 GPS fixes
+HILL_GAP_BAND = (0.75, 1.10)  # crossing gap as fraction of surveyed loop
+HILL_EDGE_EPS = 15.0          # s, crossing this close to a block bound IS it
+HILL_MERGE_FRAC = 1.25        # fragment beyond this many loops = merged jog
+HILL_SPLIT_TOL = 0.25         # splits within this of their median = per-loop
+
+
+def _gps_stream(rec, gap_s=10):
+    """Flattened (t, d, lat, lon) for one activity; pause-split runs shorter
+    than 10 fixes dropped (GPS settle noise)."""
+    pts = _freq_gps(rec)
+    if not pts:
+        return []
+    segs, cur = [], [pts[0]]
+    for prev, p in zip(pts, pts[1:]):
+        if p[0] - prev[0] > gap_s:
+            segs.append(cur)
+            cur = []
+        cur.append(p)
+    segs.append(cur)
+    return [p for s in segs if len(s) >= 10 for p in s]
+
+
+def _hav_np(ref, lat, lon):
+    la1, lo1 = math.radians(ref[0]), math.radians(ref[1])
+    la2, lo2 = np.radians(lat), np.radians(lon)
+    h = (np.sin((la2 - la1) / 2) ** 2
+         + math.cos(la1) * np.cos(la2) * np.sin((lo2 - lo1) / 2) ** 2)
+    return 2 * 6371000 * np.arcsin(np.sqrt(h))
+
+
+def _anchor_crossings(ref, ts, ds, lat, lon, min_adv):
+    """(t, d) passes of ref, deduped by cumulative-distance advance (a runner
+    dawdling at the anchor scores one crossing, not many)."""
+    idx = np.nonzero(_hav_np(ref, lat, lon) < HILL_RADIUS)[0]
+    out, last_d = [], -1e9
+    for i in idx:
+        if ds[i] - last_d > min_adv:
+            out.append((float(ts[i]), float(ds[i])))
+            last_d = ds[i]
+    return out
+
+
+def _regular_run(vs, loop_m):
+    """Longest consecutive sub-run of crossings whose distance gaps look like
+    one loop: median inside HILL_GAP_BAND, every gap within 25% of median.
+    Isolates the loop block from stray warmup/cooldown passes."""
+    best_len, best = 0, None
+    for i in range(len(vs)):
+        for j in range(i + 1, len(vs)):
+            gaps = [vs[k + 1][1] - vs[k][1] for k in range(i, j)]
+            med = statistics.median(gaps)
+            if not (HILL_GAP_BAND[0] * loop_m <= med
+                    <= HILL_GAP_BAND[1] * loop_m):
+                continue
+            if any(abs(g - med) > 0.25 * med for g in gaps):
+                continue
+            if j - i + 1 > best_len:
+                best_len, best = j - i + 1, (i, j)
+    return best
+
+
+def _hill_pause_s(rec, a, b):
+    """Watch-pause seconds starting inside [a, b] (timestamps epoch-seconds)."""
+    return sum(dur / 100.0 for ps, _e, dur in rec.get('pauses') or []
+               if ps and a <= ps / 100.0 <= b)
+
+
+def _hill_eval(rec, pts, rv, nreps):
+    """Score one regular run: block bounds, pause-corrected splits, totals.
+
+    A fragment under HILL_MERGE_FRAC loops outside the run belongs to the
+    block (a partial whose boundary crossing the GPS missed — activity
+    started/stopped at the loop point); a larger fragment is a merged jog
+    and the crossing itself is the block bound."""
+    t0, t1 = pts[0][0], pts[-1][0]
+    d0, d1 = pts[0][1], pts[-1][1]
+    gap_m = statistics.median(b[1] - a[1] for a, b in zip(rv, rv[1:]))
+    b_start, sk = ((t0, 'act') if rv[0][1] - d0 < HILL_MERGE_FRAC * gap_m
+                   else (rv[0][0], 'cross'))
+    b_end, ek = ((t1, 'act') if d1 - rv[-1][1] < HILL_MERGE_FRAC * gap_m
+                 else (rv[-1][0], 'cross'))
+    inner = [v[0] for v in rv if v[0] - b_start > HILL_EDGE_EPS
+             and b_end - v[0] > HILL_EDGE_EPS]
+    bounds = [b_start] + inner + [b_end]
+    splits = [(b - a) - _hill_pause_s(rec, a, b)
+              for a, b in zip(bounds, bounds[1:])]
+    med = statistics.median(splits)
+    consistent = (len(splits) == nreps
+                  and all(abs(s - med) <= HILL_SPLIT_TOL * med
+                          for s in splits))
+    cv = (statistics.pstdev(splits) / statistics.mean(splits)
+          if len(splits) > 1 else 9.9)
+    return {'rec': rec, 'bounds': bounds, 'nrun': len(rv),
+            'total_s': (b_end - b_start) - _hill_pause_s(rec, b_start, b_end),
+            'splits': splits, 'consistent': consistent, 'cv': cv,
+            'kinds': (sk, ek), 'gap_m': gap_m}
+
+
+def _hill_annotate(row, rec, a, b):
+    """Per-piece HR + standing rest from the activity's (t, d, h) stream."""
+    hs = [h for t, _, h in _freq_points(rec) if a <= t <= b and h]
+    row['avg_hr'] = round(statistics.mean(hs)) if hs else None
+    row['max_hr'] = max(hs) if hs else None
+    row['rest_stand_s'] = round(_hill_pause_s(rec, a, b))
+    return row
+
+
+def extract_hill_day(recs, nreps, loop_m):
+    """Locate the day's hill block and measure it.
+
+    Returns (loops, status): 'hill-exact' -> one dict per loop (surveyed
+    dist, measured moving time); 'hill-total' -> one aggregate dict (block
+    bounds had to be activity bounds for the total to be trusted);
+    'hill-no-block' -> nothing usable."""
+    exact, generic = None, None
+    for rec in recs:
+        pts = _gps_stream(rec)
+        if len(pts) < 60:
+            continue
+        ts = np.array([p[0] for p in pts])
+        ds = np.array([p[1] for p in pts])
+        lat = np.array([p[2] for p in pts])
+        lon = np.array([p[3] for p in pts])
+        cands = [(pts[i][2], pts[i][3])
+                 for i in range(0, len(pts), HILL_CAND_STEP)]
+        # the block-end position is the strongest loop-point candidate on a
+        # standalone block recording (no cold-start GPS drift there)
+        cands.append((statistics.median(p[2] for p in pts[-5:]),
+                      statistics.median(p[3] for p in pts[-5:])))
+        for ref in cands:
+            vs = _anchor_crossings(ref, ts, ds, lat, lon,
+                                   0.5 * 0.95 * loop_m)
+            if len(vs) < 2:
+                continue
+            run = _regular_run(vs, loop_m)
+            if run is None:
+                continue
+            r = _hill_eval(rec, pts, vs[run[0]:run[1] + 1], nreps)
+            if r['consistent'] and (exact is None or r['cv'] < exact['cv']):
+                exact = r
+            gscore = (r['nrun'], -r['cv'])
+            if generic is None or gscore > generic['_score']:
+                generic = {**r, '_score': gscore}
+
+    if exact is not None:
+        rec, bounds = exact['rec'], exact['bounds']
+        loops = [_hill_annotate({'L': loop_m, 't': s}, rec, a, b)
+                 for s, a, b in zip(exact['splits'], bounds, bounds[1:])]
+        return loops, 'hill-exact'
+    if generic is not None and generic['kinds'] == ('act', 'act'):
+        rec, bounds = generic['rec'], generic['bounds']
+        agg = _hill_annotate({'L': nreps * loop_m, 't': generic['total_s']},
+                             rec, bounds[0], bounds[-1])
+        return [agg], 'hill-total'
+    return [], 'hill-no-block'
 
 
 # ---------- coarse blocks ----------
@@ -734,7 +911,7 @@ def build_workout_measured(daily, details_dir, cs_path, *, watch_only=False,
         inv.setdefault(act.local_date.isoformat(), []).append(
             (p.stem, act.sport_type, rec))
 
-    plan = []    # (date, [recs], logged_qd, cf_allowed)
+    plan = []    # (date, [recs], logged_qd, cf_allowed, hill=(nreps, loop_m))
     if watch_only:
         race_dates = set()
         if races_path and Path(races_path).exists():
@@ -742,7 +919,7 @@ def build_workout_measured(daily, details_dir, cs_path, *, watch_only=False,
         for date, acts in inv.items():
             tracks = [r for l, st, r in acts if st == M.SPORT_TRACK_RUN]
             if tracks and date not in race_dates:
-                plan.append((date, tracks, None, False))
+                plan.append((date, tracks, None, False, None))
     else:
         hand = daily.copy()
         hand['date'] = pd.to_datetime(hand['date']).dt.date.astype(str)
@@ -758,13 +935,20 @@ def build_workout_measured(daily, details_dir, cs_path, *, watch_only=False,
             if tracks:
                 if run_type == 'race':
                     continue
-                plan.append((date, tracks, qd, cf))
+                plan.append((date, tracks, qd, cf, None))
             elif run_type in QUALITY_TYPES:
-                plan.append((date, [r for l, st, r in acts], qd, cf))
+                plan.append((date, [r for l, st, r in acts], qd, cf, None))
+            elif run_type == 'hill_cont':
+                _min, nreps, loop = parse_hc(h)
+                loop_m = hc_loop_distance(loop) if loop else None
+                if nreps and loop_m:
+                    plan.append((date, [r for l, st, r in acts],
+                                 float(nreps) * float(loop_m), False,
+                                 (int(nreps), float(loop_m))))
 
     cutoff = cs_threshold_fn(cs_path)
     rows = []
-    for date, recs, logged, cf in sorted(plan):
+    for date, recs, logged, cf, hill in sorted(plan):
         if not watch_only and date in DISQUALIFIED:
             rows.append({'date': date,
                          'status': f'disqualified: {DISQUALIFIED[date]}',
@@ -776,17 +960,23 @@ def build_workout_measured(daily, details_dir, cs_path, *, watch_only=False,
                          'logged_qd_m': logged, 'rep_idx': 0})
             skipped_slim += 1
             continue
-        chosen, status = extract_day(rich, cutoff(date), logged, cf)
+        if hill:
+            chosen, status = extract_hill_day(rich, *hill)
+            kind = 'loop'
+        else:
+            chosen, status = extract_day(rich, cutoff(date), logged, cf)
+            kind = None
         rows.append({'date': date, 'status': status, 'logged_qd_m': logged,
                      'rep_idx': 0})
         for i, r in enumerate(chosen):
             rows.append({
                 'date': date, 'status': status, 'logged_qd_m': logged,
-                'rep_idx': i + 1, 'kind': 'cf' if r.get('cf') else 'rep',
+                'rep_idx': i + 1,
+                'kind': kind or ('cf' if r.get('cf') else 'rep'),
                 'dist_m': r['L'], 'time_s': round(r['t'], 1),
                 'pace_sec_per_mi': round(r['t'] / (r['L'] / MILE), 1),
                 'rest_stand_s': r['rest_stand_s'],
-                'rest_jog_s': r['rest_jog_s'],
+                'rest_jog_s': r.get('rest_jog_s'),
                 'avg_hr': r['avg_hr'], 'max_hr': r['max_hr'],
             })
     cols = ['date', 'status', 'logged_qd_m', 'rep_idx', 'kind', 'dist_m',

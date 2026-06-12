@@ -85,10 +85,11 @@ The volume / temperature / weight panel: three stacked subplots with moving-aver
 | Doc | Layer | Covers |
 |-----|-------|--------|
 | `cs-model-reference.md` | 1 | PyMC HSGP fit, race exclusion logic, why the combined model was rejected, run flow (`bayes_cs_fit.py --tag vN` then `bayes_cs_plot.py --tag vN`, ~8min). |
-| `training-quality-reference.md` | 2 | tau decay (210), distance thresholds, long-run binning, hill-loop offsets, iterative prune threshold (+23.3 s/mi), smoother bandwidth, ESS gates, gap-break logic. |
+| `training-quality-reference.md` | 2 | tau decay (210), distance thresholds, long-run binning, ONE shared CS predictor for quality workouts (per-category offsets removed June 2026 — era effort policy is signal), hill correction (pinned Minetti net cost + fitted trail term, `hill_model.csv`), continuous-fartlek 500/300 reconstruction (float:hard pinned 1.25), watch-measured hill-block time (GPS loop-point detection in `reps.py`, surveyed distance authoritative), track-relative iterative outlier prune, rep/hill scatter weights, smoother bandwidth, ESS gates, gap-break logic. |
 | `recovery-runs-reference.md` | 3 | Era window (±182d), OLS features, route inclusion threshold, rejected normalizers (volume, bodyweight). |
 | `route-normalization-reference.md` | cross | Schema and dataflow of the locations sheet, propagation to recovery and TQ. |
 | `qualitative-trends-reference.md` | diagnostic | Window sizes (56/28/56-day MA, 14d min-max with 7d smoothing), gradient-strip rendering, weight gap-align before+after smoothing. |
+| `cs-workout-enrichment-plan.md` | 1 (plan) | Plan-of-record for *if/how* watch-enriched interval workouts get added to the CS fit. Not started; gates + validation protocol to work through on a dedicated thread before touching `bayes_cs_fit.py` inputs. |
 
 ## Pre-2016 race data
 

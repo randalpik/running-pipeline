@@ -100,18 +100,15 @@ sits next to CS without feeding back into it.
   watch profiles degrade to an intercept-only fit.
 - **τ = 210 sec/mi for workout D_eff decay.** Calibrated so 6×1600 @ 3:00/mi
   rest gives D_eff ≈ 5000m (anchor preserved from earlier work).
-- **Reps excluded from the smoother.** Anaerobic top-end work, doesn't
-  reflect aerobic CS-frame fitness. Decomposer still emits them; plot
-  pipeline filters them out.
+- **Reps excluded from the smoother.** *(Superseded June 2026: reps
+  re-entered scatter-weighted once the g(d) anaerobic correction landed —
+  see Stage 5a.)*
 - **Hill continuous workouts included as a TQ category (April 2026).**
-  Per-loop offsets for `lc`, `rc`, `pwr1` (n>7 cutoff). No grade
-  adjustment is applied: the per-loop offset absorbs any uniform per-
-  loop transformation, so adjustments like Minetti's energy-cost curve
-  are mathematically redundant. Other loops (pwr3, hj, 106th, fm1) lack
-  enough data for stable offsets and are dropped from TQ; they will be
-  surfaced on the future all-workouts qualitative plot using loop
-  distance/elevation for display only. Hill repeats are categorically
-  excluded (no per-rep distance is logged, so no pace can be recovered).
+  *(Superseded June 2026: per-loop offsets replaced by the hill model —
+  gain/mi + terrain, Stage 3.5 — which also admits the rare loops
+  (pwr3, hj, 106th) the n>7 offset rule had to drop.)* Hill repeats
+  remain categorically excluded (no per-rep distance is logged, so no
+  pace can be recovered).
 
 ## Pipeline (April 2026)
 
@@ -124,10 +121,26 @@ older `workout_vdot_v6.csv`, with these rule changes:
 - **Continuous-fartlek classification**: fartleks 6400–10000m with zero or
   no rest annotation are classified as continuous_fartlek (not interval).
   Boundary at 6400m fixes 2024-03-09 (6800m) and 2024-07-07 (8000m).
+- **Continuous-fartlek structure (June 2026)**: every CF day decomposes as
+  its known alternation — **500m hard / 300m float**, truncating at the end
+  for non-divisible distances (a trailing partial is hard; the one 8200m
+  day reads `10×(500+300f) + 200m`). The float:hard pace ratio is
+  hand-pinned at **1.25** — dimensionless so it transfers across eras —
+  measured 1.253 bin-by-bin on the one watch-covered CF day (2024-07-07:
+  hard 5:08/mi even, float 6:26/mi remarkably consistent; the float runs
+  ~34 s/mi SLOWER than era recovery-run pace, so a recovery-model anchor
+  would have misfired). Hard pace falls out of the blended log pace in
+  closed form; the floats act as jog rests in the same g(d)-aware
+  connected accumulator every structured workout uses. Moves the CF
+  cluster from +18 to ~+11 raw (the remainder is the distance-only g(d)
+  applied to 5K-effort 500s — a documented structural compromise).
 - **Implicit decomposition**: workouts written as bare `Nt` / `Ni` / `Nf`
   with no `Nx` reps decompose to standard rep distances (interval ≥ 4800m
   → 1600m reps; 3200–4799 → 800m; rep → 400m; tempo < 7000 → 1000m,
-  ≥ 7000 → 1600m).
+  ≥ 7000 → 1600m). Well-understood staples decompose to their real
+  structure (June 2026): **6400t = 4×1600** (the 2017 weekly staple;
+  5000t = 5×1000 already falls out of the <7000 rule; 4800f has its
+  hardcoded ladder).
 - **Default rests**: tempo 60 s/mi, interval 140 s/mi (800m) or 180 s/mi
   (other), rep 420 s/mi, continuous_fartlek 0.
 
@@ -169,54 +182,78 @@ computed inside the route-dummy model and didn't survive its removal;
 the bin was absorbing route/era mix, not a glycogen regime change. See
 "Decisions locked in".)
 
-Long-run residuals are then corrected by an OLS fit (Stage 5b) rather
-than by a per-category median offset like workouts and hills.
+Long-run residuals are then corrected by an OLS fit (Stage 5b); hills
+by the hill model (Stage 3.5); workouts carry no label corrections at
+all (Stage 5a).
 
-### Stage 3.5 — Hill continuous projection
+### Stage 3.5 — Hill continuous projection + hill model
 
-Filter: `run_type == 'hill_cont'` AND `loop ∈ {lc, rc, pwr1}`. The n>7
-cutoff matches the aggressive scoping used elsewhere (analogous to the
-`miles ≥ 20` long-run cutoff). Loop is parsed from the workout string
+Filter: `run_type == 'hill_cont'` AND the loop has a surveyed
+`distance_m`, elevation data, and a terrain class — **covariate-based,
+no per-loop session-count gate**, so a brand-new route anywhere
+qualifies on its first session. Loop is parsed from the workout string
 (`hc-Nx <loop>`); 4 sessions in May–June 2018 missing the inline loop
 token are recovered from the `location` column ("rollercoaster" → rc,
 "powerline west" → pwr1). Two `hc/rep` hybrid sessions (Sept 2016) are
 dropped at parse time.
-
-Loop lookup table (source: "hills" tab in *Max's Running Data*) — only
-`distance_m` is used by TQ. The full elevation data (up/down/net) lives
-in the source for use by the future all-workouts qualitative plot, not
-here.
-
-| Loop  | Distance (m, full loop) |
-|-------|------------------------:|
-| lc    | 1290                    |
-| rc    | 850                     |
-| pwr1  | 620                     |
 
 Per session:
 1. `total_dist_m = nreps · loop_distance_m`
 2. `actual_pace = (session_min · 60) / (total_dist_m / 1609.344)`
 3. CS-hyp projection on `(total_dist_m, actual_pace · total_dist_m / 1609.344)`
    → `t_5K`, `P5K`, `raw_resid` as in Stage 2.
-4. Category: `hill_<loop>`.
+4. Category: `hill_<loop>` — informational grouping only; corrections
+   come from the hill model, never from per-loop categories.
 
-**No grade or terrain adjustment is applied.** The per-loop offset
-(Stage 5) absorbs all loop-specific systematics — grade, surface,
-terrain — by construction: any uniform per-loop shift collapses into
-the offset and is subtracted back out before the smoother sees it.
-A Minetti-style energy-cost adjustment was tried and rejected for this
-reason; the only signal it could have added was the within-loop pace-
-dependent spread, which empirically is < 4 s/mi against per-loop
-residual SDs of 5–22 s/mi.
+**Watch-measured time override (June 2026).** For watch-era days,
+`reps.py::extract_hill_day` locates the loop block in the day's GPS
+streams (the loop point is found by anchor-crossing search, constrained
+by the logged loop count; the regular crossing run isolates the block
+even when warmup/cooldown share the recording) and measures its exact
+moving time; mid-block watch pauses are subtracted and per-loop splits
+recorded (display-only). The override replaces `session_min · 60` —
+which is whole-minute quantized (±30 s ≈ ±7 s/mi) and silently includes
+standing rest — with measured seconds. **Distance is never taken from
+GPS** (reads 2–9% short on these loops); `nreps · loop_distance_m` stays
+authoritative, only time moves. Measured 2021–2026 corpus: 24/24 days
+extracted with full per-loop splits; measured-vs-logged delta median
++12 s (range −33..+26), i.e. exactly the rounding band. A fitted watch
+term came out −2.3 s/mi ≈ noise, so measured and log-timed days share
+one model. Pre-watch days are untouched.
+
+**Hill correction (June 2026, `src/shared/hill_model.py`): pinned
+Minetti net cost + ONE fitted trail term.** Physical terms replaced
+per-loop offsets, the same overhaul the long-run model went through: a
+loop's empirical beta encoded "how hard that loop's era was run", and
+Love Circle — a moderate paved loop — carrying a +32 s/mi beta was the
+tell. The gain correction is PINNED from mechanism (the long-run pinned
+elev-slope precedent): Minetti 2002 energy cost of running at gradient
+i, applied as a multiplicative NET factor for a loop that climbs and
+descends — `(C(i)+C(−i))/2C(0)` with `i = climb/(loop/2)` (symmetric
+half-up/half-down approximation; the hills sheet records climb and
+distance, not climb fraction). Net cost ≈ +14 s/mi for lc, +26 rc, +48
+pwr1 — descents give most of the climb back at moderate grades, which a
+free-fitted gain slope ignored (it absorbed effort gap and read a
+5:09-pace lc day as a 4:28/mi 5K-equiv; rejected as not grounded —
+Minetti reads it 4:55, matching intuition). The only FITTED term is the
+binary trail-vs-paved difference of Minetti-corrected residuals,
+currently **+26.9 s/mi** (rocky/gravel descents don't give the climb
+back; era-confounding caveat: pwr1 is all 2016-18). There is NO
+intercept and hills are NOT centered — the hill-class effort gap (~+23
+s/mi for the main loops) stays visible like tempo-era effort policy
+does. Prune inside the fit is iterative one-sided MAD (drops only
+egregious easy days; currently 1). The trail coefficient is persisted
+to `hill_model.csv`; the Workouts plot recomputes the Minetti factor
+from loop covariates and subtracts the same trail term.
 
 ### Stage 4 — Corrections
 
-Applied before offset computation:
+Applied before projection / centering:
 
-- **Tempo → Interval reclassification**: any tempo with `rep_dist ≥ 1600m`
-  AND no `Nx` in the raw log → interval. Catches 2024-05-04 (`10000t@4:56`,
-  written as 10K continuous tempo but functionally an interval). Preserves
-  2016 `4×1600t` / `3×1600t` legitimate tempos.
+- ~~Tempo → Interval reclassification~~ **removed June 2026** — it was a
+  pre-watch band-aid (visual-only; tempo and interval share the same
+  projection) and the per-category offsets it papered over are gone too.
+  Type is logged intent, preserved end-to-end.
 - **Snow filter**: drops sessions with `snow` in `workout_raw` or
   `conditions`. Removes 4 workouts and 1 long run; surface conditions
   invalidate pace projection. (Note: 2026-01-19 and 2026-01-22 were on
@@ -224,20 +261,95 @@ Applied before offset computation:
 - **XC −6% pace correction**: applied to (a) all sessions in the HS XC
   season window 2016-07-01 through 2016-10-31, and (b) any tempo logged
   with `quality_distance == 5000m` (HS 5K course as 5×segments, three
-  summer 2017 entries). Pace divided by 1.06 before projection. Tooltip
-  marks corrected sessions with `[XC-corrected −6%]` in light blue.
+  summer 2017 entries). **Track locations are categorically exempt**
+  (June 2026): both rules target XC-course efforts, and a workout on an
+  actual track is neither — 2021-04-26, a 5000m track tempo at Rose
+  Park, was the one mis-hit (read −0.3 corrected; reads +18.6 fixed).
+  Pace divided by 1.06 before projection. Tooltip marks corrected
+  sessions with `[XC-corrected −6%]` in light blue.
 
-### Stage 5a — Per-category offsets and outlier prune (workouts and hills)
+### Stage 5a — One shared CS predictor + track-relative prune
 
-For each workout / hill category, the median raw residual becomes the
-offset; the corrected residual is `raw_resid − offset`.
+**Per-category offsets were REMOVED in June 2026.** Every quality workout
+(interval / tempo / rep / cont. fartlek) shares one CS predictor with no
+label terms. The old per-category medians (tempo +19.7, cf +17.9,
+interval +1.3) were label dummies absorbing **era effort policy**: 41 of
+49 tempo days are 2016–17 (classic threshold tempos, medians +28/+17);
+the only watch-measured tempo (2024-05-04, long intervals with short
+rest) reads +1.7 — interval-grade — yet inherited the −19.7 era discount
+and displayed as one of the fastest workouts in the set. CF is entirely
+a 2019–20 block at +18 in its era; interval is stable ~0–8 across all
+eras (TAU was calibrated on intervals, making them the anchor). The gap
+is **intent-as-executed per era** — exactly the "training ahead of /
+behind capability" signal this plot exists to show — so it stays in the
+residuals, same precedent as the long-run route-dummy removal.
 
-Outliers are pruned iteratively: any session with corrected residual
-> +23.3 s/mi after offset application is dropped, offsets are recomputed
-on the surviving set, and the cycle repeats until no point exceeds the
-threshold. Converges in 3–4 passes. Hills have a higher prune rate
-(~20%) than workouts because the long right tail of "easy hill days"
-sits just above the +23.3 cutoff.
+There are **no class constants either** (a brief global-median centering
+was removed the same day): every point on the Training graph and the
+Workouts graph is the *same number* — the best attempt at predicting 5K
+race pace from that session. Workouts enter raw; hills enter
+Minetti+trail-corrected raw; long runs enter via their model's corrected
+residual (known to have its own issues — one long run currently implies
+4:10 pace — to be revisited). Per-category medians are printed as
+**diagnostics only** (effort policy, not corrected).
+
+**Track-relative prune.** Outliers are judged against the *surrounding
+data*, not against CS or a label baseline: fit the smoother, detrend
+every workout/hill point by the track value at its date, drop the slow
+side beyond `median + PRUNE_SIGMA·MAD` (σ=3.0) of the detrended
+residuals, refit; iterate to a fixed point (converges in ~2 passes). An
+era-soft session sits near its era's soft track and survives; a session
+that sticks out from its own surroundings goes (currently exactly one:
+the 2017-07-17 +69 tempo, +47 above even its local track). Long runs
+contribute to the track but are pruned by their own model (Stage 5b);
+hills by the hill model's internal prune (Stage 3.5).
+
+Reps and hills are noisier CS signals, so they enter the smoother
+scatter-weighted (`(σ_ref/σ)²` clipped to [0.1, 1.0], σ_ref = non-rep
+workout residual SD), recomputed inside the prune loop — currently reps
+0.79, hills pooled 0.55.
+
+**Course-verification gate ("uncertain accuracy", June 2026 —
+sign-blind).** The projection is only as trustworthy as the course
+measurement, and mismeasurement cuts both ways (a short course reads
+fast, a long one slow). The prior that exposed it: workouts should
+nearly always read SLOWER than CS — the sub-max effort gap is the very
+thing TQ measures — so faster-than-CS points on unverifiable courses
+were scrutinized first, then the rule was made consistent on both
+sides. A workout is trusted outright if **watch-verified** (status
+exact/watch-only), on a **track** (`terrain_type == 'track'` — also
+covers 2016-17 quality days under the "education hill" catch-all that
+were really rhs track once relabeled), or **non-solo** (partners
+verify the course). Within the unverified remainder, two rescues:
+**continuous efforts (0 rest)** — mismeasurement bites on back-and-
+forth reps with badly marked start/finish lines, not a single unbroken
+course — and **pre-2018 staples** (`5000t`/`6400t`/`4800f` strings).
+Everything else is flagged `uncertain accuracy` (all 10 powerline 2 —
+measured short: gravel yet not slower than surrounding work, and never
+replicated post-watch; 9 education hill rest-interval days; 8 hartman;
+centennial, powerline mid, east boulder ×1), including all three
+previously watch-disqualified road-anomaly days.
+
+**Implausibility ceiling (same tag).** The watch-verified corpus bounds
+how much a genuine workout can beat SAME-DAY CS — currently 8.6 s/mi
+(2022-12-05, mid-peak; the real "workouts lead the smoothed CS curve"
+effect). A non-verified day beating CS by more is a bad decomposition
+the log string can't recover (reps that may have included 100s/150s,
+intervals that included 800s) and is flagged regardless of
+track/partners/staple trust — only watch verification shields
+(2017-03-28, varsity, read 4:46/mi: faster than any capability ever
+demonstrated, six years before the actual peak). The margin is
+data-derived and self-adjusts as the verified corpus grows. Catches 7
+days beyond the course gate (the 2016-17 varsity outliers −8.8..−18.9)
+and independently re-catches 7 of the course-gate cuts. An era-window
+(±1yr best-CS) variant was tested and rejected: it missed look-ahead
+cases (2016-04-11 hides under the 2017 peak) and over-cut
+explicitly-verified keeps at zero margin. 37 days carry the flag in
+total; all stay visible on the Workouts plot with the tag.
+
+The Workouts plot annotates every TQ-excluded session in its hover
+(`training_quality_exclusions.csv`): snow flag, `uncertain accuracy`,
+or `residual +X > +thr cutoff` for outliers (track-relative).
 
 ### Stage 5b — Long-run model (physical route terms + covariates)
 
@@ -293,45 +405,45 @@ are still day-scale (decay τ ≈ 5–6d) so the damage is bounded, but
 re-examine the betas once more cross-era data accumulates or after
 elev_per_mile gaps are filled.
 
-### Per-category offsets / coefficients (June 2026)
+### Fitted constants / diagnostic medians (June 2026)
 
 These drift as data accumulates — regenerate by running
 `plot_training_quality.py` and reading the console output.
 
-Workouts and hills (Stage 5a):
+Per-category median raw residuals, **diagnostic only** (era effort
+policy, deliberately left in the signal; nothing is subtracted):
 
-| Category            | Offset (sec/mi) | Interpretation                             |
-|---------------------|----------------:|--------------------------------------------|
-| interval            |          −2.31  | At ~5K capability                          |
-| continuous_fartlek  |         +17.58  | Sub-threshold continuous                   |
-| tempo               |         +18.99  | Sub-threshold by design                    |
-| hill_lc             |         +28.75  | Paved 3.5% loop, tempo+hill effort         |
-| hill_pwr1           |         +96.62  | Steep gravel 9.8% loop                     |
-| hill_rc             |         +75.38  | Rocky-trail 5.8% loop                      |
+| Category            | Median resid (sec/mi) | Reading                              |
+|---------------------|----------------------:|--------------------------------------|
+| interval            |                 +1.98 | The calibration anchor               |
+| rep                 |                 +5.43 | g(d)-corrected, scatter-weighted     |
+| continuous_fartlek  |                +11.58 | 500/300-reconstructed (was +17.9)    |
+| tempo               |                +19.51 | Mostly 2016–17 era effort policy     |
+
+Hill correction (Stage 3.5): Minetti net factor pinned (lc ≈ +14 s/mi,
+rc +26, pwr1 +48 at typical paces); fitted trail term **+26.94 s/mi**
+(n_kept=126, resid SD 15.6; persisted to `hill_model.csv`). CF float:hard
+ratio pinned at **1.25**. Scatter weights: reps 0.97, hills pooled 0.54.
 
 Long-run model (Stage 5b), reference: median-elevation (62 ft/mi)
 sea-level route:
 
 | Term                        | Coef (sec/mi) |
 |-----------------------------|--------------:|
-| Intercept                   |       +27.45  |
+| Intercept                   |       +33.71  |
 | elev_pm_c (per ft/mi)       | +0.17 pinned  |
-| altitude_kft (per 1000 ft)  |        +2.98  |
-| temp_centered (per °C)      |        +0.11  |
-| fat_marathon (peak)         |       +35.61  |
-| fat_race_short (peak)       |       +28.95  |
+| altitude_kft (per 1000 ft)  |        +1.71  |
+| temp_centered (per °C)      |        +0.28  |
+| fat_marathon (peak)         |       +40.41  |
+| fat_race_short (peak)       |       +22.24  |
 
-Fit on n_kept = 188 (3 pruned): R² = 0.119, resid SD = 18.09 sec/mi.
+Fit on n_kept = 268 (5 pruned): R² = 0.106, resid SD = 19.02 sec/mi.
 The R² drop vs the route-dummy model (0.605) is **intentional**: the
 dummies were explaining era effort policy, which is signal the graph
 should display, not variance the model should remove.
 
-Reps (~35) are excluded from the smoother.
-
-Total kept after all filters and prunes: 217 workouts + 188 long runs
-+ 96 hills = 501. Hill offsets are large because they encode actual
-on-loop pace (no grade adjustment); steeper loops have proportionally
-larger offsets.
+Total kept after all filters and prunes: 235 workouts + 268 long runs
++ 126 hills = 629 (June 2026; 37 days carry the uncertain-accuracy flag).
 
 ## Stage 6 — Adaptive Gaussian smoother
 
@@ -407,14 +519,40 @@ race residual = −0.16. Three reasons:
    fit primarily on marathons (sparse HM data); the HM projection is
    underconstrained. Adding a (correct) training residual to a
    (miscalibrated) HM prediction makes it worse.
-3. **Per-category offsets are time-invariant but prescription varied by
-   era.** Continuous fartleks happened only 2019–2020; the pooled offset
-   under-corrects 2019 specifically. Tempos in HS era were prescribed
-   differently than modern era. This adds noise to per-race predictions
-   but doesn't change retrospective block-level patterns.
+3. **Era-varying effort prescription.** Continuous fartleks happened only
+   2019–2020; HS-era tempos were prescribed differently than modern ones.
+   *(June 2026: this is exactly why per-category offsets were removed —
+   effort policy now shows in the residuals instead of being averaged
+   into a label constant. It still adds noise to per-race predictions.)*
 
 ## Considered and rejected
 
+- **Duration term instead of category offsets (June 2026).** Tested
+  `raw_resid ~ ln(D_eff/5000)` as a label-free replacement for the
+  per-category offsets: it halves the tempo–interval gap but leaves
+  tempo +12 above interval, and there is NO within-category duration
+  signal (spearman ≈ 0 inside tempo and interval) — the gap is a step
+  between labels, not a smooth duration effect.
+- **Longest-continuous-piece / structure term (June 2026).** Broken
+  3–5-min-piece tempos (n=29) still read +19 vs intervals −1 at the
+  same piece length — structure doesn't explain the gap either. What
+  does: the label encodes intent-as-executed *per era* (see Stage 5a),
+  which is signal, so no term replaces the offsets — they were simply
+  removed.
+- **Free-fitted hill gain slope (June 2026, lived a few hours).**
+  `raw_resid ~ intercept + ft_per_mi + is_trail` fit the observed loops
+  but was not grounded: it treated all climbing as pure cost (no descent
+  payback), so the slope (+0.36 s/ft) absorbed effort gap and the
+  negative intercept (−21.6) compensated in-range — a 5:09-pace lc day
+  displayed as a 4:28/mi 5K-equivalent. Gain and terrain are also
+  correlated across the six loops (pinning the intercept collapses gain
+  to +0.09 and balloons trail to +42), and pwr1 alone pinned the steep
+  end (LOO miss +70 s/mi). Replaced by the pinned Minetti net cost —
+  which lands precisely on intuition (the 4:28 day reads 4:55).
+- **Minetti-style grade adjustment (pre-June-2026 rejection).** Rejected
+  when per-loop offsets existed (any uniform per-loop shift collapsed
+  into the offset, making it redundant). Adopted June 2026 once the
+  offsets were gone — it is now the pinned gain correction.
 - **Riegel projection.** Used initially; mathematically reasonable but
   theoretically unfounded. Replaced by CS-hyperbolic to unify with the
   rest of the pipeline.

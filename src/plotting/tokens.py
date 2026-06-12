@@ -48,10 +48,20 @@ CAT_COLORS = {
     'rep':                "#F38A12",  # carrot orange (CF peach → vivid)
     'continuous_fartlek': "#FF5643",  # warm orange (CF peach → vivid, distinct from rep)
     'long':               '#674EA7',  # deep purple (CF purple family)
-    'hill_lc':            '#3D85C6',  # saturated medium blue (CF light blue → vivid)
-    'hill_rc':            '#3D85C6',
-    'hill_pwr1':          '#3D85C6',
+    'hill_cont':          '#3D85C6',  # saturated medium blue (CF light blue → vivid)
     'hill_rep':           '#1ABC9C',  # vivid teal (CF muted teal #A2C4C9 → vivid)
+}
+
+
+# --- Workout condition-tag rings (Workouts tab). One color per tag, used
+#     both for the marker ring and the matching tooltip tag text so the two
+#     always read as the same signal. 'xc' deliberately reuses the XC surface
+#     green — it marks XC-corrected sessions that stay in Training. ---
+TAG_COLORS = {
+    'uncertain accuracy': '#FF4500',         # bright red-orange (kept clearly
+                                             # off the carrot-orange rep fill)
+    'snow':               '#8FD3FF',         # light blue
+    'xc':                 SURFACES['XC'],    # XC green
 }
 
 

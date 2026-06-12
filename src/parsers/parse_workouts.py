@@ -192,6 +192,42 @@ def _measured_d_eff(day):
 WATCH_ERA_START_YEAR = 2020
 LADDER_4800 = [1600, 800, 800, 400, 400, 400, 400]   # 4800f @ 2:20: exact, hardcoded
 
+# Continuous fartlek is ALWAYS alternating 500m hard / 300m float (Max;
+# verified bin-by-bin on the one watch-covered day, 2024-07-07: hard 5:08/mi,
+# float 6:26/mi — astonishingly even). The float:hard pace ratio is
+# hand-pinned at a round 1.25 (measured 1.253), dimensionless so it
+# transfers across fitness eras; the hard pace then falls out of the
+# blended log pace in closed form. The pattern truncates at the end for
+# distances that don't divide into 800m blocks (a trailing partial is hard).
+CF_HARD_M, CF_FLOAT_M = 500.0, 300.0
+CF_FLOAT_HARD_RATIO = 1.25
+
+
+def _cf_structure(total_m, blended_pace):
+    """(d_eff, t_eff, structure_label) for a continuous fartlek, from its
+    known 500/300 alternation — see CF_FLOAT_HARD_RATIO above. The floats
+    act as jog rests in the connected accumulator; the same g(d)-aware
+    machinery every structured workout uses."""
+    hards, floats = [], []
+    rem = float(total_m)
+    while rem > 0:
+        h = min(CF_HARD_M, rem); hards.append(h); rem -= h
+        if rem > 0:
+            f = min(CF_FLOAT_M, rem); floats.append(f); rem -= f
+    hard_m, float_m = sum(hards), sum(floats)
+    p_hard = blended_pace * total_m / (hard_m + CF_FLOAT_HARD_RATIO * float_m)
+    p_float = CF_FLOAT_HARD_RATIO * p_hard
+    times = [p_hard * d / MILE_M for d in hards]
+    rests = [p_float * floats[i] / MILE_M if i < len(floats) else 0.0
+             for i in range(len(hards))]
+    d_eff, t_eff = _connected_core(hards, times, rests)
+    n_full = sum(1 for h in hards if h == CF_HARD_M)
+    label = f'{n_full}×(500+300f)'
+    tail = total_m - n_full * (CF_HARD_M + CF_FLOAT_M)
+    if tail > 0:
+        label += f' + {int(tail)}m'
+    return d_eff, t_eff, label
+
 
 def _logged_rest_per_mile(raw):
     """Logged rest/mile from a workout string, or None if not annotated.
@@ -259,7 +295,7 @@ def effective_rest_per_mile(rtype, rep_dist, year, logged_rpm, rest_model):
     return (dflt if dflt is not None else 0.0), False
 
 
-def measured_to_decomposed(measured, daily_df):
+def measured_to_decomposed(measured, daily_df, cf_structure=True):
     """Convert watch-measured reps (workout_measured.csv, written by
     src/coros/reps.py) into decomposed-schema rows.
 
@@ -318,11 +354,15 @@ def measured_to_decomposed(measured, daily_df):
         pace = day['time_s'].sum() / (total / MILE_M)
 
         if (day['kind'] == 'cf').all():
+            if cf_structure:    # Max's 500/300 convention, hand-log only
+                d_eff, t_eff, label = _cf_structure(total, pace)
+            else:
+                d_eff, t_eff, label = float(total), day['time_s'].sum(), None
             rows.append({'date': dt, 'type': 'continuous_fartlek',
                          'rep_dist': int(total), 'rep_count': 1,
                          'pace_per_mile': pace, 'rest_per_mile': 0,
-                         'structure': None, 'd_eff_m': float(total),
-                         't_eff_s': day['time_s'].sum()})
+                         'structure': label, 'd_eff_m': round(d_eff, 1),
+                         't_eff_s': round(t_eff, 1)})
             enriched.add(dt)
             continue
 
@@ -463,11 +503,19 @@ def decompose(daily_df, continuous_fartlek_only=False, rest_model=None):
         if (rtype == 'fartlek'
                 and (has_zero_rest or no_rest_annotation)
                 and total_m and cf_lo <= total_m <= cf_hi):
+            # The 500/300 reconstruction encodes Max's personal fartlek
+            # convention — hand-log profiles only. Watch-import profiles
+            # (continuous_fartlek_only) keep the continuous treatment.
+            if continuous_fartlek_only:
+                d_eff, t_eff = float(total_m), qp * total_m / MILE_M
+                label = None
+            else:
+                d_eff, t_eff, label = _cf_structure(total_m, qp)
             results.append({
                 'date': dt, 'type': 'continuous_fartlek',
                 'rep_dist': int(total_m), 'rep_count': 1,
-                'pace_per_mile': qp, 'rest_per_mile': 0, 'structure': None,
-                'd_eff_m': float(total_m), 't_eff_s': qp * total_m / MILE_M,
+                'pace_per_mile': qp, 'rest_per_mile': 0, 'structure': label,
+                'd_eff_m': round(d_eff, 1), 't_eff_s': round(t_eff, 1),
             })
             continue
 
@@ -519,7 +567,12 @@ def decompose(daily_df, continuous_fartlek_only=False, rest_model=None):
                 elif rtype == 'rep':
                     rep_dist, rep_count = 400, round(qd / 400)
                 elif rtype == 'tempo':
-                    if qd < 7000:
+                    # Well-understood staples decompose to their real
+                    # structure (Max): 6400t = 4×1600 (the 2017 weekly
+                    # staple), 5000t = 5×1000 (covered by the <7000 rule).
+                    if qd == 6400:
+                        rep_dist, rep_count = 1600, 4
+                    elif qd < 7000:
                         rep_dist, rep_count = 1000, round(qd / 1000)
                     else:
                         rep_dist, rep_count = 1600, round(qd / 1600)
@@ -607,7 +660,8 @@ def main():
     # replace their parsed rows (real structure + measured rest); watch-only
     # days are added outright. See measured_to_decomposed for the rules.
     if measured is not None:
-        m_rows, enriched = measured_to_decomposed(measured, daily)
+        m_rows, enriched = measured_to_decomposed(
+            measured, daily, cf_structure=not args.continuous_fartlek_only)
         if m_rows:
             decomposed = decomposed[~decomposed['date'].isin(enriched)]
             decomposed = pd.concat(
