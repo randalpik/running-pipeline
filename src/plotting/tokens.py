@@ -61,7 +61,13 @@ TAG_COLORS = {
     'uncertain accuracy': '#FF4500',         # bright red-orange (kept clearly
                                              # off the carrot-orange rep fill)
     'snow':               '#8FD3FF',         # light blue
+    'outlier':            '#E8A33C',         # amber — matches the exclusion
+                                             # tooltip text; distinct from the
+                                             # red-orange accuracy ring
     'xc':                 SURFACES['XC'],    # XC green
+    'enriched':           '#AAAAAA',         # light gray — informational:
+                                             # session successfully watch-
+                                             # enriched (white overpowered)
 }
 
 

@@ -75,14 +75,14 @@ input[type="checkbox"]:checked {
   pointer-events: none;
   z-index: 9999;
   /* Note: with box-sizing: border-box, max-width counts the 14px×2 padding
-     + 1px×2 border, so content area = max-width − 30. The pre-border-box
-     era of this file used max-width: 380 with content-box, giving 380px
-     of content area; 410 keeps that same content area now. */
+     + 1px×2 border, so content area = max-width − 30. */
   min-width: 200px;
-  max-width: 410px;
+  max-width: 360px;
   /* Each line stays on one line; if it overflows the tooltip's max-width
      it's clipped (overflow: hidden). Prevents reflow-induced text shift
-     when the box width animates between content sizes. */
+     when the box width animates between content sizes. Content that should
+     wrap instead of clipping (long watch rep lists) goes in a .tt-wrap
+     span, which restores normal wrapping inside the nowrap tooltip. */
   white-space: nowrap;
   display: none;
   overflow: hidden;
@@ -109,6 +109,7 @@ input[type="checkbox"]:checked {
 }
 .rp-tooltip .tt-row > span:first-child { color: #aaa; }
 .rp-tooltip .tt-mute { color: #999; }
+.rp-tooltip .tt-wrap { white-space: normal; }
 .rp-tooltip b { color: #fff; font-weight: 600; }
 
 /* Spike line — position: fixed so transforms place it relative to the

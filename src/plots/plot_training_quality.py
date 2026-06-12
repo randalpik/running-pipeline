@@ -68,7 +68,7 @@ GRID_FREQ          = '7D'
 # trace with their own hover title, so they never need registered labels.
 CAT_LABEL = {
     'interval': 'Interval', 'tempo': 'Tempo', 'rep': 'Rep',
-    'continuous_fartlek': 'Cont. fartlek',
+    'continuous_fartlek': 'Fartlek',
 }
 
 
@@ -107,8 +107,16 @@ CAT_LABEL = {
 # Tooltip-only labels (legend uses CAT_LABEL — keeps abbreviated form there).
 TOOLTIP_TITLE = {
     'interval': 'Intervals',
-    'continuous_fartlek': 'Continuous fartlek',
 }
+
+
+def residual_line(raw, corrected):
+    """One tooltip line for the residual pair. When the correction is a
+    no-op at display precision, collapse to a single 'Residual:' figure."""
+    if f"{raw:+.1f}" == f"{corrected:+.1f}":
+        return f"<b>Residual:</b> {raw:+.1f}s/mi"
+    return (f"<b>Raw residual:</b> {raw:+.1f}s/mi   "
+            f"<b>Corrected:</b> {corrected:+.1f}s/mi")
 
 
 def workout_hover(r, single_type=False):
@@ -119,15 +127,18 @@ def workout_hover(r, single_type=False):
     xc_note = f' <span style="color:{SURFACES["XC"]}">(XC-corrected)</span>' if r.get('xc_corrected') else ''
     rep_count = int(r['rep_count'])
     rep_dist = int(r['rep_dist'])
+    # pace_per_mile is log-owned end-to-end (enriched days are normalized to
+    # the logged quality pace in parse_workouts).
+    pace = r['pace_per_mile']
     structure = r.get('structure')
     if isinstance(structure, str) and structure:
         # Watch-enriched: actual measured rep layout, not the effective rep.
-        body = f"{structure} @ {sec_to_mss(r['pace_per_mile'])}/mi"
-    elif cat == 'continuous_fartlek' and rep_count == 1:
-        body = f"{rep_dist}m @ {sec_to_mss(r['pace_per_mile'])}/mi"
+        body = f"{structure} @ {sec_to_mss(pace)}/mi"
+    elif rep_count == 1:
+        # A single continuous effort (fartlek, tempo, ...) — no '1 ×'.
+        body = f"{rep_dist}m @ {sec_to_mss(pace)}/mi"
     else:
-        body = (f"{rep_count} × {rep_dist}m @ "
-                f"{sec_to_mss(r['pace_per_mile'])}/mi")
+        body = f"{rep_count} × {rep_dist}m @ {sec_to_mss(pace)}/mi"
     if pd.notna(r['rest_per_mile']) and r['rest_per_mile'] > 0:
         body += f", rest {sec_to_mss(r['rest_per_mile'])}/mi"
     parts = [
@@ -135,8 +146,7 @@ def workout_hover(r, single_type=False):
         body,
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
         f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
-        f"<b>Raw residual:</b> {r['raw_resid']:+.1f}s/mi   "
-        f"<b>Corrected:</b> {r['resid']:+.1f}s/mi",
+        residual_line(r['raw_resid'], r['resid']),
     ]
     return "<br>".join(p for p in parts if p)
 
@@ -149,8 +159,7 @@ def long_run_hover(r):
         f"<b>Pace:</b> {sec_to_mss(r['recovery_pace_sec_per_mi'])}/mi",
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
         f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
-        f"<b>Raw residual:</b> {r['raw_resid']:+.1f}s/mi   "
-        f"<b>Corrected:</b> {r['corrected']:+.1f}s/mi",
+        residual_line(r['raw_resid'], r['corrected']),
     ]
     return "<br>".join(p for p in parts if p)
 
@@ -160,7 +169,7 @@ def hill_hover(r):
     nreps = int(r['nreps'])
     loops_word = 'loop' if nreps == 1 else 'loops'
     ft_gained = int(round(float(r.get('ft_gained') or 0)))
-    time_part = (f"{sec_to_mss(r['t_eff'])} total (watch)"
+    time_part = (f"{sec_to_mss(r['t_eff'])} total"
                  if r.get('watch_measured')
                  else f"{int(r['session_min'])} min total")
     parts = [
@@ -169,8 +178,7 @@ def hill_hover(r):
         f"<b>Actual pace:</b> {sec_to_mss(r['actual_pace_s'])}/mi",
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
         f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
-        f"<b>Raw residual:</b> {r['raw_resid']:+.1f}s/mi   "
-        f"<b>Corrected:</b> {r['resid']:+.1f}s/mi",
+        residual_line(r['raw_resid'], r['resid']),
     ]
     return "<br>".join(p for p in parts if p)
 
@@ -188,7 +196,8 @@ def main():
     # Record why each quality workout is excluded from Training so the Workouts
     # plot can annotate it (the slow-"outlier" sessions show only there). Snow
     # is a category flag here; outliers are added during the prune below.
-    tq_excluded = [{'date': r['date'], 'reason': r['excluded_reason'], 'resid': np.nan}
+    tq_excluded = [{'date': r['date'], 'reason': r['excluded_reason'],
+                    'resid': np.nan, 'src': 'workout'}
                    for _, r in workouts[workouts['excluded_reason'].notna()].iterrows()]
     workouts  = workouts[workouts['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
     long_runs = long_runs[long_runs['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
@@ -241,6 +250,9 @@ def main():
         if n_hout:
             print(f'  Easy-day rows pruned ({n_hout}):')
             for _, row in hills[hills['is_outlier']].iterrows():
+                tq_excluded.append({'date': row['date'], 'reason': 'easy outlier',
+                                    'resid': round(float(row['corrected']), 1),
+                                    'src': 'hill'})
                 print(f'    H  {row["date"].date()}  loop={row["loop"]:<6} '
                       f'raw={row["raw_resid"]:+6.1f}  '
                       f'corrected={row["corrected"]:+6.1f}')
@@ -339,13 +351,17 @@ def main():
                 r = workouts.loc[row['orig']]
                 pruned_w_idx.add(row['orig'])
                 tq_excluded.append({'date': r['date'], 'reason': 'outlier',
-                                    'resid': round(float(detrended[pos]), 1)})
+                                    'resid': round(float(detrended[pos]), 1),
+                                    'src': 'workout'})
                 print(f'    W  {r["date"].date()}  {r["category"]:<20} '
                       f'vs-track={detrended[pos]:+5.1f}  raw={r["raw_resid"]:+5.1f}  '
                       f'pace={int(r["pace_per_mile"])}s/mi')
             else:
                 r = hills.loc[row['orig']]
                 pruned_h_idx.add(row['orig'])
+                tq_excluded.append({'date': r['date'], 'reason': 'outlier',
+                                    'resid': round(float(detrended[pos]), 1),
+                                    'src': 'hill'})
                 print(f'    H  {r["date"].date()}  loop={r["loop"]:<6} '
                       f'vs-track={detrended[pos]:+5.1f}  raw={r["raw_resid"]:+5.1f}')
 
@@ -367,11 +383,13 @@ def main():
     for c, g in workouts.groupby('category')['resid']:
         print(f'  {c:<22} {g.median():+6.2f}  (n={len(g)})')
 
-    # Persist which quality workouts Training excluded (snow flag + residual
-    # outliers), so the Workouts plot can annotate them in hover. cutoff is
-    # the track-relative prune threshold; resid is the vs-track residual.
+    # Persist which sessions Training excluded (snow flag + residual
+    # outliers; src distinguishes workouts from hills), so the Workouts plot
+    # can annotate them in hover. cutoff is the track-relative prune
+    # threshold; resid is the vs-track residual ('outlier') or the hill
+    # model's corrected residual ('easy outlier').
     excl_csv = DATA_DIR / 'training_quality_exclusions.csv'
-    excl_df = pd.DataFrame(tq_excluded, columns=['date', 'reason', 'resid'])
+    excl_df = pd.DataFrame(tq_excluded, columns=['date', 'reason', 'resid', 'src'])
     excl_df['cutoff'] = round(thr, 1)
     excl_df.to_csv(excl_csv, index=False)
     print(f'Wrote {excl_csv}  ({len(excl_df)} excluded workouts)')

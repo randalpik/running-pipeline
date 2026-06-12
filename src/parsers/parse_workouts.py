@@ -23,7 +23,7 @@ from datetime import date
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, DEBUG_DIR
-from src.shared.workouts import RECON_TAU_S, g_anaerobic
+from src.shared.workouts import RECON_TAU_S, g_anaerobic, watch_log_demotions
 
 MILE_M = 1609.344
 
@@ -314,13 +314,24 @@ def measured_to_decomposed(measured, daily_df, cf_structure=True):
     full-recovery rests push D_eff toward D' and the 5K-equivalent
     explodes). Per-rep detail stays in workout_measured.csv for display.
 
+    Log-pace normalization (Max's invariant, June 2026): when the hand log
+    carries a quality pace, the LOG is the source of truth for the workout's
+    pace — GPS distance error (watch reads short) must never override Max's
+    course measurement. Every measured rep time is scaled by one factor
+    f = logged_pace / watch_blended_pace, so the blended pace equals the log
+    exactly while the relative differences between reps are preserved to the
+    bit. The raw watch blended pace is kept in `watch_pace_raw` so consumers
+    can show the adjustment and gate on watch-vs-log disagreement.
+
       rep_dist     : distance-weighted mean rep length (sum d_i^2 / sum d_i)
                      rounded to 100m — exact for uniform days, an effective
                      rep for ladders (kept for type inference and as a
                      fallback summary; display and projection use the
                      columns below);
       rep_count    : round(total / rep_dist), >= 1;
-      pace_per_mile: time-weighted measured pace across all reps;
+      pace_per_mile: log-normalized pace across all reps (= the logged
+                     quality pace when present, else the watch pace);
+      watch_pace_raw: blended watch pace BEFORE normalization (s/mi);
       rest_per_mile: MEASURED total rest (standing + jog) per rep-mile,
                      replacing the parser's defaults;
       structure    : run-length-encoded rep layout in rep order
@@ -337,20 +348,37 @@ def measured_to_decomposed(measured, daily_df, cf_structure=True):
 
     Returns (rows, enriched_dates).
     """
-    daily_types = {}
+    daily_types, daily_qp = {}, {}
     if daily_df is not None:
         d = daily_df.copy()
         d['date'] = pd.to_datetime(d['date']).dt.date
         daily_types = dict(zip(d['date'], d['run_type']))
+        if 'quality_pace_sec_per_mi' in d.columns:
+            daily_qp = dict(zip(d['date'], d['quality_pace_sec_per_mi']))
 
     rows, enriched = [], set()
+    # Watch-log mismatch demotion: when the raw watch pace disagrees with
+    # the log beyond the per-rep gate, the watch data is wrong in some way —
+    # the day keeps its string-parser row (pre-watch-era quality) instead of
+    # being enriched. See shared.workouts.watch_log_demotions.
+    demoted = watch_log_demotions()
     reps = measured[(measured['rep_idx'] > 0)
                     & (measured['status'].isin(['exact', 'watch-only']))]
     for dt, day in reps.groupby('date'):
+        if dt in demoted:
+            continue
         dt = pd.to_datetime(dt).date()
         day = day.sort_values('rep_idx')
         run_type = daily_types.get(dt)
         total = day['dist_m'].sum()
+        watch_pace = day['time_s'].sum() / (total / MILE_M)
+
+        # Normalize watch times to the logged pace (see docstring): one
+        # scale factor on every rep time, rests untouched (wall-clock).
+        qp_log = daily_qp.get(dt)
+        if qp_log is not None and not pd.isna(qp_log) and qp_log > 0:
+            day = day.copy()
+            day['time_s'] = day['time_s'] * (qp_log / watch_pace)
         pace = day['time_s'].sum() / (total / MILE_M)
 
         if (day['kind'] == 'cf').all():
@@ -361,6 +389,7 @@ def measured_to_decomposed(measured, daily_df, cf_structure=True):
             rows.append({'date': dt, 'type': 'continuous_fartlek',
                          'rep_dist': int(total), 'rep_count': 1,
                          'pace_per_mile': pace, 'rest_per_mile': 0,
+                         'watch_pace_raw': round(watch_pace, 1),
                          'structure': label, 'd_eff_m': round(d_eff, 1),
                          't_eff_s': round(t_eff, 1)})
             enriched.add(dt)
@@ -386,6 +415,7 @@ def measured_to_decomposed(measured, daily_df, cf_structure=True):
         rows.append({'date': dt, 'type': final_type,
                      'rep_dist': int(rep_dist), 'rep_count': int(rep_count),
                      'pace_per_mile': pace, 'rest_per_mile': rest_per_mile,
+                     'watch_pace_raw': round(watch_pace, 1),
                      'structure': _structure_label(day['dist_m']),
                      'd_eff_m': round(d_eff, 1), 't_eff_s': round(t_eff, 1)})
         enriched.add(dt)
@@ -621,7 +651,8 @@ def decompose(daily_df, continuous_fartlek_only=False, rest_model=None):
     # e.g. a watch import of all easy runs) is still a well-formed frame the
     # caller can sort/write rather than a column-less DataFrame.
     decomp_cols = ['date', 'type', 'rep_dist', 'rep_count', 'pace_per_mile',
-                   'rest_per_mile', 'structure', 'd_eff_m', 't_eff_s']
+                   'rest_per_mile', 'watch_pace_raw', 'structure',
+                   'd_eff_m', 't_eff_s']
     return pd.DataFrame(results, columns=decomp_cols), pd.DataFrame(pruned)
 
 
@@ -668,6 +699,10 @@ def main():
                 [decomposed, pd.DataFrame(m_rows)], ignore_index=True)
             print(f'Watch-enriched: {len(enriched)} days '
                   f'({len(m_rows)} decomposed rows) from {measured_path}')
+        demoted = sorted(watch_log_demotions())
+        if demoted:
+            print(f'Watch-demoted (log mismatch, parser fallback): '
+                  f'{", ".join(demoted)}')
 
     decomposed = decomposed.sort_values('date').reset_index(drop=True)
     pruned = pruned.sort_values('date').reset_index(drop=True) if len(pruned) else pruned

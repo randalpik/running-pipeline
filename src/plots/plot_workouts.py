@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import daily_floor
 from src.shared.workouts import (
-    load_cs,
+    load_cs, watch_log_demotions,
     project_workouts, project_hill_continuous, project_hill_reps,
 )
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
@@ -46,7 +46,7 @@ CAT_LABEL = {
     'interval':           'Intervals',
     'tempo':              'Tempo',
     'rep':                'Repetitions',
-    'continuous_fartlek': 'Cont. fartlek',
+    'continuous_fartlek': 'Fartlek',
     'hill_cont':          'Cont. hills',
     'hill_rep':           'Hill repeats',
 }
@@ -67,21 +67,30 @@ TAG_RING_WIDTH = 1     # the halo offset does the work; thin stroke suffices
 TAG_LEGEND = {
     'uncertain accuracy': 'Uncertain accuracy',
     'snow':               'Snow',
+    'outlier':            'Slow outlier',
     'xc':                 'XC-corrected',
+    'enriched':           'Watch-enriched',
 }
 
 
 def session_tag(r):
     """TAG_COLORS key for a session, or None when untagged. Exclusion tags
     win over the XC ring — XC green marks sessions that are XC-corrected
-    AND kept in Training."""
+    AND kept in Training. The white enriched ring is informational and
+    lowest-priority: a non-excluded session whose watch enrichment succeeded
+    (failures are visible by its ABSENCE on watch-era quality days)."""
     er = r.get('excluded_reason')
     if er == 'uncertain accuracy':
         return 'uncertain accuracy'
     if er == 'snow':
         return 'snow'
+    if r.get('tq_outlier'):
+        return 'outlier'
     if r.get('xc_corrected') and not isinstance(er, str):
         return 'xc'
+    if not isinstance(er, str) and (
+            isinstance(r.get('measured_line'), str) or r.get('watch_measured')):
+        return 'enriched'
     return None
 
 
@@ -109,20 +118,30 @@ def workout_hover(r, single_type=False):
     xc_note = f' <span style="color:{TAG_COLORS["xc"]}">(XC-corrected)</span>' if r.get('xc_corrected') else ''
     rep_count = int(r['rep_count'])
     rep_dist = int(r['rep_dist'])
+    # pace_per_mile is log-owned end-to-end: enriched days are normalized to
+    # the logged quality pace in parse_workouts (watch never overrides it).
+    pace = r['pace_per_mile']
     structure = r.get('structure')
     if isinstance(structure, str) and structure:
         # Watch-enriched: actual measured rep layout, not the effective rep.
-        body = f"{structure} @ {sec_to_mss(r['pace_per_mile'])}/mi"
-    elif cat == 'continuous_fartlek' and rep_count == 1:
-        body = f"{rep_dist}m @ {sec_to_mss(r['pace_per_mile'])}/mi"
+        body = f"{structure} @ {sec_to_mss(pace)}/mi"
+    elif rep_count == 1:
+        # A single continuous effort (fartlek, tempo, ...) — no '1 ×'.
+        body = f"{rep_dist}m @ {sec_to_mss(pace)}/mi"
     else:
-        body = (f"{rep_count} × {rep_dist}m @ "
-                f"{sec_to_mss(r['pace_per_mile'])}/mi")
+        body = f"{rep_count} × {rep_dist}m @ {sec_to_mss(pace)}/mi"
     if pd.notna(r.get('rest_per_mile')) and r['rest_per_mile'] > 0:
         body += f", rest {sec_to_mss(r['rest_per_mile'])}/mi"
     measured = r.get('measured_line')
     if isinstance(measured, str) and measured:
         body += f"<br>{measured}"
+        # How much the watch reps above were scaled to match the log pace
+        # (negative = GPS read short, watch times compressed to fit).
+        wpr, qp = r.get('watch_pace_raw'), r.get('quality_pace_sec_per_mi')
+        if pd.notna(wpr) and pd.notna(qp) and wpr > 0:
+            pct = (qp / wpr - 1.0) * 100.0
+            if abs(pct) >= 0.05:
+                body += f"<br><b>Watch adj:</b> {pct:+.1f}%"
 
     p5k_disp = r.get('p5k_display_min', r['p5k_min'])
     p5k_line = (f"<b>5K-equiv:</b> {fmt_min(p5k_disp)}/mi   "
@@ -142,13 +161,24 @@ def excluded_line(note, reason=None):
     return f'<i style="color:{color}">Excluded from Training: {note}</i>'
 
 
+HILL_EXCL_NOTE = {
+    'snow':             'snow',
+    'hc_rep_hybrid':    'hc/rep hybrid',
+    'hc_no_covariates': 'no elevation/terrain data for loop',
+}
+
+
 def hill_cont_hover(r):
     title = (f"<b>Continuous hills</b>"
              f"{route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}")
     nreps = int(r['nreps'])
     loops_word = 'loop' if nreps == 1 else 'loops'
     ft_gained = int(round(float(r.get('ft_gained') or 0)))
-    body = (f"{nreps} {loops_word}, {int(r['session_min'])} min total"
+    # Watch-measured days replace the hand log's whole-minute estimate with
+    # the exact moving total (the projection already uses it via t_eff).
+    time_part = (f"{sec_to_mss(r['t_eff'])} total" if r.get('watch_measured')
+                 else f"{int(r['session_min'])} min total")
+    body = (f"{nreps} {loops_word}, {time_part}"
             + (f", {ft_gained} ft gained" if ft_gained else ''))
     measured = r.get('hill_measured_line')
     if isinstance(measured, str) and measured:
@@ -161,8 +191,16 @@ def hill_cont_hover(r):
         f"<b>5K-equiv:</b> {fmt_min(r['p5k_display_min'])}/mi   "
         f"<b>CS 5K:</b> {fmt_min(r['p5k_cs_min'])}/mi",
     ]
-    if r.get('excluded_reason') == 'snow':
-        parts.append(excluded_line('snow', 'snow'))
+    # Exclusion tags, same convention as flat workouts: category flags come
+    # straight off excluded_reason; Training's prunes (outlier / easy
+    # outlier) arrive via the persisted exclusions CSV.
+    er = r.get('excluded_reason')
+    if isinstance(er, str) and er:
+        parts.append(excluded_line(HILL_EXCL_NOTE.get(er, er), er))
+    else:
+        excl = r.get('tq_excluded_line')
+        if isinstance(excl, str) and excl:
+            parts.append(excl)
     return "<br>".join(parts)
 
 
@@ -191,28 +229,39 @@ def hill_rep_hover(r):
     return "<br>".join(parts)
 
 
+def _rep_time(t):
+    """Absolute rep time for the Watch line: 'M:SS', or raw seconds under
+    100 (400@68, not 400@1:08)."""
+    return f"{int(round(t))}" if t < 100 else sec_to_mss(t)
+
+
 def measured_lines():
     """Per-date watch-measured rep decomposition for hover (workout_measured
-    .csv, written by src/coros/reps.py). Only trusted statuses appear."""
+    .csv, written by src/coros/reps.py). Only trusted statuses appear;
+    mismatch-demoted days are skipped (their watch data was rejected — the
+    hover shows the parser estimate like any non-enriched day). Reps show
+    absolute time, not pace; the .tt-wrap span wraps at tooltip width."""
     path = DATA_DIR / 'workout_measured.csv'
     if not path.exists():
         return {}
     m = pd.read_csv(path)
-    m = m[(m['rep_idx'] > 0) & (m['status'].isin(['exact', 'watch-only']))]
+    m = m[(m['rep_idx'] > 0) & (m['status'].isin(['exact', 'watch-only']))
+          & ~m['date'].isin(watch_log_demotions())]
     lines = {}
     for date, day in m.groupby('date'):
         parts = [f"{int(r['dist_m'])}{'cf' if r['kind'] == 'cf' else ''}"
-                 f"@{sec_to_mss(r['pace_sec_per_mi'])}"
+                 f"@{_rep_time(r['time_s'])}"
                  for _, r in day.iterrows()]
-        chunks = [' · '.join(parts[i:i+5]) for i in range(0, len(parts), 5)]
-        lines[date] = '<b>Watch:</b> ' + '<br>'.join(chunks)
+        lines[date] = ('<b>Watch:</b> <span class="tt-wrap">'
+                       + ' · '.join(parts) + '</span>')
     return lines
 
 
 def hill_measured_lines():
-    """Per-date watch-measured hill-block line for hover (kind='loop' rows in
-    workout_measured.csv). hill-exact days show per-loop splits; hill-total
-    days show the measured block time only."""
+    """Per-date watch hover line for hill blocks (workout_measured.csv).
+    The measured moving total is merged into the headline (hill_cont_hover
+    shows it as 'xx:xx total'), so the Watch line only carries what the
+    headline can't: per-loop splits on hill-exact days."""
     path = DATA_DIR / 'workout_measured.csv'
     if not path.exists():
         return {}
@@ -221,32 +270,45 @@ def hill_measured_lines():
           & (m['status'].isin(['hill-exact', 'hill-total']))]
     lines = {}
     for date, day in m.groupby('date'):
-        total = sec_to_mss(day['time_s'].sum())
         if (day['status'] == 'hill-exact').all() and len(day) > 1:
             splits = ' · '.join(sec_to_mss(t) for t in day['time_s'])
-            lines[date] = (f'<b>Watch:</b> {total} moving, '
-                           f'loops {splits}')
-        else:
-            lines[date] = f'<b>Watch:</b> {total} moving'
+            lines[date] = (f'<b>Watch:</b> <span class="tt-wrap">'
+                           f'loops {splits}</span>')
     return lines
 
 
-def tq_exclusion_lines():
-    """Per-date hover note for workouts Training excluded (training_quality_
-    exclusions.csv, written by plot_training_quality.py). Flags WHY, so the
-    slow sessions that survive only on the Workouts plot are explained. For
-    residual outliers, shows the corrected residual against the prune cutoff."""
+OUTLIER_REASONS = {'outlier', 'easy outlier'}
+
+
+def load_tq_exclusions(src):
+    """Rows of training_quality_exclusions.csv (written by
+    plot_training_quality.py) for one src ('workout' / 'hill')."""
     path = DATA_DIR / 'training_quality_exclusions.csv'
+    cols = ['date', 'reason', 'resid', 'cutoff', 'src']
     if not path.exists():
-        return {}
+        return pd.DataFrame(columns=cols)
     e = pd.read_csv(path)
+    if 'src' not in e.columns:
+        e['src'] = 'workout'
+    return e[e['src'] == src]
+
+
+def tq_exclusion_lines(src='workout'):
+    """Per-date hover note for sessions Training excluded. Flags WHY, so the
+    slow sessions that survive only on the Workouts plot are explained.
+    Workout residual outliers show the residual against the prune cutoff;
+    hill outliers (track prune or the hill model's easy-day prune) read
+    'slow outlier' — the marker position already shows how slow."""
     lines = {}
-    for _, r in e.iterrows():
-        if r['reason'] == 'outlier' and pd.notna(r.get('resid')):
+    for _, r in load_tq_exclusions(src).iterrows():
+        if r['reason'] in OUTLIER_REASONS and src == 'hill':
+            note, color_key = 'slow outlier', 'outlier'
+        elif r['reason'] == 'outlier' and pd.notna(r.get('resid')):
             note = (f"residual {r['resid']:+.1f} s/mi > +{r['cutoff']:.1f} cutoff")
+            color_key = str(r['reason'])
         else:
-            note = str(r['reason'])
-        lines[str(r['date'])] = excluded_line(note, str(r['reason']))
+            note, color_key = str(r['reason']), str(r['reason'])
+        lines[str(r['date'])] = excluded_line(note, color_key)
     return lines
 
 
@@ -277,6 +339,20 @@ def main():
             workouts['date'].dt.date.astype(str).map(excl))
         print(f'Training-exclusion note on {workouts["tq_excluded_line"].notna().sum()} '
               f'workout hovers')
+
+    h_excl = tq_exclusion_lines('hill')
+    if h_excl and len(hills_c):
+        hills_c['tq_excluded_line'] = (
+            hills_c['date'].dt.date.astype(str).map(h_excl))
+        print(f'Training-exclusion note on {hills_c["tq_excluded_line"].notna().sum()} '
+              f'hill hovers')
+    # Slow-outlier ring (amber) for hills Training pruned as outliers.
+    if len(hills_c):
+        he = load_tq_exclusions('hill')
+        out_dates = set(he.loc[he['reason'].isin(OUTLIER_REASONS), 'date']
+                        .astype(str))
+        hills_c['tq_outlier'] = (
+            hills_c['date'].dt.strftime('%Y-%m-%d').isin(out_dates))
 
     # One shared CS predictor, no per-category offsets (June 2026): every
     # workout displays its raw 5K-equivalent projection — intent and era

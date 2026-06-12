@@ -73,6 +73,26 @@ RECON_TAU_S = 540.0
 # BETA_SHORT display term. See [[project-workout-enrichment]].
 ANAEROBIC_K = 8000.0
 ANAEROBIC_D0 = 1400.0
+# Watch-vs-log disagreement gate (Max, June 2026): a large RAW watch-vs-log
+# pace gap means the watch data is wrong in some way (GPS error large enough
+# that the rep decomposition can't be trusted). The consequence is DEMOTION,
+# never exclusion: the day falls back to the string-parser estimate — the
+# same quality as the pre-watch era or any other watch failure case — and is
+# admitted to Training through the standard criteria like any non-enriched
+# day. (It also stops counting as watch-VERIFIED for the course gate and the
+# implausibility ceiling: the watch data we just rejected can't vouch for
+# anything.) The gate is PER MEASURED REP, not whole-day: GPS error accrues
+# at watch stops, so a 13-rep 12x400 day legitimately carries more total gap
+# than a 4x1600 day (2021-06-07, +11.5 s/mi over 13 reps, is clean). The
+# line sits in the distribution's natural break: the corpus runs ...1.42,
+# 1.62 | 1.98, 3.61, 4.12, 4.40 s/mi-per-rep — the four egregious days are
+# separated by a 1.6 gap above and 0.36 below.
+# Deliberately NO manual bad-decomp list (Max): days with known decomp flaws
+# (individual reps off by ~100m, e.g. 2023-10-22 / 2023-12-28) keep their
+# enrichment as long as the per-rep pace impact is below the gate — what's
+# admitted to CS is the pace signal, and a structurally imperfect decomp
+# with small pace error is still good signal.
+WATCH_LOG_MISMATCH_PER_REP_S = 1.75
 
 
 def g_anaerobic(d_m):
@@ -213,7 +233,8 @@ def project_workouts(cs, epoch):
     w = pd.read_csv(WORKOUTS_PATH, parse_dates=['date'])
     daily = pd.read_csv(DAILY_PATH, parse_dates=['date'])
     daily_cols = ['date', 'workout_raw', 'conditions', 'quality_distance_m',
-                  'display_name', 'city_state', 'temp_c']
+                  'quality_pace_sec_per_mi', 'display_name', 'city_state',
+                  'temp_c']
     for opt in ('partners', 'terrain_type'):
         if opt in daily.columns:
             daily_cols.append(opt)
@@ -276,7 +297,8 @@ def project_workouts(cs, epoch):
     verified = _watch_verified_dates()
     partners = w['partners'].astype(str).str.strip().str.lower()
     non_solo = partners.ne('solo') & partners.ne('') & partners.ne('nan')
-    watch = w['date'].dt.strftime('%Y-%m-%d').isin(verified)
+    # Mismatch-demoted days don't count as verified — see watch_log_demotions.
+    watch = w['date'].dt.strftime('%Y-%m-%d').isin(verified - watch_log_demotions())
     unverified = ~watch & ~w['is_track'] & ~non_solo
     continuous = w['rest_per_mile'].fillna(-1) == 0
     staple = ((w['date'].dt.year <= 2017)
@@ -293,7 +315,8 @@ def project_workouts(cs, epoch):
     # NOT track/partners/staple trust (2017-03-28, varsity, read 4:46/mi —
     # faster than any capability ever demonstrated). Margin is data-derived
     # and self-adjusts as the verified corpus grows; skipped when no
-    # verified rows exist to establish the bound.
+    # verified rows exist to establish the bound. (Demoted days already left
+    # the watch mask above — rejected watch data can't anchor the bound.)
     if watch.any():
         vmax = float(-w.loc[watch, 'raw_resid'].min())
         suspect |= ~watch & (w['raw_resid'] < -vmax)
@@ -349,6 +372,36 @@ def _watch_verified_dates():
         return set()
     m = pd.read_csv(path)
     return set(m.loc[m['status'].isin(['exact', 'watch-only']), 'date'])
+
+
+def watch_log_demotions():
+    """Dates whose watch enrichment fails the per-rep watch-log mismatch gate
+    (WATCH_LOG_MISMATCH_PER_REP_S above). Consumers treat these days as
+    NON-ENRICHED: parse_workouts keeps the string-parser row, project_workouts
+    drops them from the verified set, the Workouts plot shows no Watch line.
+    Empty set when no enrichment or no hand log exists."""
+    path = DATA_DIR / 'workout_measured.csv'
+    if not path.exists():
+        return set()
+    m = pd.read_csv(path)
+    m = m[(m['rep_idx'] > 0) & m['status'].isin(['exact', 'watch-only'])]
+    if m.empty or not DAILY_PATH.exists():
+        return set()
+    daily = pd.read_csv(DAILY_PATH)
+    if 'quality_pace_sec_per_mi' not in daily.columns:
+        return set()
+    qp_map = dict(zip(daily['date'],
+                      pd.to_numeric(daily['quality_pace_sec_per_mi'],
+                                    errors='coerce')))
+    out = set()
+    for date, day in m.groupby('date'):
+        qp = qp_map.get(date)
+        if qp is None or pd.isna(qp) or qp <= 0:
+            continue
+        watch_pace = day['time_s'].sum() / (day['dist_m'].sum() / 1609.344)
+        if abs(watch_pace - qp) / len(day) > WATCH_LOG_MISMATCH_PER_REP_S:
+            out.add(date)
+    return out
 
 
 def _load_hill_measured_t():
