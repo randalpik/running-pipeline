@@ -69,6 +69,10 @@ TAG_COLORS = {
     'enriched':           '#AAAAAA',         # light gray — informational:
                                              # session successfully watch-
                                              # enriched (white overpowered)
+    'partners':           '#F4D03F',         # bright yellow — partner-paced
+                                             # run excluded from Training
+                                             # (distinct from the amber
+                                             # outlier ring's orange cast)
 }
 
 

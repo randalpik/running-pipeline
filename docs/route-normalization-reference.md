@@ -109,6 +109,17 @@ surface) shouldn't depend on what effort you're running it at.
 Recovery is the cleanest baseline because effort is most consistent
 there.
 
+**June 2026 update**: the recovery fit now runs on watch/rule-corrected
+paces (`recovery_model.add_watch_corrections` — calibrated watch
+distance + moving time on paved watch-covered days, Nashville route-era
+deflation rules elsewhere; see docs/recovery-runs-reference.md). Route
+betas are therefore fit against honest distances: residual route
+mislogging no longer masquerades as route cost on watch-covered routes.
+The planned per-second elevation enrichment
+(docs/watch-stream-enrichment-plan.md) would supersede these route
+betas and `elev_per_mile` entirely for enriched runs via per-run
+Minetti grade costs.
+
 ## Cross-route findings (recovery-only, n=11 routes with elev populated)
 
 Single-feature regression of route beta against elev_per_mile:

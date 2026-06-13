@@ -175,11 +175,19 @@ sits next to CS without feeding back into it.
   `workouts.project_long_runs`:
   - **Distance calibration** (the dominant fix): watch-covered days
     project from `watch_mi·(1+slope) + intercept` — the profile's
-    logged-excess curve (`0.267 + 0.0350·mi` for Max; fixed endpoint/
+    logged-excess curve (`0.262 + 0.0350·mi` for Max; fixed endpoint/
     turnaround slack + proportional GPS underread), MAD-prune-fit on the
     paved recovery+long corpus (the prune ejects the mislogged days
-    without a manual list). Recovery and long runs sit on ONE curve —
-    long-run logging is not systematically worse than recovery logging.
+    without a manual list; trailing-strides recovery days are gated out
+    explicitly — Max pauses the watch for the strides, so the logged
+    miles sit ~+0.32 mi above the recovery-only watch distance, inside
+    the prune's reach). Recovery and
+    long runs sit on ONE curve — long-run logging is not systematically
+    worse than recovery logging. **Application is paved-gated** (June
+    2026): trail/mixed/un-typed terrain keeps logged values — GPS
+    corner-cutting under tree cover is a route property the paved-fit
+    curve can't speak for (10 previously-corrected non-paved days
+    reverted).
   - **True times**: watch moving seconds replace pace×miles (logged
     times are minute-rounded down, median −32 s, and exclude pauses).
   - **Pause-aware D_eff**: segments split at watch pauses/standstills
@@ -190,9 +198,11 @@ sits next to CS without feeding back into it.
     hyperbola is nearly flat at long-run distances so this is only
     ~+1–3 s/mi; it's kept for correctness, not magnitude.
   Pre-watch runs on the two staples (2018-01 → 2022-04-15) get a
-  route-era deflation instead (`MISLOGGED_LR_ROUTES`: belle meade 1.068,
+  route-era deflation instead (`MISLOGGED_ROUTES`: belle meade 1.068,
   greenway 1.056 — median logged-over-honest-logged inflation of each
-  route's watch-covered era). Watch enrichment wins over the rule.
+  route's watch-covered era; the constant lives in `recovery_model.py`
+  since June 2026 so the recovery fit applies the same rules to those
+  routes' recovery rows). Watch enrichment wins over the rule.
   Overread guard: enrichment may never make a run FASTER than logged —
   the log is optimistic, never pessimistic, so a corrected pace below
   the logged pace means the watch overread distance (loud GPS failures,
@@ -201,7 +211,9 @@ sits next to CS without feeding back into it.
   Corrections are projection/display-side only — logged columns are
   never rewritten; the Long Runs plot defaults to logged values with a
   Watch-correction toggle and an opt-in Show-tags ring overlay
-  (gray = watch-enriched, red = rule-corrected without watch data,
+  (light blue = snow, yellow = partner-paced — both excluded from
+  Training, matching the workout/recovery exclusion methodology;
+  gray = watch-enriched, red = rule-corrected without watch data,
   amber = Training's track-relative prune exclusions, vs-track residual
   in the tooltip). A "spurious log" >1σ ring was tried and killed
   same-day: it hit more than half the watch-enriched corpus — an
@@ -292,6 +304,16 @@ aerobic work at the fueling threshold; the distance ceiling excludes
 marathon-distance-plus endurance events that aren't race prep — see
 "Decisions locked in" for both rationales. Out-of-scope long runs
 aren't displayed in the plot and don't feed the smoother.
+
+Partner-paced long runs are excluded too (June 2026,
+`excluded_reason='partners'`): same population logic as the recovery
+fit's partner prune — a long run paced by someone else's targets isn't
+the runner's own effort policy. Solo and varsity are admitted
+(`ADMITTED_PARTNERS`; in 2016-17 the varsity group's recovery pace WAS
+Max's pace strategy); 13 of Max's long runs carry the flag. Snow takes
+priority when both apply. (Workout partners remain a TRUST signal in
+the course-verification gate, not an exclusion — a partnered workout is
+still the runner's own quality effort.)
 
 Per in-scope long run:
 1. `t_run = recovery_pace_sec_per_mi · miles` (seconds)

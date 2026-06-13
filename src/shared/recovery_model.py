@@ -16,12 +16,18 @@ Model (fit on the era-detrended residual = pace − CS − era_trend):
 
 Three classes of rows are pruned from BOTH the era-trend window contents AND
 the OLS fit (flags are independent — a row can be in multiple classes):
-bad conditions (snow/icy or "snow" in the workout string), partner runs, and
-LOO outliers (|residual from leave-one-out 28-day local mean| > 45 sec/mi
-against the clean neighbor pool). See the recovery plot docstring for the
+bad conditions (snow/icy or "snow" in the workout string), partner runs
+(any partners entry outside ADMITTED_PARTNERS — solo and varsity are
+admitted), and LOO outliers (|residual from leave-one-out 28-day local
+mean| > 45 sec/mi against the clean neighbor pool). See the recovery plot docstring for the
 full rationale and ``docs/recovery-runs-reference.md`` for the analysis
 history (sleep, distance, shoes, non-race quality efforts tested and
 excluded as non-factors).
+
+The fit runs on the watch/rule-corrected pace where one exists
+(``add_watch_corrections`` below — calibrated watch distance + moving time
+on paved days, route-era deflation rules elsewhere, pace-only on
+trailing-strides days). The logged columns are never rewritten.
 
 ``TRANSFERABLE_FEATURES`` names the per-day factors that are meaningful for
 runs other than recovery runs (temperature, recent-race fatigue, time of
@@ -37,6 +43,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+
+from src.shared.paths import DATA_DIR
 
 # ---------- conditions / pruning excluded from fit ----------
 # Time-of-day binary indicator. Recovery pace runs ~4.5 sec/mi slower in
@@ -54,12 +62,16 @@ EXCLUDED_CONDITIONS = {'snow', 'icy'}
 # in workout_raw that the conditions field missed.
 SNOW_IN_WORKOUT_RE = re.compile(r'\bsnow\b', re.IGNORECASE)
 
-# Partner-run detection: any partners entry that isn't blank/solo/none counts
-# as a non-solo run. Partner runs are a different population (HS team easy
-# days, the occasional Maddy run) — their pace targets and route choices
-# differ from solo recovery, and including them inflates within-period
-# variance. They're pruned from the fit alongside snow/ice/inside.
-NULL_PARTNERS = {'', 'nan', 'solo', 'none'}
+# Partner-run detection: any partners entry outside ADMITTED_PARTNERS counts
+# as a partner run. Partner runs are a different population (the occasional
+# Maddy run, one-off training partners) — their pace targets and route
+# choices differ from solo recovery, and including them inflates
+# within-period variance. They're pruned from the fit alongside
+# snow/ice/inside. 'varsity' is ADMITTED (June 2026, Max): in the 2016-17
+# era the varsity group's recovery pace WAS Max's pace strategy — those runs
+# are his own effort policy, not someone else's — so they belong in the fit
+# pool. Individual named partners stay excluded.
+ADMITTED_PARTNERS = {'', 'nan', 'solo', 'none', 'varsity'}
 
 # Outlier detection: residual from leave-one-out 28-day local mean exceeds
 # OUTLIER_THRESHOLD_SEC. Catches "clearly something happened" days
@@ -90,6 +102,202 @@ QUALITY_CATS = ['marathon', 'race_short']
 # experiments). Route and era are intentionally absent — see module docstring.
 TRANSFERABLE_FEATURES = ['temp_centered', 'fat_marathon', 'fat_race_short',
                          'tod_is_pm']
+
+
+# ---------- watch / route-rule distance corrections ----------
+# Recovery runs get the same log-vs-watch honesty treatment as long runs
+# (June 2026): calibrated watch distance + watch moving time replace the
+# logged figures in the FIT (the logged columns are never rewritten), gated
+# to paved terrain — the calibration curve is fit on paved-outdoor days and
+# trail GPS corner-cutting is a route property it can't speak for.
+#
+# The measurement artifact (recovery_measured.csv) is written by
+# src/coros/long_runs.py alongside the long-run one; the calibration curve
+# (long_run_calibration.csv) is shared — it was already fit on the pooled
+# paved recovery + long corpus.
+REC_MEASURED_PATH = DATA_DIR / 'recovery_measured.csv'
+REC_CAL_PATH      = DATA_DIR / 'long_run_calibration.csv'
+
+# Per-day watch-failure guard. The time-completeness gate can't catch a GPS
+# failure that loses DISTANCE while keeping time intact (downtown
+# multipath: sporadic lakefront days read 20-30% short against a route
+# median of 1.008, implying +50-550 s/mi "corrections"). The
+# disambiguation from genuine route mislogging — the thing the corrections
+# exist to fix — is route structure: real mislogs are systematic (every
+# pre-2022 belle meade day deviates together, moving the route median),
+# GPS failures are sporadic one-day spikes against an honest route median.
+# So a day is only corrected when its implied inflation (logged miles over
+# calibrated watch miles) sits within WATCH_FAIL_DEV of its route's median
+# inflation (routes with < WATCH_FAIL_MIN_ROUTE_N clean watch days compare
+# against the profile-global median instead). 0.06 is the empirical break:
+# the deviation distribution's 95th percentile is 0.0585, with the failure
+# tail starting just above (57 of ~1245 days skipped, June 2026); the
+# fit's ±45 s/mi LOO prune backstops anything that slips through.
+WATCH_FAIL_DEV         = 0.06
+WATCH_FAIL_MIN_ROUTE_N = 5
+
+# Trailing strides/sprints in a recovery string: 'rec@7:33/400st',
+# 'rec@7:25/6x100st', 'rec@5:50/6sp', 'rec@6:04/2st'. Max PAUSES the watch
+# for the strides (verified June 2026 against the 22 watch-covered paved
+# stride days vs 1,227 normal: watch moving time runs −1.3% of logged vs
+# +1.0% normal; recorded pause time is 4.5 min vs 1.75; and logged miles
+# sit +0.32 mi ABOVE the calibrated watch distance vs −0.01 normal — that
+# 0.32 mi is the stride distance the paused watch never recorded). So on a
+# stride day the watch measures the RECOVERY PORTION ONLY. Two consequences:
+#  (1) excluded from the calibration fit corpus (long_runs.fit_calibration)
+#      — the +0.32 mi stride excess would bias the slope/intercept up and
+#      over-correct every day;
+#  (2) no watch correction applied (the ``ok`` mask below folds in ~strid):
+#      ``recovery_pace_sec_per_mi`` is the explicit logged ``rec@M:SS``
+#      (extract_recovery_pace), already the clean recovery-segment pace, and
+#      a recovery-only watch measurement run through a whole-run-fit
+#      calibration would at best just reproduce it. Keep the logged pace.
+# (A stride day on a mislogged ROUTE still takes the route-rule pace
+# ×factor below — a distance-estimate error biases the logged @pace itself.)
+STRIDE_SUFFIX_RX = re.compile(r'/\s*(?:\d+\s*x\s*)?\d+\s*(?:st|sp)\b',
+                              re.IGNORECASE)
+
+# Route-era mislogged-distance rules (Max-specific carve-out, June 2026 —
+# same precedent as the race plots' handdrawn curve: hand-derived knowledge
+# the data can't reconstruct). The two Nashville staples were logged with
+# inflated distances until Max re-measured them in April 2022. Factors are
+# the median logged-over-honest inflation across the routes'
+# pre-2022-04-15 watch-covered LONG runs (honest = watch distance through
+# the profile's calibration curve): belle meade 1.068 (n=18), greenway
+# 1.056 (n=11). Distance error is a route property, so the same factors
+# apply to the routes' recovery rows (9 pre-watch days). Applied per Max's
+# call back to 2018. Watch enrichment, when present, wins over the rule.
+# Lives here (not workouts.py) so both the long-run projection and the
+# recovery fit can consume it without a circular import.
+MISLOGGED_ROUTES = (
+    ('belle meade', '2018-01-01', '2022-04-15', 1.068),
+    ('greenway',    '2018-01-01', '2022-04-15', 1.056),
+)
+
+
+def _load_calibration():
+    """(intercept_mi, slope) of the profile's log-vs-watch distance curve,
+    or None when the artifact is absent (no watch corpus). Duplicates
+    workouts._load_lr_calibration — that module imports this one."""
+    if not REC_CAL_PATH.exists():
+        return None
+    cal = pd.read_csv(REC_CAL_PATH)
+    if cal.empty:
+        return None
+    r = cal.iloc[0]
+    return float(r['intercept_mi']), float(r['slope'])
+
+
+def add_watch_corrections(rec):
+    """Watch/rule corrections for recovery rows, mirroring the long-run
+    treatment (workouts._lr_watch_corrections). Adds, NaN/False where not
+    applicable:
+
+      rec_watch    : watch-enriched (measured, complete, calibration
+                     present, paved terrain, NOT a strides day)
+      rec_rule     : corrected via a route-era mislogged-distance rule
+      has_strides  : trailing strides/sprints logged (STRIDE_SUFFIX_RX)
+      corr_miles, corr_time_s, corr_pace_sec_per_mi : corrected values on
+                     the honest-log scale (NaN where uncorrected)
+
+    Trailing-strides days get NO watch correction: Max pauses the watch for
+    the strides (see STRIDE_SUFFIX_RX), so the watch measures the recovery
+    portion only — it's short of the logged run, not long. The logged
+    ``recovery_pace_sec_per_mi`` is the explicit ``rec@M:SS``
+    (extract_recovery_pace), already the clean recovery-segment pace, so
+    it's kept as-is; a recovery-only watch measurement through the
+    whole-run-fit calibration would only reproduce it. The watch's role on
+    these days is the calibration-corpus exclusion (in
+    long_runs.fit_calibration), where the unrecorded stride distance would
+    otherwise bias the curve. A strides day on a mislogged ROUTE still takes
+    the route-rule pace ×factor below: that's a distance-estimate error,
+    which biases the logged @pace itself regardless of strides.
+
+    The overread clamp matches the long-run guard: a correction may never
+    make a run FASTER than it was logged (the log can be optimistic, never
+    pessimistic), so calibrated distance is capped at moving_s/logged_pace.
+    NOTE the clamp neuters corrections on routes Max under-logs (centennial,
+    mccabe, boulder creek, hopewell junction all sit at 0.97-0.99 logged/
+    honest) — deliberate: those would otherwise make runs faster.
+
+    The logged columns are never touched — plots show what Max logged."""
+    rec = rec.copy()
+    rec['has_strides'] = (rec.get('workout_raw',
+                                  pd.Series(np.nan, index=rec.index))
+                          .fillna('').astype(str)
+                          .apply(lambda s: bool(STRIDE_SUFFIX_RX.search(s))))
+    rec['rec_watch'] = False
+    rec['rec_rule'] = False
+    for col in ('corr_miles', 'corr_time_s', 'corr_pace_sec_per_mi'):
+        rec[col] = np.nan
+
+    cal = _load_calibration()
+    if cal is not None and REC_MEASURED_PATH.exists():
+        c, m = cal
+        try:
+            meas = pd.read_csv(REC_MEASURED_PATH, parse_dates=['date'])
+        except pd.errors.EmptyDataError:
+            # A profile with watch details but no recovery days writes a
+            # column-less artifact.
+            meas = pd.DataFrame(columns=['date', 'complete'])
+        meas = meas[meas['complete'].astype(bool)] if len(meas) else meas
+        meas = meas.set_index('date')
+        paved = (rec.get('terrain_type', pd.Series(np.nan, index=rec.index))
+                 .astype(str).str.strip().str.lower() == 'paved')
+        hit = rec['date'].isin(meas.index) & paved
+        if hit.any():
+            sub = meas.loc[rec.loc[hit, 'date']]
+            cal_mi = (sub['watch_miles'] * (1 + m) + c).to_numpy()
+            mov_s = sub['watch_moving_s'].to_numpy()
+            qp = rec.loc[hit, 'recovery_pace_sec_per_mi'].to_numpy(float)
+            strid = rec.loc[hit, 'has_strides'].to_numpy(bool)
+            # Watch-failure guard (WATCH_FAIL_DEV above): day inflation vs
+            # route-median inflation, medians computed on stride-free hit
+            # days only (stride miles are nominally padded). Stride days are
+            # excluded from correction entirely (see docstring), so the
+            # guard's ``ok`` mask folds in ~strid.
+            logged_mi = rec.loc[hit, 'miles'].to_numpy(float)
+            infl = logged_mi / cal_mi
+            locs = (rec.loc[hit, 'location'].astype(str)
+                    .str.strip().str.lower().to_numpy())
+            med_df = pd.DataFrame({'loc': locs[~strid],
+                                   'infl': infl[~strid]})
+            med = med_df.groupby('loc')['infl'].agg(['median', 'size'])
+            glob_med = float(np.median(infl[~strid])) if (~strid).any() else 1.0
+            route_med = np.array([
+                float(med.loc[l, 'median'])
+                if l in med.index and med.loc[l, 'size'] >= WATCH_FAIL_MIN_ROUTE_N
+                else glob_med
+                for l in locs])
+            ok = (np.abs(infl - route_med) <= WATCH_FAIL_DEV) & ~strid
+            # Overread clamp — see docstring.
+            corr_mi = np.minimum(cal_mi, mov_s / qp)
+            idx = rec.index[hit]
+            rec.loc[idx[ok], 'rec_watch'] = True
+            rec.loc[idx[ok], 'corr_time_s'] = mov_s[ok]
+            rec.loc[idx[ok], 'corr_pace_sec_per_mi'] = (mov_s / corr_mi)[ok]
+            rec.loc[idx[ok], 'corr_miles'] = corr_mi[ok]
+
+    loc = (rec.get('location', pd.Series(np.nan, index=rec.index))
+           .astype(str).str.strip().str.lower())
+    for route, start, end, factor in MISLOGGED_ROUTES:
+        rule = (~rec['rec_watch'] & (loc == route)
+                & (rec['date'] >= pd.Timestamp(start))
+                & (rec['date'] < pd.Timestamp(end)))
+        if not rule.any():
+            continue
+        # corr_pace reduces to logged_pace x factor (the polluted logged
+        # miles cancel), so it's valid on stride days too; the distance/
+        # time figures are only claimed for stride-free days.
+        rec.loc[rule, 'rec_rule'] = True
+        rec.loc[rule, 'corr_pace_sec_per_mi'] = (
+            rec.loc[rule, 'recovery_pace_sec_per_mi'] * factor)
+        clean = rule & ~rec['has_strides']
+        rec.loc[clean, 'corr_miles'] = rec.loc[clean, 'miles'] / factor
+        rec.loc[clean, 'corr_time_s'] = (
+            rec.loc[clean, 'recovery_pace_sec_per_mi']
+            * rec.loc[clean, 'miles'])
+    return rec
 
 
 # ---------- helpers ----------
@@ -227,9 +435,28 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True):
     if verbose:
         print(f'  {len(rec)} recovery days with valid pace')
 
+    # Watch/rule distance corrections (add_watch_corrections above). The
+    # FIT runs on the corrected pace where one exists — honest distances
+    # make the route betas physical — while the logged columns stay
+    # untouched for display.
+    rec = add_watch_corrections(rec)
+    rec['pace_for_fit'] = np.where(rec['corr_pace_sec_per_mi'].notna(),
+                                   rec['corr_pace_sec_per_mi'],
+                                   rec['recovery_pace_sec_per_mi'])
+    if verbose:
+        n_w = int(rec['rec_watch'].sum())
+        n_r = int(rec['rec_rule'].sum())
+        if n_w or n_r:
+            moved = (rec['pace_for_fit']
+                     - rec['recovery_pace_sec_per_mi'])
+            moved = moved[moved.abs() > 0]
+            print(f'  corrections: {n_w} watch, {n_r} route-rule '
+                  f'(median shift {moved.median():+.1f} s/mi over '
+                  f'{len(moved)} moved rows)')
+
     # Features (sleep_centered and miles_centered are intentionally NOT computed)
     rec['temp_centered'] = rec['temp_c'] - TEMP_REFERENCE_C
-    rec['residual_raw'] = rec['recovery_pace_sec_per_mi'] - rec['cs_pace_sec']
+    rec['residual_raw'] = rec['pace_for_fit'] - rec['cs_pace_sec']
 
     # Time-of-day binary indicator: 1 for PM (afternoon/late), 0 for AM
     # (early/morning). Recovery rows have 100% TOD coverage; missing or
@@ -245,12 +472,12 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True):
 
     # Partner-run detection
     # fillna('') before astype(str): pandas 3.0's astype(str) leaves NaN as NaN
-    # (not the string 'nan'), which would fall outside NULL_PARTNERS and flag
-    # every blank-partner run as a partner run — catastrophic for a profile
-    # with no partners data at all (the whole fit gets pruned away).
+    # (not the string 'nan'), which would fall outside ADMITTED_PARTNERS and
+    # flag every blank-partner run as a partner run — catastrophic for a
+    # profile with no partners data at all (the whole fit gets pruned away).
     rec['partners_clean'] = (rec['partners'].fillna('')
                              .astype(str).str.strip().str.lower())
-    rec['is_partner_run'] = ~rec['partners_clean'].isin(NULL_PARTNERS)
+    rec['is_partner_run'] = ~rec['partners_clean'].isin(ADMITTED_PARTNERS)
 
     # Outlier detection — leave-one-out 28-day rolling mean of recovery
     # pace. The neighbor pool (the source of "normal" pace) is restricted
@@ -265,9 +492,9 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True):
     if neighbor_mask.sum() > 0:
         nbr_dates_ms = np.array(
             [d.value // 10**6 for d in rec.loc[neighbor_mask, 'date']])
-        nbr_pace = rec.loc[neighbor_mask, 'recovery_pace_sec_per_mi'].to_numpy()
+        nbr_pace = rec.loc[neighbor_mask, 'pace_for_fit'].to_numpy()
         all_dates_ms = np.array([d.value // 10**6 for d in rec['date']])
-        all_pace = rec['recovery_pace_sec_per_mi'].to_numpy()
+        all_pace = rec['pace_for_fit'].to_numpy()
         in_pool = neighbor_mask.to_numpy()
         half_ms = OUTLIER_WINDOW_HALF_DAYS * 86_400_000
         loo_resid = np.full(len(rec), np.nan)

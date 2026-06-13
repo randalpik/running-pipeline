@@ -11,9 +11,11 @@ Displayed values default to what was LOGGED. The Watch-correction toggle
 swaps distance and pace to the corrected values project_long_runs computed
 (calibrated watch measurements; route-era deflation for pre-watch mislogged
 routes). The Show-tags toggle (off by default — the distance gradient is
-the primary encoding) overlays halo rings: gray = watch-enriched, red =
-uncertain accuracy (rule-corrected, no watch data), amber = points the TQ
-fit's MAD prune excluded (tooltip carries the residual). Corrections are
+the primary encoding) overlays halo rings: light blue = snow, yellow =
+partner-paced (both excluded from Training, matching the workout/recovery
+exclusion methodology), gray = watch-enriched, red = uncertain accuracy
+(rule-corrected, no watch data), amber = points the TQ fit's MAD prune
+excluded (tooltip carries the residual). Corrections are
 display/projection-side only — the log columns are never rewritten.
 
 Marker color encodes distance via a continuous lavender→deep-purple gradient,
@@ -79,6 +81,8 @@ def _y_safe(arr):
 TAG_RING_SIZE  = 11.5
 TAG_RING_WIDTH = 1
 LR_TAG_LEGEND = {
+    'snow':               'Snow',
+    'partners':           'Partner run',
     'enriched':           'Watch-enriched',
     'uncertain accuracy': 'Uncertain accuracy',
     'outlier':            'Pruned outlier',
@@ -86,12 +90,21 @@ LR_TAG_LEGEND = {
 
 
 def lr_tag(r):
-    """Ring tag for a long run, or None. The TQ fit's MAD-pruned outliers
-    outrank the informational tags (the ring answers "why is this excluded");
-    'enriched' means the projection used calibrated watch values (the size
-    of the adjustment is visible via the Watch-correction toggle);
-    'uncertain accuracy' marks rule-corrected days with NO watch data (the
-    route-era ratio is a population estimate, not a measurement)."""
+    """Ring tag for a long run, or None. Same priority logic as the Workouts
+    plot's session_tag: category exclusions (snow, partner-paced — both
+    dropped from Training, matching the workout/recovery methodology) win,
+    then the TQ fit's MAD-pruned outliers (the ring answers "why is this
+    excluded"), then informational tags: 'enriched' means the projection
+    used calibrated watch values (the size of the adjustment is visible via
+    the Watch-correction toggle); 'uncertain accuracy' marks rule-corrected
+    days with NO watch data (the route-era ratio is a population estimate,
+    not a measurement). Out-of-slice runs stay unringed — showing them at
+    absolute pace is this plot's whole point."""
+    er = r.get('excluded_reason')
+    if er == 'snow':
+        return 'snow'
+    if er == 'partners':
+        return 'partners'
     if r.get('tq_outlier'):
         return 'outlier'
     if r.get('lr_watch'):
@@ -102,6 +115,8 @@ def lr_tag(r):
 
 
 LR_TAG_NOTE = {
+    'snow':               'Excluded from Training: snow',
+    'partners':           'Excluded from Training: partner-paced',
     'uncertain accuracy': 'Uncertain accuracy — known mislogged route',
 }
 
@@ -369,7 +384,8 @@ def main():
             widgets.divider()
             + widgets.checkbox_rows([('tags', 'Show tags')],
                                     data_attr='lrtags', checked=False)
-            + widgets.subtitle('Halo rings: watch-enriched, '
+            + widgets.subtitle('Halo rings: snow and partner-paced runs '
+                               '(excluded from Training), watch-enriched, '
                                'mislogged-route corrections, and points the '
                                'Training fit pruned as outliers.')
         )

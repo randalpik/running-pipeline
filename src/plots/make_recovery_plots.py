@@ -48,8 +48,10 @@ can fall into multiple classes** — the three flags are independent.
      contains "snow" (catches "[2" snow]" annotations the conditions
      field missed). Inside/treadmill/indoor-track runs are kept (still
      valid pace data on a stable surface).
-  2. Partner runs — any partners entry that isn't blank/solo/none.
-     Concentrated in 2016-2017 HS team easy runs; different population.
+  2. Partner runs — any partners entry outside ADMITTED_PARTNERS
+     (blank/solo/none/varsity). Varsity is admitted (June 2026): in the
+     2016-17 era the varsity group's recovery pace WAS Max's own pace
+     strategy. Individual named partners remain a different population.
   3. Outliers — |residual from leave-one-out 28-day local mean| > 45
      sec/mi, where the local mean is computed against the *clean*
      neighbor pool (rows that are neither bad-cond nor partner-run).
@@ -59,7 +61,7 @@ can fall into multiple classes** — the three flags are independent.
      its pace is anomalous against the clean local mean.
 
 The visibility section has three independent toggles ("Hide bad
-conditions", "Hide non-solo", "Hide outliers"), each with its own count
+conditions", "Hide partner runs", "Hide outliers"), each with its own count
 and an All/None group. Because flags can overlap, the counts may sum
 to more than the unique pruned total.
 
@@ -202,6 +204,35 @@ def main():
         # itself, so this content focuses on what's run-specific.
         parts = [f"Pace: {sec_to_mss(row['recovery_pace_sec_per_mi'])}/mi  "
                  f"({row['miles']:.1f} mi)"]
+        # Watch/route-rule correction — the value the FIT actually used
+        # (add_watch_corrections). Logged leads above; the corrected line
+        # shows the calibrated pace and distance. Same logged-on-top,
+        # corrected-below shape as the Long Runs tooltip; recovery has no
+        # watch toggle so it's always shown when present. Suppressed when
+        # the pace shift is negligible: the overread clamp pins ~400
+        # under-logged days to corr_pace == logged exactly (no real pace
+        # info), and a redundant line is noise. A rule day on a strides
+        # route carries pace only (corr_miles NaN — distance is polluted by
+        # both the route over-estimate and the strides).
+        corr_p = row.get('corr_pace_sec_per_mi')
+        if (pd.notna(corr_p)
+                and abs(float(corr_p) - row['recovery_pace_sec_per_mi']) >= 1.0):
+            if row.get('rec_watch'):
+                src = 'watch-measured'
+            elif row.get('rec_rule'):
+                src = 'mislogged route'
+            else:
+                src = ''
+            if pd.notna(row.get('corr_miles')):
+                dist = f"  ({row['corr_miles']:.1f} mi)"
+            elif row.get('has_strides'):
+                dist = '  (pace only — strides)'
+            else:
+                dist = ''
+            tag = f" <span style=\"color:#888\">[{src}]</span>" if src else ''
+            parts.append(
+                f"<b>Corrected:</b> "
+                f"{sec_to_mss(float(corr_p))}/mi{dist}{tag}")
         if pd.notna(row.get('temp_c')):
             parts.append(f"Temp: {row['temp_c']:.0f}°C")
         loc = row.get('location')
@@ -684,7 +715,7 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
 
     filter_items = [(k, label, f'({c})') for (k, label, c) in (
         ('hide_bad_cond', 'Hide bad conditions', n_bad_cond),
-        ('hide_partner',  'Hide non-solo',       n_partner_runs),
+        ('hide_partner',  'Hide partner runs',   n_partner_runs),
         ('hide_outlier',  'Hide outliers',       n_outliers),
     ) if c > 0]
     filter_rows = widgets.checkbox_rows(

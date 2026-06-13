@@ -89,10 +89,11 @@ quiet_step "build_dataset"           python src/parsers/build_dataset.py
 if [[ -d data/profiles/coros/details && -f data/bayes_cs_summary.csv ]]; then
   quiet_step "reps"                  python src/coros/reps.py --details-dir data/profiles/coros/details
 fi
-# Long-run watch reconciliation: measurement rows + the log/watch distance
-# calibration (src/coros/long_runs.py). Same graceful degradation as reps —
-# without the details cache, project_long_runs falls back to logged values
-# plus the route-era mislogged-distance rules.
+# Long-run + recovery watch reconciliation: measurement rows for both run
+# types + the log/watch distance calibration (src/coros/long_runs.py). Same
+# graceful degradation as reps — without the details cache,
+# project_long_runs and the recovery fit fall back to logged values plus
+# the route-era mislogged-distance rules.
 if [[ -d data/profiles/coros/details ]]; then
   quiet_step "long_runs (watch)"     python src/coros/long_runs.py --details-dir data/profiles/coros/details
 fi

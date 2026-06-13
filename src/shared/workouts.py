@@ -8,12 +8,18 @@ both consumers can share the same upstream pipeline.
 
 Excluded reasons used:
     - 'snow'              : snow in workout_raw or conditions (quality workouts)
+    - 'partners'          : long run with a partners entry outside the
+                            recovery model's ADMITTED_PARTNERS (solo and
+                            varsity admitted — same population logic as the
+                            recovery fit's partner prune)
     - 'long_out_of_slice' : long run under LONG_MIN_MINUTES or at/over
                             LONG_CEIL_MILES
     - 'hc_rep_hybrid'     : 2016-09 hybrid 'hc/rep' sessions
     - 'hc_loop_other'     : hill_cont on a loop outside HC_LOOPS (n<7)
 (Workouts have no category-based exclusion beyond snow; sub-threshold quality
-days are removed by the Training plot's residual-cutoff outlier prune instead.)
+days are removed by the Training plot's residual-cutoff outlier prune instead.
+Workout partners are a TRUST signal there — see the course-verification gate —
+not an exclusion: a partnered workout is still Max's own quality effort.)
 
 Training plot consumes ``project_*(...)`` and immediately filters to
 ``df[df['excluded_reason'].isna()]`` (with the long-run slice + outlier prune
@@ -29,6 +35,7 @@ import pandas as pd
 from src.shared.paths import DATA_DIR
 from src.shared.hill_model import minetti_net_factor
 from src.shared.cs_projection import cp3_dprime, cp3_implied_cs, cp3_time
+from src.shared.recovery_model import ADMITTED_PARTNERS, MISLOGGED_ROUTES
 from src.parsers.snapshot import find_snapshot, read_snapshot
 
 
@@ -137,23 +144,13 @@ LONG_CEIL_MILES  = 26.2
 LR_MEASURED_PATH = DATA_DIR / 'long_run_measured.csv'
 LR_CAL_PATH      = DATA_DIR / 'long_run_calibration.csv'
 
-# Route-era mislogged-distance rules (Max-specific carve-out, June 2026 —
-# same precedent as the race plots' handdrawn curve: hand-derived knowledge
-# the data can't reconstruct). The two Nashville long-run staples were
-# logged with inflated distances until Max re-measured them in April 2022
-# (the log snaps to a constant 17.6 / 20.7 mi at the baseline log/watch
-# ratio from 2022-04-28 / 2022-05-13 on). Factors are the median
-# logged-over-honest-logged inflation across the routes' pre-2022-04-15
-# watch-covered runs (honest = watch distance through the profile's
-# calibration curve): belle meade 1.068 (n=18), greenway 1.056 (n=11).
-# Applied per Max's call back to 2018 — the era's pre-watch runs on these
-# routes top the residual charts the same way. Watch enrichment, when
-# present, wins over the rule (it measures the actual day; the rule is the
-# route-era median).
-MISLOGGED_LR_ROUTES = (
-    ('belle meade', '2018-01-01', '2022-04-15', 1.068),
-    ('greenway',    '2018-01-01', '2022-04-15', 1.056),
-)
+# Route-era mislogged-distance rules: MISLOGGED_ROUTES now lives in
+# recovery_model.py (imported above) so the recovery fit can apply the same
+# rules to the routes' recovery rows without a circular import. The log
+# snaps to a constant 17.6 / 20.7 mi at the baseline log/watch ratio from
+# 2022-04-28 / 2022-05-13 on; see the constant's comment for the fitted
+# factors. Watch enrichment, when present, wins over the rule (it measures
+# the actual day; the rule is the route-era median).
 
 
 def _load_lr_calibration():
@@ -170,9 +167,10 @@ def _load_lr_calibration():
 
 def _lr_watch_corrections(lr):
     """Watch/rule corrections for long-run rows (see long_run_measured /
-    MISLOGGED_LR_ROUTES). Adds, NaN/False where not applicable:
+    MISLOGGED_ROUTES). Adds, NaN/False where not applicable:
 
-      lr_watch     : watch-enriched (measured, complete, calibration present)
+      lr_watch     : watch-enriched (measured, complete, calibration
+                     present, paved terrain — see the paved-route gate)
       lr_rule      : corrected via a route-era mislogged-distance rule
       corr_miles, corr_time_s, corr_pace_sec_per_mi : corrected values on
                      the honest-log scale (distance = watch through the
@@ -197,7 +195,17 @@ def _lr_watch_corrections(lr):
         c, m = cal
         meas = pd.read_csv(LR_MEASURED_PATH, parse_dates=['date'])
         meas = meas[meas['complete']].set_index('date')
-        hit = lr['date'].isin(meas.index)
+        # Paved-route gate (Max, June 2026): the calibration curve is fit on
+        # paved-outdoor days, and on trail/mixed terrain GPS corner-cutting
+        # under tree cover is a route property the curve can't speak for —
+        # the watch track isn't trustworthy enough to overrule the log
+        # there. Missing terrain_type fails the gate too (conservative:
+        # un-typed routes stay logged-as-is until the locations sheet types
+        # them). Same .get() guard as elev: watch profiles' daily.csv may
+        # lack the column entirely.
+        paved = (lr.get('terrain_type', pd.Series(np.nan, index=lr.index))
+                 .astype(str).str.strip().str.lower() == 'paved')
+        hit = lr['date'].isin(meas.index) & paved
         if hit.any():
             sub = meas.loc[lr.loc[hit, 'date']]
             corr_mi = (sub['watch_miles'] * (1 + m) + c).to_numpy()
@@ -224,7 +232,7 @@ def _lr_watch_corrections(lr):
                 lr.loc[hit, col] = sub[col].to_numpy()
 
     loc = lr['location'].astype(str).str.strip().str.lower()
-    for route, start, end, factor in MISLOGGED_LR_ROUTES:
+    for route, start, end, factor in MISLOGGED_ROUTES:
         rule = (~lr['lr_watch'] & (loc == route)
                 & (lr['date'] >= pd.Timestamp(start))
                 & (lr['date'] < pd.Timestamp(end)))
@@ -515,10 +523,19 @@ def project_long_runs(cs, epoch):
     snow_c = lr['conditions'].astype(str).str.contains('snow', case=False, na=False)
     dur_min = lr['recovery_pace_sec_per_mi'] * lr['miles'] / 60.0
     out_of_slice = (dur_min < LONG_MIN_MINUTES) | (lr['miles'] >= LONG_CEIL_MILES)
+    # Partner exclusion (June 2026): same population logic as the recovery
+    # fit — a long run paced by someone else's targets isn't Max's effort
+    # policy. Solo and varsity admitted (ADMITTED_PARTNERS), matching the
+    # recovery prune; fillna('') for profiles with no partners column data.
+    partners = (lr.get('partners', pd.Series(np.nan, index=lr.index))
+                .fillna('').astype(str).str.strip().str.lower())
+    is_partner = ~partners.isin(ADMITTED_PARTNERS)
 
     lr['excluded_reason'] = None
     lr.loc[out_of_slice, 'excluded_reason'] = 'long_out_of_slice'
-    # Snow takes priority over slice (an out-of-slice snow run gets 'snow').
+    lr.loc[is_partner, 'excluded_reason'] = 'partners'
+    # Snow takes priority over slice/partners (an out-of-slice snow run gets
+    # 'snow' — the ringed reasons win so the chart explains the exclusion).
     lr.loc[snow_w | snow_c, 'excluded_reason'] = 'snow'
 
     lr = add_cs(lr, cs, epoch)

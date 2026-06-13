@@ -105,11 +105,17 @@ flags exclude the row from the OLS fit but the points remain plotted.
    the bad-cond set** in April 2026 — those are treadmill/indoor-track
    runs at stable surface and pace, valid data.
 
-2. **Partner runs** (`is_partner_run`): any `partners` entry that isn't
-   blank/solo/none. Concentrated in 2016-17 HS varsity team easy days.
-   This is a fundamentally different population: in 2016-17, partner
-   runs averaged 442 sec/mi vs. solo 400 sec/mi (42 sec/mi gap). Pruning
-   these markedly improves R² on detrended residual.
+2. **Partner runs** (`is_partner_run`): any `partners` entry outside
+   `ADMITTED_PARTNERS` = blank/solo/none/**varsity**. Varsity was
+   admitted June 2026 (Max): in the 2016-17 era the varsity group's
+   recovery pace WAS Max's own pace strategy — those 90 runs are his
+   effort policy, not someone else's — so they belong in the fit pool
+   (partner-pruned 169 → 79; R² on raw residual 0.54 → 0.68 because the
+   2016-17 era trend now tracks the era's true level; the recovery
+   marathon/short fatigue ratio that pins the TQ long-run model moved
+   1.82 → ~1.5). Individual named partners remain pruned — a
+   fundamentally different population (pace targets and route choices
+   aren't Max's own).
 
 3. **Outliers** (`is_outlier_loo`): `|residual from leave-one-out 28-day
    local mean| > 45 sec/mi`. The local mean is computed against the
@@ -122,6 +128,68 @@ flags exclude the row from the OLS fit but the points remain plotted.
    extreme post-marathon fatigue) without biting into normal variance.
 
 `is_pruned = is_bad_cond | is_partner_run | is_outlier_loo`.
+
+### Watch / route-rule distance corrections (June 2026)
+
+The fit runs on the **corrected** pace where one exists
+(`pace_for_fit`); the logged columns are never rewritten and the plot
+still displays logged values. Machinery in
+`recovery_model.add_watch_corrections`, mirroring the long-run
+treatment (`workouts._lr_watch_corrections`); measurement artifact
+`recovery_measured.csv` written by `src/coros/long_runs.py` alongside
+the long-run one; the **calibration curve is shared**
+(`long_run_calibration.csv` — it was already fit on the pooled paved
+recovery+long corpus).
+
+- **Watch correction** (paved + time-complete days): corrected distance
+  = `watch_mi·(1+slope) + intercept`, corrected time = watch moving
+  seconds, corrected pace = their ratio. ~1,190 of ~2,550 recovery days
+  qualify; 788 actually move (median +7.4 s/mi, p99 +28).
+- **Paved gate**: trail/mixed/un-typed terrain keeps logged values —
+  same rationale as the long-run gate (the curve is a paved fit; trail
+  GPS corner-cutting is a route property).
+- **Watch-failure guard** (`WATCH_FAIL_DEV = 0.06`): the time gate
+  can't catch GPS that loses *distance* with intact time (sporadic
+  lakefront days read 20-30% short → implied "corrections" of +50-550
+  s/mi). Disambiguation from genuine route mislogging is route
+  structure: real mislogs are systematic (the route's median inflation
+  moves), GPS failures are one-day spikes against an honest route
+  median. A day is corrected only when its logged/calibrated inflation
+  sits within 0.06 of its route median (95th pct of the deviation
+  distribution is 0.0585; 57 days skipped; the ±45 LOO prune backstops
+  the rest).
+- **Trailing strides/sprints** (`STRIDE_SUFFIX_RX` — `…/6x100st`,
+  `…/400st`, `…/6sp`): **Max pauses the watch for the strides**, so the
+  watch records the recovery portion only — it's *short* of the logged
+  run, not long. Verified June 2026 against the 22 watch-covered paved
+  stride days vs 1,227 normal: watch moving time runs −1.3% of logged
+  (vs +1.0% normal), recorded pause time is 4.5 min (vs 1.75), and
+  logged miles sit **+0.32 mi above** the calibrated watch distance (vs
+  −0.01 normal) — that 0.32 mi is the stride distance the paused watch
+  never recorded. Two consequences: (a) **excluded from the
+  calibration-fit corpus** — the +0.32 mi excess would bias the slope/
+  intercept up and over-correct every day; (b) **no watch correction
+  applied** — `recovery_pace_sec_per_mi` is the explicit logged
+  `rec@M:SS` (`extract_recovery_pace`), already the clean recovery-segment
+  pace, and a recovery-only watch measurement run through the
+  whole-run-fit calibration would only reproduce it, so the logged pace
+  is kept. A strides day on a mislogged ROUTE still takes the route-rule
+  pace ×factor — that's a distance-estimate error biasing the logged
+  @pace itself, independent of strides — but carries no corrected
+  distance (corr_miles NaN).
+- **Route-era rules**: `MISLOGGED_ROUTES` (belle meade 1.068, greenway
+  1.056, 2018 → 2022-04-15 — the constant moved here from workouts.py)
+  now also deflates those routes' ~9 recovery rows. No OTHER recovery
+  route warrants a rule: every watch-covered route's median inflation
+  sits within 0.97–1.011 (the Nashville long-route inflation was a
+  property of those route-distance estimates, not of Max's logging).
+- **Overread clamp** (same as long runs): a correction may never make a
+  run faster than logged. NOTE this deliberately neuters corrections on
+  routes Max *under*-logs — centennial 0.991/0.986 (pre/post
+  2022-04-15), mccabe 0.985, boulder creek 0.970, hopewell junction
+  0.970 logged/honest — those would otherwise speed runs up by 1-3%.
+  Revisit if the "log is optimistic, never pessimistic" contract is
+  ever relaxed.
 
 ### Features tested and rejected
 

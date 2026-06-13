@@ -1,10 +1,13 @@
-"""Watch-side long-run measurement + log/watch distance calibration.
+"""Watch-side run measurement + log/watch distance calibration.
 
-Plays reps.py's role for long-run days: reconciles each hand-logged long run
-(`run_type == 'long'`) against the day's watch activities and writes two
-artifacts consumed by ``shared.workouts.project_long_runs``:
+Plays reps.py's role for long-run AND recovery days: reconciles each
+hand-logged run against the day's watch activities and writes three
+artifacts — the long-run pair consumed by
+``shared.workouts.project_long_runs``, plus the recovery one consumed by
+``shared.recovery_model.add_watch_corrections``:
 
-``long_run_measured.csv`` — one row per long-run day with watch activities:
+``long_run_measured.csv`` / ``recovery_measured.csv`` — one row per
+long-run (resp. recovery) day with watch activities:
     date, n_acts, status (rich|slim), complete (time gate, below),
     watch_miles, watch_moving_s, watch_total_s, pause_s, stall_s,
     n_segs, d_eff_frac, longest_seg_mi
@@ -56,6 +59,7 @@ import pandas as pd
 from src.coros import mappings as M
 from src.coros.build_current_log import Activity
 from src.shared.paths import DATA_DIR
+from src.shared.recovery_model import STRIDE_SUFFIX_RX
 from src.shared.workouts import RECON_TAU_S
 
 MILE_M = 1609.344
@@ -191,9 +195,13 @@ def load_day_activities(details_dir):
     return by_date
 
 
-def measure_long_runs(daily, by_date):
-    """One measurement row per long-run day with watch activities."""
-    lr = daily[daily['run_type'] == 'long']
+def measure_runs(daily, by_date, run_type='long'):
+    """One measurement row per ``run_type`` day with watch activities.
+    Recovery days are mostly slim records (no per-second stream), so their
+    segment/stall fields degrade to one segment per activity — the
+    distance/moving-time fields the corrections consume are exact either
+    way."""
+    lr = daily[daily['run_type'] == run_type]
     rows = []
     for _, drow in lr.iterrows():
         dt = drow['date'].date().isoformat()
@@ -245,6 +253,14 @@ def fit_calibration(daily, by_date):
             continue
         if str(drow.get('terrain_type')).lower() != 'paved':
             continue
+        # Trailing-strides days: Max pauses the watch for the strides, so
+        # the watch records the recovery portion only while the logged
+        # miles include the strides — logged sits +0.32 mi (median) ABOVE
+        # the calibrated watch distance vs −0.01 on normal days. Leaving
+        # them in biases the excess curve up; gate explicitly rather than
+        # rely on the MAD prune (the bias is inside its reach).
+        if STRIDE_SUFFIX_RX.search(str(drow.get('workout_raw') or '')):
+            continue
         moving_s = sum(a.moving_s for _r, a in acts)
         log_s = float(drow['minutes']) * 60.0 if pd.notna(drow.get('minutes')) else 0.0
         if not (log_s > 0 and moving_s > 0
@@ -292,6 +308,8 @@ def main():
     p.add_argument('--daily', type=Path, default=DATA_DIR / 'daily.csv')
     p.add_argument('--out-measured', type=Path,
                    default=DATA_DIR / 'long_run_measured.csv')
+    p.add_argument('--out-recovery-measured', type=Path,
+                   default=DATA_DIR / 'recovery_measured.csv')
     p.add_argument('--out-calibration', type=Path,
                    default=DATA_DIR / 'long_run_calibration.csv')
     args = p.parse_args()
@@ -299,12 +317,14 @@ def main():
     daily = pd.read_csv(args.daily, parse_dates=['date'])
     by_date = load_day_activities(args.details_dir)
 
-    measured = measure_long_runs(daily, by_date)
-    measured.to_csv(args.out_measured, index=False)
-    n_rich = int((measured['status'] == 'rich').sum()) if len(measured) else 0
-    n_inc = int((~measured['complete']).sum()) if len(measured) else 0
-    print(f'long_run_measured: {len(measured)} days '
-          f'({n_rich} rich, {n_inc} incomplete) -> {args.out_measured}')
+    for run_type, out_path in (('long', args.out_measured),
+                               ('recovery', args.out_recovery_measured)):
+        measured = measure_runs(daily, by_date, run_type)
+        measured.to_csv(out_path, index=False)
+        n_rich = int((measured['status'] == 'rich').sum()) if len(measured) else 0
+        n_inc = int((~measured['complete']).sum()) if len(measured) else 0
+        print(f'{run_type}_measured: {len(measured)} days '
+              f'({n_rich} rich, {n_inc} incomplete) -> {out_path}')
 
     cal = fit_calibration(daily, by_date)
     if cal is None:
