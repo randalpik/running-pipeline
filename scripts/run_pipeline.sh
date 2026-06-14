@@ -80,11 +80,11 @@ if [[ $historical -eq 1 ]]; then
 fi
 
 quiet_step "drive_fetch (snapshot)"  python src/parsers/drive_fetch.py snapshot --year "$(date +%Y)"
-# Watch-derived weather (temp/wind m/s/humidity/time-of-day) for the hand log,
-# from Max's Coros cache. Must precede build_dataset, which joins its output
-# (weather_measured.csv). Skipped when the cache is absent (graceful no-op).
+# Unified watch-derived per-day table (incremental, presence-based; parses only
+# new activities). Projects weather_measured.csv, which build_dataset joins.
+# Must precede build_dataset. Skipped when the cache is absent (graceful no-op).
 if [[ -d data/profiles/coros/details ]]; then
-  quiet_step "weather_measured"      python -m src.coros.weather_measured
+  quiet_step "watch_daily"           python -m src.coros.watch_daily
 fi
 quiet_step "build_dataset"           python src/parsers/build_dataset.py
 # Watch-derived rep extraction for Max's hybrid profile: the hand log stays

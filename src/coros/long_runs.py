@@ -46,7 +46,6 @@ Usage (Max's watch cache + hand log):
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import sys
 from pathlib import Path
@@ -56,8 +55,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np
 import pandas as pd
 
-from src.coros import mappings as M
-from src.coros.build_current_log import Activity
 from src.shared.paths import DATA_DIR
 from src.shared.recovery_model import STRIDE_SUFFIX_RX
 from src.shared.workouts import RECON_TAU_S
@@ -178,78 +175,85 @@ def _connected_d_eff(segs):
     return d_eff
 
 
-def load_day_activities(details_dir):
-    """{iso_date: [(rec, Activity), ...]} for every run activity in the
-    cache, time-ordered within each day."""
-    by_date = {}
-    for path in sorted(details_dir.glob('*.json')):
-        rec = json.loads(path.read_text())
-        if (rec.get('summary') or {}).get('sportType') is None:
-            continue
-        act = Activity(rec)
-        if act.sport_type not in M.RUN_SPORTS:
-            continue
-        by_date.setdefault(act.local_date.isoformat(), []).append((rec, act))
-    for acts in by_date.values():
-        acts.sort(key=lambda x: x[1].start_utc)
-    return by_date
+def measure_day(acts):
+    """Pure-watch per-day measurement for a day's time-ordered run activities
+    ``[(rec, Activity), ...]``. Independent of the hand log — the ``run_type``
+    filter and the ``complete`` time-gate are applied by the consumer, so this
+    is exactly what watch_daily caches. Recovery days are mostly slim records
+    (no per-second stream); their segment/stall fields degrade to one segment
+    per activity, but the distance/moving-time fields are exact either way."""
+    day_segs, stall_s = [], 0.0
+    for i, (rec, act) in enumerate(acts):
+        segs, st = _activity_segments(rec, act)
+        stall_s += st
+        if i + 1 < len(acts):
+            nxt = acts[i + 1][1]
+            gap = (nxt.start_utc - act.start_utc).total_seconds() - act.total_s
+            segs[-1][1] += max(gap, 0.0)
+        day_segs.extend(segs)
+    dist_m = sum(a.distance_m for _r, a in acts)
+    moving_s = sum(a.moving_s for _r, a in acts)
+    total_s = sum(a.total_s for _r, a in acts)
+    return {
+        'n_acts': len(acts),
+        'status': 'rich' if all('freq' in r for r, _a in acts) else 'slim',
+        'any_indoor': any(a.is_indoor for _r, a in acts),
+        'watch_miles': dist_m / MILE_M,
+        'watch_moving_s': round(moving_s, 1),
+        'watch_total_s': round(total_s, 1),
+        'pause_s': round(total_s - moving_s, 1),
+        'stall_s': round(stall_s, 1),
+        'n_segs': len(day_segs),
+        'd_eff_frac': _connected_d_eff(day_segs) / dist_m if dist_m else np.nan,
+        'longest_seg_mi': max((s[0] for s in day_segs), default=0.0) / MILE_M,
+    }
 
 
-def measure_runs(daily, by_date, run_type='long'):
-    """One measurement row per ``run_type`` day with watch activities.
-    Recovery days are mostly slim records (no per-second stream), so their
-    segment/stall fields degrade to one segment per activity — the
-    distance/moving-time fields the corrections consume are exact either
-    way."""
+def measure_runs(daily, wd, run_type='long'):
+    """``run_type`` measured rows: the cached watch_daily measurement joined by
+    date, plus the ``complete`` time-gate (watch moving time vs logged minutes).
+    No cache parse — reads the precomputed scalars from ``wd``."""
     lr = daily[daily['run_type'] == run_type]
     rows = []
     for _, drow in lr.iterrows():
         dt = drow['date'].date().isoformat()
-        acts = by_date.get(dt)
-        if not acts:
+        if dt not in wd.index:
             continue
-        day_segs, stall_s = [], 0.0
-        for i, (rec, act) in enumerate(acts):
-            segs, st = _activity_segments(rec, act)
-            stall_s += st
-            if i + 1 < len(acts):
-                nxt = acts[i + 1][1]
-                gap = (nxt.start_utc - act.start_utc).total_seconds() - act.total_s
-                segs[-1][1] += max(gap, 0.0)
-            day_segs.extend(segs)
-        dist_m = sum(a.distance_m for _r, a in acts)
-        moving_s = sum(a.moving_s for _r, a in acts)
-        total_s = sum(a.total_s for _r, a in acts)
+        m = wd.loc[dt]
+        moving_s = float(m['watch_moving_s'])
         log_s = float(drow['minutes']) * 60.0 if pd.notna(drow.get('minutes')) else 0.0
         complete = (log_s > 0 and moving_s > 0
                     and abs(moving_s - log_s) / log_s <= TIME_COMPLETE_FRAC)
         rows.append({
             'date': dt,
-            'n_acts': len(acts),
-            'status': 'rich' if all('freq' in r for r, _a in acts) else 'slim',
+            'n_acts': int(m['n_acts']),
+            'status': m['status'],
             'complete': complete,
-            'watch_miles': dist_m / MILE_M,
-            'watch_moving_s': round(moving_s, 1),
-            'watch_total_s': round(total_s, 1),
-            'pause_s': round(total_s - moving_s, 1),
-            'stall_s': round(stall_s, 1),
-            'n_segs': len(day_segs),
-            'd_eff_frac': _connected_d_eff(day_segs) / dist_m if dist_m else np.nan,
-            'longest_seg_mi': max((s[0] for s in day_segs), default=0.0) / MILE_M,
+            'watch_miles': float(m['watch_miles']),
+            'watch_moving_s': moving_s,
+            'watch_total_s': float(m['watch_total_s']),
+            'pause_s': float(m['pause_s']),
+            'stall_s': float(m['stall_s']),
+            'n_segs': int(m['n_segs']),
+            'd_eff_frac': float(m['d_eff_frac']),
+            'longest_seg_mi': float(m['longest_seg_mi']),
         })
     return pd.DataFrame(rows)
 
 
-def fit_calibration(daily, by_date):
+def fit_calibration(daily, wd):
     """MAD-pruned OLS of logged excess miles on watch miles over the paved
-    outdoor recovery + long corpus (see module docstring). Returns a one-row
-    DataFrame, or None when the corpus is too small."""
+    outdoor recovery + long corpus (see module docstring). Reads watch_daily
+    scalars (no cache parse). Returns a one-row DataFrame, or None when the
+    corpus is too small."""
     d = daily[daily['run_type'].isin(['recovery', 'long'])]
     xs, ys, is_lr = [], [], []
     for _, drow in d.iterrows():
         dt = drow['date'].date().isoformat()
-        acts = by_date.get(dt)
-        if not acts or any(a.is_indoor for _r, a in acts):
+        if dt not in wd.index:
+            continue
+        m = wd.loc[dt]
+        if bool(m['any_indoor']):
             continue
         if str(drow.get('terrain_type')).lower() != 'paved':
             continue
@@ -261,12 +265,12 @@ def fit_calibration(daily, by_date):
         # rely on the MAD prune (the bias is inside its reach).
         if STRIDE_SUFFIX_RX.search(str(drow.get('workout_raw') or '')):
             continue
-        moving_s = sum(a.moving_s for _r, a in acts)
+        moving_s = float(m['watch_moving_s'])
         log_s = float(drow['minutes']) * 60.0 if pd.notna(drow.get('minutes')) else 0.0
         if not (log_s > 0 and moving_s > 0
                 and abs(moving_s - log_s) / log_s <= TIME_COMPLETE_FRAC):
             continue
-        watch_mi = sum(a.distance_m for _r, a in acts) / MILE_M
+        watch_mi = float(m['watch_miles'])
         excess = float(drow['miles']) - watch_mi
         if watch_mi <= 0 or abs(excess) > CAL_EXCESS_CAP_MI:
             continue
@@ -303,9 +307,14 @@ def fit_calibration(daily, by_date):
 
 def main():
     p = argparse.ArgumentParser(description=(__doc__ or '').split('\n\n')[0])
+    # --details-dir accepted for back-compat but unused: measurement now comes
+    # from the precomputed watch_daily.csv (built incrementally by watch_daily),
+    # so this step does no per-second parse.
     p.add_argument('--details-dir', type=Path,
                    default=DATA_DIR / 'profiles' / 'coros' / 'details')
     p.add_argument('--daily', type=Path, default=DATA_DIR / 'daily.csv')
+    p.add_argument('--watch-daily', type=Path,
+                   default=DATA_DIR / 'watch_daily.csv')
     p.add_argument('--out-measured', type=Path,
                    default=DATA_DIR / 'long_run_measured.csv')
     p.add_argument('--out-recovery-measured', type=Path,
@@ -314,19 +323,23 @@ def main():
                    default=DATA_DIR / 'long_run_calibration.csv')
     args = p.parse_args()
 
+    if not args.watch_daily.exists():
+        print(f'long_runs: no {args.watch_daily.name} — skipped '
+              '(run watch_daily first)')
+        return
     daily = pd.read_csv(args.daily, parse_dates=['date'])
-    by_date = load_day_activities(args.details_dir)
+    wd = pd.read_csv(args.watch_daily).set_index('date')
 
     for run_type, out_path in (('long', args.out_measured),
                                ('recovery', args.out_recovery_measured)):
-        measured = measure_runs(daily, by_date, run_type)
+        measured = measure_runs(daily, wd, run_type)
         measured.to_csv(out_path, index=False)
         n_rich = int((measured['status'] == 'rich').sum()) if len(measured) else 0
         n_inc = int((~measured['complete']).sum()) if len(measured) else 0
         print(f'{run_type}_measured: {len(measured)} days '
               f'({n_rich} rich, {n_inc} incomplete) -> {out_path}')
 
-    cal = fit_calibration(daily, by_date)
+    cal = fit_calibration(daily, wd)
     if cal is None:
         print(f'calibration: corpus too small (<{CAL_MIN_N} paved gated days), '
               f'not written')
