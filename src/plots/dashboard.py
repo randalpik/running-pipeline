@@ -33,6 +33,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import daily_floor
+from src.shared.effective_mileage import effective_daily_miles
 from src.shared.workouts import (
     TAU,
     load_cs, project_long_runs,
@@ -637,6 +638,11 @@ def main():
     now_utc = dt.datetime.now(dt.timezone.utc)
 
     daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
+    # Source of truth: watch/route distance-corrected mileage (decrease-only;
+    # corr <= logged). On-disk daily.csv 'miles' is untouched; all mileage
+    # totals below (lifetime, year, past-7, shoe blocks) read the corrected
+    # value. Pace/run_type/date logic is unaffected.
+    daily['miles'] = effective_daily_miles(daily)
     races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
 
     daily_summary, beta_long, d_thresh, _xc = load_cs_outputs(str(DATA_DIR))

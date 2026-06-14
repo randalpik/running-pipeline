@@ -34,6 +34,7 @@ import plotly.graph_objects as go
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import daily_floor
+from src.shared.effective_mileage import effective_daily_miles
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                           FG_DIM, GRID)
 from src.plotting import widgets
@@ -167,6 +168,9 @@ def main():
     df = df[df['date'] >= daily_floor()].copy()
     df = df.dropna(subset=['miles'])
     df['date'] = df['date'].dt.normalize()
+    # Source of truth: watch/route distance-corrected mileage (decrease-only;
+    # corr <= logged). On-disk daily.csv 'miles' is untouched.
+    df['miles'] = effective_daily_miles(df)
     miles_by_date = df.groupby('date')['miles'].sum().sort_index()
 
     years = sorted(miles_by_date.index.year.unique().tolist())

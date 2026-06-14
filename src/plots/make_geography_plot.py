@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import daily_floor
 from src.shared.country_codes import country_abbrev
+from src.shared.effective_mileage import effective_daily_miles
 from src.plotting import (render_plot, apply_default_layout, GRID)
 from src.plotting import widgets
 
@@ -657,7 +658,11 @@ def main():
     df = df[df['date'] >= daily_floor()]
     # Drop rows with no resolved city_state (e.g. indoor runs in a watch-import
     # profile) — the geography categories are keyed on city_state.
-    df = df.dropna(subset=['city_state'])
+    df = df.dropna(subset=['city_state']).copy()
+    # Source of truth: watch/route distance-corrected mileage (decrease-only;
+    # corr <= logged) drives every city/state total below. On-disk daily.csv
+    # 'miles' is untouched.
+    df['miles'] = effective_daily_miles(df)
     # Display only: collapse foreign 'City, Country' -> 'City, CC' (this plot
     # is a treemap, not geocoded, so the abbreviated form is safe to group on).
     df['city_state'] = df['city_state'].map(country_abbrev)

@@ -203,11 +203,16 @@ sits next to CS without feeding back into it.
   route's watch-covered era; the constant lives in `recovery_model.py`
   since June 2026 so the recovery fit applies the same rules to those
   routes' recovery rows). Watch enrichment wins over the rule.
-  Overread guard: enrichment may never make a run FASTER than logged —
-  the log is optimistic, never pessimistic, so a corrected pace below
-  the logged pace means the watch overread distance (loud GPS failures,
-  e.g. 2025-03-27's 24.4-mi reading of a 23.8-mi run); the calibrated
-  distance is clamped so the corrected pace floors at the logged pace.
+  Distance bracket: true distance is bracketed `watch <= true <= logged`
+  — the watch under-reads, the hand log is the ceiling Max never
+  under-estimates — so `corr_mi = min(watch+error, logged)`. Time is the
+  anchor (it IS the watch time, the log just rounds it to the minute), so
+  corr_time stays the watch time and corr_pace is the pure derivative
+  corr_time/corr_mi, never clamped. Days the watch beat its average error
+  overshoot the log and clamp to it (effectively uncorrected). Replaced
+  the old pace-floor clamp (June 2026), which bounded the derivative not
+  the distance — letting corr_mi exceed the log and fabricating a phantom
+  distance on the days it bound.
   Corrections are projection/display-side only — logged columns are
   never rewritten; the Long Runs plot defaults to logged values with a
   Watch-correction toggle and an opt-in Show-tags ring overlay

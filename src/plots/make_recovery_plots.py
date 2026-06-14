@@ -319,10 +319,12 @@ def main():
     ), row=1, col=2)
 
     # Customdata channels — ORDER MUST MATCH FACTOR_ORDER in JS:
-    # 0=temp, 1=route, 2=recent_effort, 3=tod, 4=era
+    # 0=temp, 1=elevation, 2=terrain, 3=altitude, 4=recent_effort, 5=tod, 6=era
     contrib_arr = np.stack([
         rec['contrib_temp'].to_numpy(),
-        rec['contrib_route'].to_numpy(),
+        rec['contrib_elevation'].to_numpy(),
+        rec['contrib_terrain'].to_numpy(),
+        rec['contrib_altitude'].to_numpy(),
         rec['contrib_quality'].to_numpy(),
         rec['contrib_tod'].to_numpy(),
         rec['contrib_era'].to_numpy(),
@@ -673,7 +675,9 @@ def _available_norm_factors(rec, qualifying_routes):
     return {
         'era':           has_signal('contrib_era'),
         'temp':          has_signal('contrib_temp'),
-        'route':         len(qualifying_routes) > 0,
+        'elevation':     has_signal('contrib_elevation'),
+        'terrain':       has_signal('contrib_terrain'),
+        'altitude':      has_signal('contrib_altitude'),
         'recent_effort': has_signal('contrib_quality'),
         'time_of_day':   has_signal('contrib_tod'),
     }
@@ -705,7 +709,9 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
     factors_norm = [(k, label) for (k, label) in (
         ('era',           'Era trend'),
         ('temp',          'Temperature'),
-        ('route',         'Route'),
+        ('elevation',     'Elevation (net)'),
+        ('terrain',       'Terrain'),
+        ('altitude',      'Altitude'),
         ('recent_effort', 'Recent race'),
         ('time_of_day',   'Time of day'),
     ) if av.get(k, True)]
@@ -745,15 +751,24 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
             'Time of day',
             f'β = {betas["tod_is_pm"]:+.2f} sec/mi for afternoon/late '
             '(vs early/morning)'))
-    if av.get('route', True) and qualifying_routes:
-        routes_by_beta = sorted(qualifying_routes,
-                                key=lambda r: betas[route_col_map[r]])
-        detail_rows.append(widgets.detail_row('Route offsets', f'(n ≥ {MIN_ROUTE_N}):'))
-        detail_rows.append(widgets.table(
-            ('Route', 'n', 'β'),
-            [(r, int(route_counts[r]), f'{betas[route_col_map[r]]:+.2f}')
-             for r in routes_by_beta],
-            align=('left', 'left', 'right')))
+    if av.get('elevation', True):
+        from src.shared.elevation_cost import CLIMB_COST
+        detail_rows.append(widgets.detail_row(
+            'Elevation (net)',
+            f'climb {CLIMB_COST["paved"]:.2f} s/mi per ft/mi · net gain−loss; '
+            'zero on loops, applies on point-to-point'))
+    if av.get('terrain', True):
+        from src.shared.elevation_cost import CLIMB_COST, REFUND_RECOVERY
+        detail_rows.append(widgets.detail_row(
+            'Terrain',
+            f'off-road footing {betas.get("is_offroad", 0):+.1f} s/mi flat + '
+            f'mixed descent-braking (refund {REFUND_RECOVERY["mixed"]:.0%} vs '
+            f'paved {REFUND_RECOVERY["paved"]:.0%}, scales with descent)'))
+    if av.get('altitude', True):
+        detail_rows.append(widgets.detail_row(
+            'Altitude',
+            f'{betas.get("alt_kft", 0):+.2f} s/mi per 1000 ft '
+            f'({betas.get("alt_kft", 0) * 5.4:+.1f} at Boulder)'))
 
     details_body = (
         ''.join(detail_rows)

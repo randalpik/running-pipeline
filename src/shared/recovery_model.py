@@ -45,6 +45,7 @@ import numpy as np
 import pandas as pd
 
 from src.shared.paths import DATA_DIR
+from src.shared.elevation_cost import elevation_cost
 
 # ---------- conditions / pruning excluded from fit ----------
 # Time-of-day binary indicator. Recovery pace runs ~4.5 sec/mi slower in
@@ -117,6 +118,17 @@ TRANSFERABLE_FEATURES = ['temp_centered', 'fat_marathon', 'fat_race_short',
 # paved recovery + long corpus.
 REC_MEASURED_PATH = DATA_DIR / 'recovery_measured.csv'
 REC_CAL_PATH      = DATA_DIR / 'long_run_calibration.csv'
+ELEV_MEASURED_PATH = DATA_DIR / 'elevation_measured.csv'
+
+# Elevation-enrichment constants (June 2026, watch enrichment —
+# docs/watch-stream-enrichment-plan.md thread 1). The grade-cost model itself
+# lives in shared.elevation_cost; here we keep only the per-run failure guard.
+ELEV_GUARD_FT_PER_MI = 100.0   # extreme watch-failure floor (see per_run_elevation)
+
+# Backfit iterations: the era smoother and the parametric factors are
+# estimated jointly (so era-correlated factors — footing, altitude — aren't
+# absorbed by the era trend). Converges in a few passes.
+BACKFIT_ITERS = 8
 
 # Per-day watch-failure guard. The time-completeness gate can't catch a GPS
 # failure that loses DISTANCE while keeping time intact (downtown
@@ -213,12 +225,16 @@ def add_watch_corrections(rec):
     the route-rule pace ×factor below: that's a distance-estimate error,
     which biases the logged @pace itself regardless of strides.
 
-    The overread clamp matches the long-run guard: a correction may never
-    make a run FASTER than it was logged (the log can be optimistic, never
-    pessimistic), so calibrated distance is capped at moving_s/logged_pace.
-    NOTE the clamp neuters corrections on routes Max under-logs (centennial,
-    mccabe, boulder creek, hopewell junction all sit at 0.97-0.99 logged/
-    honest) — deliberate: those would otherwise make runs faster.
+    The distance bracket matches the long-run guard (workouts): true
+    distance is bracketed watch_mi <= true <= hand-logged. (watch +
+    calibration error term) is the estimate; the hand log is a hard ceiling
+    Max never under-estimates, so corr_mi = min(estimate, logged). Time is
+    the anchor (it IS the watch time, the log just rounds it to the minute);
+    corr_pace is the pure derivative corr_time/corr_mi. On routes Max
+    happens to log tightly (centennial, mccabe, boulder creek, hopewell
+    junction all sit at 0.97-0.99 logged/honest) the estimate overshoots the
+    log, so they clamp to the logged distance — effectively uncorrected,
+    never longer than logged.
 
     The logged columns are never touched — plots show what Max logged."""
     rec = rec.copy()
@@ -249,7 +265,6 @@ def add_watch_corrections(rec):
             sub = meas.loc[rec.loc[hit, 'date']]
             cal_mi = (sub['watch_miles'] * (1 + m) + c).to_numpy()
             mov_s = sub['watch_moving_s'].to_numpy()
-            qp = rec.loc[hit, 'recovery_pace_sec_per_mi'].to_numpy(float)
             strid = rec.loc[hit, 'has_strides'].to_numpy(bool)
             # Watch-failure guard (WATCH_FAIL_DEV above): day inflation vs
             # route-median inflation, medians computed on stride-free hit
@@ -270,8 +285,8 @@ def add_watch_corrections(rec):
                 else glob_med
                 for l in locs])
             ok = (np.abs(infl - route_med) <= WATCH_FAIL_DEV) & ~strid
-            # Overread clamp — see docstring.
-            corr_mi = np.minimum(cal_mi, mov_s / qp)
+            # Distance bracket — see docstring (corr_mi never exceeds logged).
+            corr_mi = np.minimum(cal_mi, logged_mi)
             idx = rec.index[hit]
             rec.loc[idx[ok], 'rec_watch'] = True
             rec.loc[idx[ok], 'corr_time_s'] = mov_s[ok]
@@ -301,6 +316,52 @@ def add_watch_corrections(rec):
 
 
 # ---------- helpers ----------
+
+def per_run_elevation(rec):
+    """Per-run gain/loss (ft per mile) for the physical route model, as fitted
+    features (NOT a pre-combined penalty — the recovery fit estimates the
+    slopes itself, era-free, now that the per-route dummies are gone).
+
+    Returns a DataFrame [elev_gain_pm, elev_loss_pm] aligned to ``rec.index``,
+    populated for every row via the fallback chain:
+      per-run MEASURED (elevation_measured.csv, watch enrichment), then
+      route-median measured (pre-watch runs on a watch-covered route), then
+      the route's ``elev_per_mile`` constant (balanced gain≈loss — covers
+      pre-watch-only routes like education hill and CI builds with no
+      elevation artifact), then 0.
+    Extreme watch failures (``gain/mi > max(ELEV_GUARD_FT_PER_MI,
+    3x route median)`` — suburbia 2023-07-27, east boulder 2024-04-24) revert
+    to the route median."""
+    gain = pd.Series(np.nan, index=rec.index, dtype=float)
+    loss = pd.Series(np.nan, index=rec.index, dtype=float)
+    if ELEV_MEASURED_PATH.exists():
+        try:
+            em = pd.read_csv(ELEV_MEASURED_PATH, parse_dates=['date'])
+        except (pd.errors.EmptyDataError, FileNotFoundError):
+            em = None
+        if em is not None and not em.empty and 'elev_gain_ft' in em.columns:
+            em = em.merge(rec[['date', 'location']], on='date', how='left')
+            em['gpm'] = em['elev_gain_ft'] / em['corr_miles']
+            em['lpm'] = em['elev_loss_ft'] / em['corr_miles']
+            rmed = em.groupby('location')['gpm'].median()
+            lmed = em.groupby('location')['lpm'].median()
+            bad = (em['gpm'] > ELEV_GUARD_FT_PER_MI) & (
+                em['gpm'] > 3 * em['location'].map(rmed))
+            em.loc[bad, 'gpm'] = em.loc[bad, 'location'].map(rmed)
+            em.loc[bad, 'lpm'] = em.loc[bad, 'location'].map(lmed)
+            per_run = (em.dropna(subset=['date'])
+                       .drop_duplicates('date').set_index('date'))
+            gain = rec['date'].map(per_run['gpm'])
+            loss = rec['date'].map(per_run['lpm'])
+            gain = gain.fillna(rec['location'].map(rmed))
+            loss = loss.fillna(rec['location'].map(lmed))
+    epm = (rec.get('elev_per_mile', pd.Series(np.nan, index=rec.index))
+           .astype(float))
+    gain = gain.fillna(epm)
+    loss = loss.fillna(epm)
+    return pd.DataFrame({'elev_gain_pm': gain.fillna(0.0),
+                         'elev_loss_pm': loss.fillna(0.0)})
+
 
 def days_since(daily, source_dates_sorted):
     if not source_dates_sorted:
@@ -541,63 +602,112 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True):
 
     rec = add_quality_features(rec, quality_dates)
 
-    # Qualifying routes
+    # Physical route model (June 2026): per-run MEASURED elevation + terrain
+    # type REPLACE the per-route dummies entirely. Elevation and terrain are
+    # mechanical / era-invariant, so unlike free per-route betas they aren't
+    # confounded by which era a route was run in (the same reason route betas
+    # were removed from the long-run model). Whatever they DON'T explain stays
+    # as visible residual — either era confound or a genuine effort-policy
+    # difference in how Max approached that route — intentionally NOT
+    # normalized out.
+    elev = per_run_elevation(rec)
+    rec['elev_gain_pm'] = elev['elev_gain_pm']
+    rec['elev_loss_pm'] = elev['elev_loss_pm']
+    terr = (rec.get('terrain_type', pd.Series('', index=rec.index))
+            .astype(str).str.strip().str.lower())
+    # Off-road footing (mixed+trail combined): the FLAT surface penalty, fit
+    # below. Altitude (stored in FEET) → thousands of ft, fit below. Both are
+    # era-correlated in Max's history (mixed = early/sea-level, paved = Boulder
+    # era/altitude), so they're isolated via the backfit, not a sequential
+    # era-detrend that would absorb them.
+    rec['is_offroad'] = terr.isin(('mixed', 'trail')).astype(float)
+    rec['alt_kft'] = (rec.get('altitude', pd.Series(np.nan, index=rec.index))
+                      .astype(float).fillna(0.0) / 1000.0)
+    # PINNED grade-aware elevation cost (shared.elevation_cost): climbing
+    # costs, descents refund a terrain-dependent fraction (paved ~full at
+    # recovery effort, mixed ~1/3 — the downhill-braking asymmetry). It SCALES
+    # with the route's actual gain/loss, so a hilly mixed route costs more than
+    # a flat one. Pinned (not fitted) because gain/loss are collinear at run
+    # level — the slopes are imported from the per-mile data where they ARE
+    # identifiable. is_offroad then carries only the residual FLAT-footing cost.
+    terr_for_cost = terr.where(terr.isin(('paved', 'mixed', 'trail')), 'paved')
+    rec['elev_cost'] = elevation_cost(rec['elev_gain_pm'].fillna(0).to_numpy(),
+                                      rec['elev_loss_pm'].fillna(0).to_numpy(),
+                                      terr_for_cost.to_numpy())
+
+    # Route counts kept for reporting/UI only — routes are no longer fit as
+    # free dummies (route_col_map intentionally empty).
     route_counts = (rec.loc[~rec['is_pruned'], 'location']
                      .dropna().value_counts())
     qualifying_routes = (route_counts[route_counts >= MIN_ROUTE_N]
                          .index.tolist())
-    qualifying_routes = sorted(qualifying_routes,
-                                key=lambda x: -route_counts[x])
-    if verbose:
-        print(f'\nQualifying routes (n >= {MIN_ROUTE_N}): {len(qualifying_routes)}')
+    qualifying_routes = sorted(qualifying_routes, key=lambda x: -route_counts[x])
+    route_col_map = {}
 
-    route_col_map = {r: sanitize_route(r) for r in qualifying_routes}
-    for r in qualifying_routes:
-        rec[route_col_map[r]] = (rec['location'] == r).astype(float)
-
-    # Era trend
-    pool = rec[~rec['is_pruned']].copy()
-    rec['era_trend'] = centered_rolling_mean(
-        rec['date'].tolist(),
-        pool['date'].tolist(),
-        pool['residual_raw'].values,
-        ERA_WINDOW_HALF_DAYS,
-        ERA_WINDOW_MIN_POINTS,
-    )
-    rec['residual_detrended'] = rec['residual_raw'] - rec['era_trend']
-
-    # Global mean residual — used to center era contributions so toggling
-    # era_trend doesn't collapse points to zero.
-    global_mean_residual = float(pool['residual_raw'].mean())
-    if verbose:
-        print(f'  global mean residual: {global_mean_residual:+.2f} sec/mi '
-              f'(reference for era-detrended view; computed on non-pruned pool)')
-
-    # OLS fit
+    # ---------- features ----------
     base_features = (['temp_centered']
                      + [f'fat_{c}' for c in QUALITY_CATS]
                      + ['tod_is_pm'])
-    route_features = [route_col_map[r] for r in qualifying_routes]
-    feature_cols = base_features + route_features
+    # Fitted physical route terms: flat-footing (is_offroad) + altitude. The
+    # grade cost is the PINNED elev_cost (subtracted as a fixed offset).
+    physical_features = ['is_offroad', 'alt_kft']
+    feature_cols = base_features + physical_features
 
     rec_fit = rec[~rec['is_pruned']].dropna(
-        subset=feature_cols + ['residual_detrended']).copy()
+        subset=feature_cols + ['residual_raw', 'elev_cost']).copy()
     if len(rec_fit) <= len(feature_cols) + 1:
         if verbose:
             print(f'  only {len(rec_fit)} fit-eligible rows for '
                   f'{len(feature_cols)} features — skipping fit')
         return None
 
-    X = rec_fit[feature_cols].to_numpy().astype(float)
-    y = rec_fit['residual_detrended'].to_numpy().astype(float)
-    X_int = np.hstack([np.ones((len(X), 1)), X])
-    coef, *_ = np.linalg.lstsq(X_int, y, rcond=None)
+    # ---------- backfit: era smoother <-> parametric factors ----------
+    # The era trend is a temporal smoother, so a factor varying on the same
+    # slow (era) timescale would be absorbed if era were computed once on the
+    # raw residual. Footing and altitude are both era-correlated in Max's
+    # history (mixed/sea-level early, paved/Boulder-altitude late), so we
+    # estimate them JOINTLY with era by backfitting: recompute era on the
+    # residual with the current factors AND the pinned elev_cost removed, refit
+    # the factors on the era-removed residual, iterate. Fast factors
+    # (temp/fatigue/TOD) are era-immune either way; the backfit is what lets
+    # footing and altitude separate from era and from each other.
+    pool_mask = (~rec['is_pruned']).to_numpy()
+    fit_mask = rec.index.isin(rec_fit.index)
+    Xall = np.hstack([np.ones((len(rec), 1)),
+                      rec[feature_cols].fillna(0.0).to_numpy(float)])
+    elev_all = rec['elev_cost'].to_numpy(float)
+    raw_all = rec['residual_raw'].to_numpy(float)
+    dates_all = rec['date'].tolist()
+    pool_dates = rec.loc[pool_mask, 'date'].tolist()
+    Xf = Xall[fit_mask]
+    coef = np.zeros(Xf.shape[1])
+    era_all = np.zeros(len(rec))
+    for _ in range(BACKFIT_ITERS):
+        cleaned = raw_all - elev_all - (Xall @ coef)
+        era_all = np.asarray(centered_rolling_mean(
+            dates_all, pool_dates, cleaned[pool_mask],
+            ERA_WINDOW_HALF_DAYS, ERA_WINDOW_MIN_POINTS), dtype=float)
+        target = (raw_all - elev_all - era_all)[fit_mask]
+        coef, *_ = np.linalg.lstsq(Xf, target, rcond=None)
     intercept = float(coef[0])
     betas = {f: float(b) for f, b in zip(feature_cols, coef[1:])}
 
-    yhat = X_int @ coef
-    ss_res = float(np.sum((y - yhat) ** 2))
-    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    rec['era_trend'] = era_all
+    rec['residual_detrended'] = rec['residual_raw'] - rec['era_trend']
+    # Center era contributions on the mean era level (physical already removed,
+    # so this is the fitness baseline).
+    global_mean_residual = float(np.nanmean(era_all[pool_mask]))
+    if verbose:
+        print(f'  global mean residual: {global_mean_residual:+.2f} sec/mi '
+              f'(mean era level; era fit on the physically-cleaned residual)')
+
+    rec_fit = rec[fit_mask].copy()
+    elev_fit = rec_fit['elev_cost'].to_numpy(float)
+    era_fit = rec_fit['era_trend'].to_numpy(float)
+    resid_target = rec_fit['residual_raw'].to_numpy(float) - era_fit
+    yhat = Xf @ coef + elev_fit  # predicts the era-detrended residual
+    ss_res = float(np.sum((resid_target - yhat) ** 2))
+    ss_tot = float(np.sum((resid_target - resid_target.mean()) ** 2))
     r2_detrended = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
     raw_y = rec_fit['residual_raw'].to_numpy()
@@ -614,22 +724,39 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True):
         print(f'\n  Per-day factors:')
         for f in base_features:
             print(f'    {f:18s}  β = {betas[f]:+.3f}')
-        print(f'\n  Route offsets (vs unspecified-location baseline):')
-        for r in qualifying_routes:
-            b = betas[route_col_map[r]]
-            print(f'    {r:25s}  β = {b:+.2f}')
+        print(f'\n  Physical route model (replaces per-route dummies):')
+        print(f'    elevation grade: PINNED grade-aware cost '
+              f'(shared.elevation_cost); mean {rec_fit["elev_cost"].mean():+.1f} '
+              f's/mi over the fit set (scales with each route\'s gain/loss)')
+        print(f'    off-road footing: β = {betas["is_offroad"]:+.1f} s/mi (flat '
+              f'surface penalty)')
+        print(f'    altitude: β = {betas["alt_kft"]:+.2f} s/mi per 1000 ft '
+              f'(= {betas["alt_kft"] * 5.4:+.1f} at Boulder)')
 
-    # ---------- per-point contributions (4 channels) ----------
+    # ---------- per-point contributions ----------
     rec['contrib_temp'] = betas['temp_centered'] * rec['temp_centered'].fillna(0)
     rec['contrib_quality'] = sum(
         betas[f'fat_{c}'] * rec[f'fat_{c}'].fillna(0) for c in QUALITY_CATS)
     rec['contrib_tod'] = betas['tod_is_pm'] * rec['tod_is_pm'].fillna(0)
 
-    def route_contrib(loc):
-        if loc in qualifying_routes:
-            return betas[route_col_map[loc]]
-        return 0.0
-    rec['contrib_route'] = rec['location'].apply(route_contrib)
+    # Physical route cost, split into 3 independently-toggleable channels:
+    #   elevation = NET grade at the paved/full-refund baseline,
+    #               c_up·(gain−loss) — ZERO for loops, net up/down for
+    #               point-to-point.
+    #   terrain   = paved-vs-not: flat-footing (is_offroad β) + the refund
+    #               asymmetry (elev_cost − paved-equivalent) — zero on paved,
+    #               the mixed downhill-braking penalty (scales with descent)
+    #               on mixed/trail.
+    #   altitude  = the altitude penalty.
+    paved_equiv = elevation_cost(rec['elev_gain_pm'].fillna(0).to_numpy(),
+                                 rec['elev_loss_pm'].fillna(0).to_numpy(),
+                                 np.full(len(rec), 'paved'))
+    rec['contrib_elevation'] = paved_equiv
+    rec['contrib_terrain'] = ((rec['elev_cost'].to_numpy() - paved_equiv)
+                              + betas['is_offroad'] * rec['is_offroad'].fillna(0))
+    rec['contrib_altitude'] = betas['alt_kft'] * rec['alt_kft'].fillna(0)
+    rec['contrib_route'] = (rec['contrib_elevation'] + rec['contrib_terrain']
+                            + rec['contrib_altitude'])
 
     # Era contribution centered on global mean
     rec['contrib_era'] = rec['era_trend'].fillna(global_mean_residual) - global_mean_residual

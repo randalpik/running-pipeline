@@ -33,7 +33,7 @@ from src.parsers.snapshot import CURRENT_LOG_COLUMNS
 # caching. Values stay RAW (unscaled) so current_log can be re-derived if a
 # scaling/mapping changes. See sync.py for the cache.
 _SUMMARY_KEYS = ("sportType", "distance", "workoutTime", "totalTime",
-                 "startTimestamp", "timezone", "name", "avgPace")
+                 "startTimestamp", "timezone", "name", "avgPace", "elevGain")
 _WEATHER_KEYS = ("temperature", "windSpeed", "windDirection", "weatherType",
                  "humidity")
 
@@ -64,25 +64,41 @@ def rich_detail(d: dict):
     fields the rep-extraction layer (reps.py) needs, RAW/unscaled like slim:
 
       pauses: [[startTimestamp, endTimestamp, duration], ...]
-      freq:   [[timestamp, distance, heart, gpsLat, gpsLon], ...]  per-second
+      freq:   [[timestamp, distance, heart, gpsLat, gpsLon, altitude, speed],
+               ...]  per-second
 
-    ~100 KB vs slim's ~600 B, so it's kept only where reps.py consumes it:
-    every Track Run (sync caches those rich from the start) and runs on
-    hand-logged workout days (scripts/backfill_rich_details.py).
+    ~100 KB vs slim's ~600 B, so it's kept only where the stream is consumed:
+    reps.py (every Track Run — sync caches those rich from the start — and
+    runs on hand-logged workout days, scripts/backfill_rich_details.py) and
+    the elevation enrichment (altitude/speed; scripts/backfill_elevation.py).
 
-    Idempotent on rich records. Returns None for a slim record — the
-    per-second data is gone and the caller must re-fetch.
+    Schema version (``rich``):
+      1 — freq points are [t, dist, heart, gpsLat, gpsLon] (pre-2026-06).
+      2 — appends [altitude, speed] (raw: altitude is meters, speed is the
+          Coros raw value). ``altitude``/``speed`` are None on devices that
+          don't report them. Consumers index by position, so v2 is a strict
+          superset — f[0..4] are unchanged.
+
+    ``altitude`` enables the Minetti per-run grade correction; ``speed`` is
+    kept for corrected-mile split pace (informational) and a possible future
+    pace-vs-grade physiology model. Split pace is computed from the distance
+    + timestamp streams, not this raw speed (whose scaling is unverified).
+
+    Idempotent on rich records (returns as-is — a v1 record is NOT upgraded
+    in place; the frequencyList it was built from is gone, so altitude
+    requires a re-fetch). Returns None for a slim record.
     """
     if "freq" in d:
         return d
     if "frequencyList" not in d:
         return None
     rec = slim_detail(d)
-    rec["rich"] = 1
+    rec["rich"] = 2
     rec["pauses"] = [[p.get("startTimestamp"), p.get("endTimestamp"),
                       p.get("duration")] for p in (d.get("pauseList") or [])]
     rec["freq"] = [[p.get("timestamp"), p.get("distance"), p.get("heart"),
-                    p.get("gpsLat"), p.get("gpsLon")]
+                    p.get("gpsLat"), p.get("gpsLon"),
+                    p.get("altitude"), p.get("speed")]
                    for p in (d.get("frequencyList") or [])]
     return rec
 

@@ -208,19 +208,26 @@ def _lr_watch_corrections(lr):
         hit = lr['date'].isin(meas.index) & paved
         if hit.any():
             sub = meas.loc[lr.loc[hit, 'date']]
-            corr_mi = (sub['watch_miles'] * (1 + m) + c).to_numpy()
+            cal_mi = (sub['watch_miles'] * (1 + m) + c).to_numpy()
             mov_s = sub['watch_moving_s'].to_numpy()
-            # Overread guard (Max, June 2026): enrichment may never make a
-            # run FASTER than it was logged. The log can be optimistic but
-            # never pessimistic, so a corrected pace below the logged pace
-            # means the watch overread distance (loud GPS failures — e.g.
-            # 2025-03-27, corrected 24.4 mi vs 23.8 logged). Clamp the
-            # calibrated distance so the corrected pace floors at the
-            # logged pace; for the many sub-s/mi violations this is the
-            # calibration curve's noise floor and the clamp is a no-op in
-            # all but the impossible direction.
-            qp = lr.loc[hit, 'recovery_pace_sec_per_mi'].to_numpy(float)
-            corr_mi = np.minimum(corr_mi, mov_s / qp)
+            # Distance bracket (Max, June 2026): true distance is bracketed
+            # watch_mi <= true <= hand-logged. The watch UNDER-reads (GPS
+            # undercount), so (watch + calibration error term) is our
+            # estimate of truth; the hand log is a hard CEILING — Max never
+            # under-estimates a run. Clamp the estimate to the logged
+            # distance: on days the watch beat its own average error the
+            # estimate overshoots the log and the trusted log wins (those
+            # days end up effectively uncorrected). TIME is the anchor — it
+            # IS the watch time (the log is just that, rounded to the
+            # nearest minute), known to the second — so corr_time stays the
+            # watch time and corr_pace is a pure DERIVATIVE of
+            # (corr_time, corr_mi), never clamped on its own. Replaces the
+            # old pace-floor "overread clamp", which governed the derivative
+            # (pace) instead of the distance the invariant is about, and so
+            # both let corr_mi exceed the log AND fabricated a phantom
+            # distance (mov_s/logged_pace) on the days it bound.
+            logged_mi = lr.loc[hit, 'miles'].to_numpy(float)
+            corr_mi = np.minimum(cal_mi, logged_mi)
             lr.loc[hit, 'lr_watch'] = True
             lr.loc[hit, 'corr_miles'] = corr_mi
             lr.loc[hit, 'corr_time_s'] = mov_s

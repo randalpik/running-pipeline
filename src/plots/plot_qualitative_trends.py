@@ -38,6 +38,7 @@ from plotly.subplots import make_subplots
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import daily_floor
+from src.shared.effective_mileage import effective_daily_miles
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             FG, FG_DIM, GRID,
                             yearly_x_axis_kwargs)
@@ -119,6 +120,9 @@ def interpolate_short_gaps(s, max_gap_days):
 def load_series(daily_path, start_date):
     df = pd.read_csv(daily_path, parse_dates=['date'])
     df = df[df['date'] >= pd.Timestamp(start_date)].copy()
+    # Source of truth: watch/route distance-corrected mileage (decrease-only;
+    # corr <= logged) drives the volume trend. On-disk 'miles' is untouched.
+    df['miles'] = effective_daily_miles(df)
     end = df['date'].max()
     cal = pd.DataFrame({'date': pd.date_range(start_date, end, freq='D')})
     keep = df[['date', 'miles', 'temp_c', 'sleep_cycles', 'weight_lbs']]

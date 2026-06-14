@@ -183,13 +183,22 @@ recovery+long corpus).
   route warrants a rule: every watch-covered route's median inflation
   sits within 0.97–1.011 (the Nashville long-route inflation was a
   property of those route-distance estimates, not of Max's logging).
-- **Overread clamp** (same as long runs): a correction may never make a
-  run faster than logged. NOTE this deliberately neuters corrections on
-  routes Max *under*-logs — centennial 0.991/0.986 (pre/post
-  2022-04-15), mccabe 0.985, boulder creek 0.970, hopewell junction
-  0.970 logged/honest — those would otherwise speed runs up by 1-3%.
-  Revisit if the "log is optimistic, never pessimistic" contract is
-  ever relaxed.
+- **Distance bracket** (same as long runs): true distance is bracketed
+  `watch_mi <= true <= hand-logged`. The watch under-reads, so
+  `(watch + calibration error)` is the estimate; the hand log is a hard
+  ceiling Max never under-estimates, so `corr_mi = min(estimate, logged)`.
+  **Time is the anchor** — it IS the watch time (the hand log just rounds
+  it to the minute, ~30 s), so `corr_time` stays the watch time and
+  `corr_pace = corr_time / corr_mi` is a pure derivative, never clamped on
+  its own. On routes Max logs tightly — centennial 0.991/0.986 (pre/post
+  2022-04-15), mccabe 0.985, boulder creek 0.970, hopewell junction 0.970
+  logged/honest — the estimate overshoots the log, so they clamp to the
+  logged distance (effectively uncorrected, never longer). This replaced
+  the old pace-floor "overread clamp" (June 2026), which governed pace (a
+  derivative) instead of distance: it let `corr_mi` exceed the log on some
+  days and fabricated a phantom distance (`moving_s / logged_pace`) on the
+  days it bound — visible only as a distance/time incoherence the
+  pace-axis plot couldn't show.
 
 ### Features tested and rejected
 

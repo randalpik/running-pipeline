@@ -169,6 +169,42 @@ def _join_location_metadata(daily, locations_df):
     return merged
 
 
+def _backfill_location_metadata(daily, locations_df):
+    """Fill blank location-metadata cells (terrain_type, elev_per_mile,
+    altitude, display_name) for rows whose `location` was finalized AFTER the
+    initial _join_location_metadata — notably the historically-located routes
+    (e.g. `education hill`, whose location apply_historical fills where the
+    raw log left it blank). The first join keyed on a still-blank location and
+    missed them; this second pass keys on the now-final location and fills
+    only blank cells, never overwriting values set by the first join, autopop,
+    or adjustments. city_state is set by apply_historical itself, so it's
+    already populated and untouched here."""
+    if (locations_df is None or len(locations_df) == 0
+            or "log_location" not in locations_df.columns):
+        return daily
+    cols = [c for c in LOCATION_METADATA_COLS
+            if c in locations_df.columns and c in daily.columns]
+    if not cols:
+        return daily
+    sheet = locations_df[["log_location"] + cols].copy()
+    sheet["log_location"] = (sheet["log_location"].astype(str)
+                             .str.strip().str.lower())
+    sheet = sheet.drop_duplicates(subset=["log_location"], keep="last") \
+                 .set_index("log_location")
+    key = daily["location"].astype(str).str.strip().str.lower()
+    n_filled = 0
+    for c in cols:
+        mapped = key.map(sheet[c])
+        fill_mask = daily[c].isna() & mapped.notna()
+        if fill_mask.any():
+            daily.loc[fill_mask, c] = mapped[fill_mask].to_numpy()
+            n_filled += int(fill_mask.sum())
+    if n_filled:
+        print(f"[locations] backfilled {n_filled} metadata cell(s) for "
+              f"historically-located rows (e.g. education hill)")
+    return daily
+
+
 def main():
     p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     p.add_argument("--historical",
@@ -418,6 +454,13 @@ def main():
                     n_ll += int(fill_mask.sum())
         print(f"[historical] applied {n_entries}/{len(historical_df)} entr(ies); "
               f"city_state set on {n_cs}, location set on {n_ll} non-race row(s)")
+
+    # ---------- backfill metadata for historically-located rows ----------
+    # apply_historical just finalized `location` on rows the raw log left
+    # blank (education hill, etc.); re-attach their terrain_type/elev_per_mile/
+    # altitude, which the earlier _join_location_metadata couldn't (location
+    # was blank then). Fills blanks only.
+    daily = _backfill_location_metadata(daily, locations_df)
 
     # ---------- reconcile race-date daily rows to run_type='race' ----------
     # races.csv is the truth for what happened on a race date. A daily row on
