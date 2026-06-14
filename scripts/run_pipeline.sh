@@ -87,27 +87,31 @@ if [[ -d data/profiles/coros/details ]]; then
   quiet_step "watch_daily"           python -m src.coros.watch_daily
 fi
 quiet_step "build_dataset"           python src/parsers/build_dataset.py
-# Watch-derived rep extraction for Max's hybrid profile: the hand log stays
-# the source of truth; reps.py reconciles the Coros per-second stream against
-# it (src/coros/reps.py) and parse_workouts consumes the result. Skipped when
-# the rich details cache or CS timeline isn't present (e.g. CI before the
-# coros sync is wired) — parse_workouts then falls back to string parsing.
-if [[ -d data/profiles/coros/details && -f data/bayes_cs_summary.csv ]]; then
-  quiet_step "reps"                  python src/coros/reps.py --details-dir data/profiles/coros/details
-fi
-# Long-run + recovery watch reconciliation: measurement rows for both run
-# types + the log/watch distance calibration (src/coros/long_runs.py). Same
-# graceful degradation as reps — without the details cache,
-# project_long_runs and the recovery fit fall back to logged values plus
-# the route-era mislogged-distance rules.
+# Long-run + recovery watch reconciliation: measurement rows + the log/watch
+# distance calibration. Reads the precomputed watch_daily.csv (no per-second
+# parse); doesn't depend on CS, so it runs before the fit. Without the details
+# cache, project_long_runs/recovery fall back to logged values + route-era rules.
 if [[ -d data/profiles/coros/details ]]; then
   quiet_step "long_runs (watch)"     python src/coros/long_runs.py --details-dir data/profiles/coros/details
 fi
-quiet_step "parse_workouts"          python src/parsers/parse_workouts.py "${diag_flag[@]}"
-
+# CS fit BEFORE reps: reps reconciles against the CS timeline, so on a refit
+# (e.g. a new race added) it must see the fresh CS. The fit only needs races,
+# so this order is safe. When the fit runs, reps does a full re-extract
+# (--full-regen safety valve) to rebuild against the new CS; otherwise reps is
+# incremental against the watch_activities presence cache.
+reps_regen=()
 if [[ $fit -eq 1 ]]; then
   loud_step "bayes_cs_fit"  python src/models/bayes_cs_fit.py "${diag_flag[@]}"
+  reps_regen=(--full-regen)
 fi
+# Watch-derived rep extraction: reconciles the Coros per-second stream against
+# the hand log (parse_workouts consumes the result). Incremental via the
+# watch_activities index. Skipped when the details cache or CS timeline is
+# absent — parse_workouts then falls back to string parsing.
+if [[ -d data/profiles/coros/details && -f data/bayes_cs_summary.csv ]]; then
+  quiet_step "reps"                  python src/coros/reps.py --details-dir data/profiles/coros/details "${reps_regen[@]}"
+fi
+quiet_step "parse_workouts"          python src/parsers/parse_workouts.py "${diag_flag[@]}"
 
 echo
 echo "Pipeline complete."

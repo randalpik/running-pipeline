@@ -895,94 +895,159 @@ def extract_day(recs, cs_cut, logged, cf_allowed):
     return chosen, status
 
 
-def build_workout_measured(daily, details_dir, cs_path, *, watch_only=False,
-                           races_path=None):
-    """Returns the workout_measured DataFrame: one status row (rep_idx=0)
-    per analyzed day plus one row per reconstructed rep."""
-    inv = {}     # date -> [(label, sport_type, rec)]
-    skipped_slim = 0
-    for p in sorted(Path(details_dir).glob('*.json')):
-        rec = json.loads(p.read_text())
-        if (rec.get('summary') or {}).get('sportType') is None:
-            continue
-        act = Activity(rec)
-        if act.sport_type not in M.RUN_SPORTS:
-            continue
-        inv.setdefault(act.local_date.isoformat(), []).append(
-            (p.stem, act.sport_type, rec))
+WORKOUT_MEASURED_COLS = ['date', 'status', 'logged_qd_m', 'rep_idx', 'kind',
+                         'dist_m', 'time_s', 'pace_sec_per_mi', 'rest_stand_s',
+                         'rest_jog_s', 'avg_hr', 'max_hr', 'label_ids']
 
-    plan = []    # (date, [recs], logged_qd, cf_allowed, hill=(nreps, loop_m))
+
+def _extract_day_rows(date, recs, logged, cf, hill, cutoff, label_ids,
+                      watch_only):
+    """Rows for one analyzed day (status row rep_idx=0 + one row per rep).
+    Returns (rows, slim_skipped). `label_ids` is the day's labelId set, stamped
+    on the status row as the presence key for incremental reuse."""
+    if not watch_only and date in DISQUALIFIED:
+        return [{'date': date, 'status': f'disqualified: {DISQUALIFIED[date]}',
+                 'logged_qd_m': logged, 'rep_idx': 0, 'label_ids': label_ids}], 0
+    rich = [r for r in recs if 'freq' in r]
+    if not rich:
+        return [{'date': date, 'status': 'no-rich-data', 'logged_qd_m': logged,
+                 'rep_idx': 0, 'label_ids': label_ids}], 1
+    if hill:
+        chosen, status = extract_hill_day(rich, *hill)
+        kind = 'loop'
+    else:
+        chosen, status = extract_day(rich, cutoff(date), logged, cf)
+        kind = None
+    rows = [{'date': date, 'status': status, 'logged_qd_m': logged,
+             'rep_idx': 0, 'label_ids': label_ids}]
+    for i, r in enumerate(chosen):
+        rows.append({
+            'date': date, 'status': status, 'logged_qd_m': logged,
+            'rep_idx': i + 1,
+            'kind': kind or ('cf' if r.get('cf') else 'rep'),
+            'dist_m': r['L'], 'time_s': round(r['t'], 1),
+            'pace_sec_per_mi': round(r['t'] / (r['L'] / MILE), 1),
+            'rest_stand_s': r['rest_stand_s'],
+            'rest_jog_s': r.get('rest_jog_s'),
+            'avg_hr': r['avg_hr'], 'max_hr': r['max_hr'],
+        })
+    return rows, 0
+
+
+def _day_plan(by_date, daily, watch_only, races_path):
+    """{date: {logged, cf, hill, ids}} — which days to analyze and, per day, the
+    labelId set to extract from. `by_date` maps date -> [(labelId, sport_type)].
+    Pure metadata: no per-second parse. Mirrors the original plan exactly."""
+    plan = {}
     if watch_only:
         race_dates = set()
         if races_path and Path(races_path).exists():
             race_dates = set(pd.read_csv(races_path)['date'].astype(str))
-        for date, acts in inv.items():
-            tracks = [r for l, st, r in acts if st == M.SPORT_TRACK_RUN]
-            if tracks and date not in race_dates:
-                plan.append((date, tracks, None, False, None))
-    else:
-        hand = daily.copy()
-        hand['date'] = pd.to_datetime(hand['date']).dt.date.astype(str)
-        hand = hand.set_index('date')
-        for date, acts in inv.items():
-            h = hand.loc[date] if date in hand.index else None
-            run_type = h['run_type'] if h is not None else None
-            qd = (float(h['quality_distance_m'])
-                  if h is not None and run_type in QUALITY_TYPES
-                  and pd.notna(h['quality_distance_m']) else None)
-            cf = h is not None and 'f@' in str(h['workout_raw'])
-            tracks = [r for l, st, r in acts if st == M.SPORT_TRACK_RUN]
-            if tracks:
-                if run_type == 'race':
-                    continue
-                plan.append((date, tracks, qd, cf, None))
-            elif run_type in QUALITY_TYPES:
-                plan.append((date, [r for l, st, r in acts], qd, cf, None))
-            elif run_type == 'hill_cont':
-                _min, nreps, loop = parse_hc(h)
-                loop_m = hc_loop_distance(loop) if loop else None
-                if nreps and loop_m:
-                    plan.append((date, [r for l, st, r in acts],
-                                 float(nreps) * float(loop_m), False,
-                                 (int(nreps), float(loop_m))))
+        for date, acts in by_date.items():
+            track_ids = [l for l, st in acts if st == M.SPORT_TRACK_RUN]
+            if track_ids and date not in race_dates:
+                plan[date] = {'logged': None, 'cf': False, 'hill': None,
+                              'ids': track_ids}
+        return plan
+    hand = daily.copy()
+    hand['date'] = pd.to_datetime(hand['date']).dt.date.astype(str)
+    hand = hand.set_index('date')
+    for date, acts in by_date.items():
+        h = hand.loc[date] if date in hand.index else None
+        run_type = h['run_type'] if h is not None else None
+        qd = (float(h['quality_distance_m'])
+              if h is not None and run_type in QUALITY_TYPES
+              and pd.notna(h['quality_distance_m']) else None)
+        cf = h is not None and 'f@' in str(h['workout_raw'])
+        track_ids = [l for l, st in acts if st == M.SPORT_TRACK_RUN]
+        all_ids = [l for l, st in acts]
+        if track_ids:
+            if run_type == 'race':
+                continue
+            plan[date] = {'logged': qd, 'cf': cf, 'hill': None, 'ids': track_ids}
+        elif run_type in QUALITY_TYPES:
+            plan[date] = {'logged': qd, 'cf': cf, 'hill': None, 'ids': all_ids}
+        elif run_type == 'hill_cont':
+            _min, nreps, loop = parse_hc(h)
+            loop_m = hc_loop_distance(loop) if loop else None
+            if nreps and loop_m:
+                plan[date] = {'logged': float(nreps) * float(loop_m), 'cf': False,
+                              'hill': (int(nreps), float(loop_m)), 'ids': all_ids}
+    return plan
 
+
+def build_workout_measured(daily, details_dir, cs_path, *, watch_only=False,
+                           races_path=None, activities_path=None,
+                           out_path=None, full_regen=False):
+    """workout_measured DataFrame, built INCREMENTALLY when the per-activity
+    index (watch_activities.csv) is present: candidate days come from the index
+    (no parse), and a day is re-extracted only when its labelId set changed (vs.
+    the cached status row) or `full_regen` is set (the CS-refit safety valve).
+    Without the index it falls back to the full-parse behavior."""
     cutoff = cs_threshold_fn(cs_path)
-    rows = []
-    for date, recs, logged, cf, hill in sorted(plan):
-        if not watch_only and date in DISQUALIFIED:
-            rows.append({'date': date,
-                         'status': f'disqualified: {DISQUALIFIED[date]}',
-                         'logged_qd_m': logged, 'rep_idx': 0})
+    details_dir = Path(details_dir)
+    indexed = bool(activities_path and Path(activities_path).exists())
+
+    if indexed:
+        idx = pd.read_csv(activities_path, dtype={'labelId': str, 'date': str})
+        by_date = {}
+        for _, r in idx.iterrows():
+            by_date.setdefault(r['date'], []).append(
+                (r['labelId'], int(r['sport_type'])))
+
+        def load_recs(meta):
+            return [json.loads((details_dir / f'{l}.json').read_text())
+                    for l in meta['ids']]
+    else:
+        # Fallback: parse the cache to build the per-day index in memory.
+        by_date, rec_by_id = {}, {}
+        for p in sorted(details_dir.glob('*.json')):
+            if p.stem in M.EXCLUDED_LABEL_IDS:
+                continue
+            rec = json.loads(p.read_text())
+            if (rec.get('summary') or {}).get('sportType') is None:
+                continue
+            act = Activity(rec)
+            if act.sport_type not in M.RUN_SPORTS:
+                continue
+            by_date.setdefault(act.local_date.isoformat(), []).append(
+                (p.stem, act.sport_type))
+            rec_by_id[p.stem] = rec
+
+        def load_recs(meta):
+            return [rec_by_id[l] for l in meta['ids']]
+
+    plan = _day_plan(by_date, daily, watch_only, races_path)
+
+    # Cached rows keyed by date, with the presence key from the status row.
+    existing = {}
+    if indexed and out_path and Path(out_path).exists():
+        ex = pd.read_csv(out_path)
+        if 'label_ids' in ex.columns:
+            for date, g in ex.groupby('date'):
+                sr = g[g['rep_idx'] == 0]
+                key = (str(sr['label_ids'].iloc[0])
+                       if len(sr) and pd.notna(sr['label_ids'].iloc[0]) else '')
+                existing[str(date)] = (key, g.to_dict('records'))
+
+    rows, skipped, reextracted = [], 0, 0
+    for date in sorted(plan):
+        meta = plan[date]
+        key = ' '.join(sorted(meta['ids']))
+        cached = existing.get(date)
+        if not full_regen and cached is not None and cached[0] == key:
+            rows.extend(cached[1])             # unchanged day — reuse, no parse
             continue
-        rich = [r for r in recs if 'freq' in r]
-        if not rich:
-            rows.append({'date': date, 'status': 'no-rich-data',
-                         'logged_qd_m': logged, 'rep_idx': 0})
-            skipped_slim += 1
-            continue
-        if hill:
-            chosen, status = extract_hill_day(rich, *hill)
-            kind = 'loop'
-        else:
-            chosen, status = extract_day(rich, cutoff(date), logged, cf)
-            kind = None
-        rows.append({'date': date, 'status': status, 'logged_qd_m': logged,
-                     'rep_idx': 0})
-        for i, r in enumerate(chosen):
-            rows.append({
-                'date': date, 'status': status, 'logged_qd_m': logged,
-                'rep_idx': i + 1,
-                'kind': kind or ('cf' if r.get('cf') else 'rep'),
-                'dist_m': r['L'], 'time_s': round(r['t'], 1),
-                'pace_sec_per_mi': round(r['t'] / (r['L'] / MILE), 1),
-                'rest_stand_s': r['rest_stand_s'],
-                'rest_jog_s': r.get('rest_jog_s'),
-                'avg_hr': r['avg_hr'], 'max_hr': r['max_hr'],
-            })
-    cols = ['date', 'status', 'logged_qd_m', 'rep_idx', 'kind', 'dist_m',
-            'time_s', 'pace_sec_per_mi', 'rest_stand_s', 'rest_jog_s',
-            'avg_hr', 'max_hr']
-    return pd.DataFrame(rows, columns=cols), skipped_slim
+        reextracted += 1
+        drows, sk = _extract_day_rows(date, load_recs(meta), meta['logged'],
+                                      meta['cf'], meta['hill'], cutoff, key,
+                                      watch_only)
+        rows.extend(drows)
+        skipped += sk
+    if indexed:
+        print(f'[reps] {len(plan)} workout days, re-extracted {reextracted} '
+              f'(reused {len(plan) - reextracted})')
+    return pd.DataFrame(rows, columns=WORKOUT_MEASURED_COLS), skipped
 
 
 def main():
@@ -993,6 +1058,13 @@ def main():
     p.add_argument('--watch-only', action='store_true',
                    help='No hand log to reconcile against (watch-import '
                         'profiles): emit definite blocks only.')
+    p.add_argument('--activities', type=Path,
+                   default=DATA_DIR / 'watch_activities.csv',
+                   help='Per-activity index (watch_daily). Enables incremental '
+                        'extraction; absent -> full parse.')
+    p.add_argument('--full-regen', action='store_true',
+                   help='Re-extract every day, ignoring the presence cache '
+                        '(CS-refit safety valve).')
     p.add_argument('--out', type=Path, default=DATA_DIR / 'workout_measured.csv')
     args = p.parse_args()
 
@@ -1001,7 +1073,9 @@ def main():
         daily = pd.read_csv(DATA_DIR / 'daily.csv')
     df, skipped = build_workout_measured(
         daily, args.details_dir, DATA_DIR / 'bayes_cs_summary.csv',
-        watch_only=args.watch_only, races_path=DATA_DIR / 'races.csv')
+        watch_only=args.watch_only, races_path=DATA_DIR / 'races.csv',
+        activities_path=args.activities, out_path=args.out,
+        full_regen=args.full_regen)
     df.to_csv(args.out, index=False)
 
     days = df[df['rep_idx'] == 0]

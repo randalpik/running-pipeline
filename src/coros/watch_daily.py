@@ -32,7 +32,7 @@ from src.shared.paths import DATA_DIR
 
 # Bump when the set of derived columns / their derivation changes — forces a
 # full rebuild on the next run (mtimes can't see a code change).
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 WATCH_DAILY_COLUMNS = [
     "date", "n_acts", "status",
@@ -41,6 +41,11 @@ WATCH_DAILY_COLUMNS = [
     "pause_s", "stall_s", "n_segs", "d_eff_frac", "longest_seg_mi",
     "label_ids", "schema_version",
 ]
+
+# Lightweight per-activity index (one row per run activity), maintained
+# incrementally alongside the table. Lets reps find candidate workout days
+# (track-sport detection) and the per-day labelId set WITHOUT parsing streams.
+WATCH_ACTIVITIES_COLUMNS = ["labelId", "date", "sport_type", "rich"]
 
 # weather_measured.csv projection (what build_dataset._apply_weather_measured
 # joins). `weather_bin` is deliberately excluded — the hand-logged bin is held.
@@ -58,17 +63,21 @@ def _build_rows(targets):
         df, _ = build_current_log(all_details, geocode=False)
         wrows = {r["date"]: r for _, r in df.iterrows()}
 
-    rows = []
+    rows, index_rows = [], []
     for day, items in targets.items():
-        # Time-ordered run activities for this day, as measure_day expects:
-        # (rec_dict, Activity), time-ordered within the day.
-        acts = sorted(((d, Activity(d)) for (_lid, d) in items
-                       if (d.get("summary") or {}).get("sportType") in M.RUN_SPORTS),
+        # Run activities for this day, keeping labelIds for the index.
+        run_items = [(lid, d, Activity(d)) for (lid, d) in items
+                     if (d.get("summary") or {}).get("sportType") in M.RUN_SPORTS]
+        # measure_day wants (rec_dict, Activity), time-ordered within the day.
+        acts = sorted(((d, a) for (lid, d, a) in run_items),
                       key=lambda t: t[1].start_utc)
         w = wrows.get(day)
         if not acts or w is None:
             continue                          # run-less day -> no row
         m = measure_day(acts)
+        for lid, d, a in run_items:
+            index_rows.append({"labelId": lid, "date": day,
+                               "sport_type": a.sport_type, "rich": "freq" in d})
         rows.append({
             "date": day,
             "n_acts": m["n_acts"],
@@ -92,7 +101,7 @@ def _build_rows(targets):
             "label_ids": " ".join(lid for (lid, _d) in items),
             "schema_version": SCHEMA_VERSION,
         })
-    return rows
+    return rows, index_rows
 
 
 def _project_weather_measured(out_dir, table):
@@ -107,8 +116,11 @@ def build(*, force=False, full_regen=False):
     if not details_dir.exists():
         return None
     out = DATA_DIR / "watch_daily.csv"
+    idx_out = DATA_DIR / "watch_activities.csv"
 
     existing = pd.read_csv(out, dtype=str) if out.exists() else None
+    existing_idx = (pd.read_csv(idx_out, dtype=str)
+                    if idx_out.exists() else None)
     full = force or full_regen
     existing_ids_by_date = {}
     if existing is not None and len(existing):
@@ -125,17 +137,24 @@ def build(*, force=False, full_regen=False):
         print(f"[watch_daily] up to date ({len(existing)} days) — no parse")
         return existing
 
-    new_rows = _build_rows(targets)
+    new_rows, new_index = _build_rows(targets)
     new_df = pd.DataFrame(new_rows, columns=WATCH_DAILY_COLUMNS)
+    new_idx = pd.DataFrame(new_index, columns=WATCH_ACTIVITIES_COLUMNS)
     if full or existing is None:
-        table = new_df
+        table, idx = new_df, new_idx
     else:
         touched = set(new_df["date"]) | dropped
         kept = existing[~existing["date"].isin(touched)]
         table = pd.concat([kept, new_df], ignore_index=True)
+        kept_idx = (existing_idx[~existing_idx["date"].isin(touched)]
+                    if existing_idx is not None else None)
+        idx = pd.concat([k for k in (kept_idx, new_idx) if k is not None],
+                        ignore_index=True)
     table = table.sort_values("date").reset_index(drop=True)
+    idx = idx.sort_values(["date", "labelId"]).reset_index(drop=True)
 
     table.to_csv(out, index=False)
+    idx.to_csv(idx_out, index=False)
     _project_weather_measured(DATA_DIR, table)
     mode = "rebuilt" if (full or existing is None) else "updated"
     print(f"[watch_daily] {mode}: {len(table)} days "
