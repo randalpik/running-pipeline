@@ -205,6 +205,35 @@ def _backfill_location_metadata(daily, locations_df):
     return daily
 
 
+def _apply_weather_measured(daily, data_dir):
+    """Enrich daily with watch-derived weather (weather_measured.csv in
+    `data_dir`). Overrides temp_c + time_of_day and fills wind_ms +
+    humidity_pct on every day the watch covered; the `weather` bin is held.
+    Adds the wind_ms/humidity_pct columns if missing. No file -> no-op."""
+    path = os.path.join(data_dir, "weather_measured.csv")
+    if not os.path.exists(path):
+        return daily
+    wm = pd.read_csv(path, dtype={"date": str})
+    if wm.empty:
+        return daily
+    wm = wm.drop_duplicates("date").set_index("date")
+    for col in ("wind_ms", "humidity_pct"):
+        if col not in daily.columns:
+            daily[col] = None
+    dstr = pd.to_datetime(daily["date"]).dt.date.astype(str)
+    stats = []
+    for col in ("temp_c", "time_of_day", "wind_ms", "humidity_pct"):
+        if col not in wm.columns:
+            continue
+        mapped = dstr.map(wm[col])
+        mask = mapped.notna()
+        daily.loc[mask, col] = mapped[mask]
+        stats.append(f"{col}={int(mask.sum())}")
+    print(f"[weather] watch enrichment from {os.path.basename(path)}: "
+          + ", ".join(stats))
+    return daily
+
+
 def main():
     p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     p.add_argument("--historical",
@@ -572,6 +601,15 @@ def main():
             daily = daily.sort_values("date").reset_index(drop=True)
             print(f"[synth] created {len(synth_rows)} daily row(s) from race "
                   f"additions for dates not already in daily")
+
+    # ---------- watch-derived weather enrichment ----------
+    # Override temp_c + time_of_day and fill wind_ms + humidity_pct from the
+    # watch on days it recorded (weather_measured.csv, written by
+    # src/coros/weather_measured.py). The qualitative `weather` bin is held
+    # (watch sky labels disagree too much with the hand log — see the accuracy
+    # comparison). No file (e.g. a profile with no sibling watch cache, or CI
+    # before a sync) -> no-op.
+    daily = _apply_weather_measured(daily, args.out_dir)
 
     # ---------- final daily metadata coverage ----------
     # Reported after backprop so the numbers reflect the daily.csv state

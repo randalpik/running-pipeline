@@ -21,6 +21,13 @@ TZ_UNIT_MIN = 15          # `timezone` is in quarter-hours
 METERS_PER_MILE = 1609.344
 SEC_PER_KM_TO_SEC_PER_MILE = METERS_PER_MILE / 1000.0  # avgPace is sec/km
 
+# ---- excluded activities ----
+# Phantom / corrupted Coros activities to drop wherever the cache is loaded.
+# 440449841644994562: a 2021-12-29 "North Bend Course" duplicate with a
+# corrupted GPS track and a wrong (01:52 local) start time — Max confirmed it
+# never happened; the day's real run is a separate activity that stays.
+EXCLUDED_LABEL_IDS = {"440449841644994562"}
+
 # ---- sport types (Coros sportType codes) ----
 SPORT_RUN = 100
 SPORT_INDOOR_RUN = 101

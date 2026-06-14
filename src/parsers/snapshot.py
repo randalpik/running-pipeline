@@ -54,8 +54,8 @@ import pandas as pd
 # list; duplicated here so this module stands alone).
 CURRENT_LOG_COLUMNS = [
     "date", "sleep_cycles", "miles", "minutes", "temp_c", "weather",
-    "workout_raw", "partners", "conditions", "wind", "time_of_day",
-    "shoes", "location", "weight_lbs",
+    "workout_raw", "partners", "conditions", "wind", "wind_ms",
+    "humidity_pct", "time_of_day", "shoes", "location", "weight_lbs",
 ]
 
 # xlsx column positions per year era, mirroring running_log_parser.SCHEMAS.

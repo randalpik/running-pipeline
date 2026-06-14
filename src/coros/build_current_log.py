@@ -108,7 +108,7 @@ class Activity:
 
     __slots__ = ("sport_type", "distance_m", "moving_s", "total_s",
                  "start_utc", "tz_min", "lat", "lon", "temp_c",
-                 "wind_ms", "weather_type")
+                 "wind_ms", "weather_type", "humidity_pct")
 
     def __init__(self, record: dict):
         rec = slim_detail(record)
@@ -129,6 +129,8 @@ class Activity:
         self.wind_ms = (_num(w.get("windSpeed")) / M.WEATHER_DIV
                         if w.get("windSpeed") is not None else None)
         self.weather_type = w.get("weatherType")
+        self.humidity_pct = (_num(w.get("humidity")) / M.WEATHER_DIV
+                             if w.get("humidity") is not None else None)
 
     @property
     def local_date(self):
@@ -154,6 +156,39 @@ def _first_gps(freq_list):
         if lat not in (None, 0) and lon not in (None, 0):
             return lat, lon
     return None, None
+
+
+# A run whose midpoint falls before this local hour is the dead of night, not
+# the pre-dawn run-up to morning, so it bins as 'late' rather than 'early' —
+# this is what makes a cross-midnight evening run read correctly.
+NIGHT_HOUR = 4
+
+
+def _activity_tod(a: Activity) -> str:
+    """Time-of-day bin for a single activity, by its midpoint (the 'majority'
+    of a one-boundary-crossing run), with the dead-of-night correction."""
+    mid = a.start_utc + timedelta(seconds=a.total_s / 2.0)
+    lat = None if a.is_indoor else a.lat
+    lon = None if a.is_indoor else a.lon
+    b = time_of_day(mid, lat, lon, a.tz_min)
+    if b == "early":
+        local = mid.astimezone(timezone(timedelta(minutes=a.tz_min)))
+        if local.hour < NIGHT_HOUR:
+            b = "late"
+    return b
+
+
+def _day_time_of_day(runs: list[Activity]) -> str:
+    """The bin holding the most of the day's total activity time, across all
+    activities started that day. Generalizes Max's "majority" rule from one
+    run to multi-activity days (e.g. a morning shakeout + a later race): each
+    activity contributes its elapsed time to its own bin and the largest wins.
+    Ties break toward the later bin."""
+    order = ["early", "morning", "afternoon", "late"]
+    totals: dict = defaultdict(float)
+    for a in runs:
+        totals[_activity_tod(a)] += a.total_s
+    return max(order, key=lambda b: (totals[b], order.index(b)))
 
 
 def _fmt_pace(moving_s: float, meters: float) -> str | None:
@@ -245,10 +280,10 @@ def build_current_log(details, *, geocode=True):
             "partners": None,
             "conditions": None,
             "wind": None if rep.is_indoor else M.wind_bin(rep.wind_ms),
-            "time_of_day": time_of_day(rep.start_utc,
-                                       None if rep.is_indoor else rep.lat,
-                                       None if rep.is_indoor else rep.lon,
-                                       rep.tz_min),
+            "wind_ms": None if rep.is_indoor else _round_or_none(rep.wind_ms, 1),
+            "humidity_pct": None if rep.is_indoor
+                            else _round_or_none(rep.humidity_pct, 0),
+            "time_of_day": _day_time_of_day(runs),
             "shoes": None,
             "location": geo.get(day),
             "weight_lbs": None,

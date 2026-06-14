@@ -63,6 +63,8 @@ def _load_all_details(details_dir: Path):
     """Load every cached detail record, migrating legacy full files."""
     out = []
     for p in sorted(details_dir.glob("*.json")):
+        if p.stem in M.EXCLUDED_LABEL_IDS:
+            continue
         try:
             raw = json.loads(p.read_text())
         except (ValueError, OSError):
