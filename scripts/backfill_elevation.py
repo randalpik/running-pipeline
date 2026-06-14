@@ -1,33 +1,36 @@
-"""Backfill per-second altitude/speed (rich>=2) and compute the elevation
-enrichment artifacts for long-run, recovery, and race days.
+"""Elevation enrichment for long-run, recovery, and race days — gain/loss,
+Minetti grade factor, per-corrected-mile splits.
 
-For each target day's run activities: re-fetch the raw detail (the cached slim
-record dropped the stream), project to a rich v2 record (altitude+speed),
-upgrade the cache file in place, then compute the day's elevation metrics
-(gain/loss, Minetti grade factor, per-corrected-mile splits).
+Pipeline producer (incremental, presence-based): candidate days come from the
+per-activity index (watch_activities.csv, written by watch_daily — no full
+parse), and only days NOT already in elevation_measured.csv are computed
+(``--full-regen`` recomputes all). Since the sync now caches outdoor runs rich,
+the per-second altitude stream is already present, so this runs WITHOUT any
+network call. ``--fetch`` re-enables the one-time historical upgrade (re-fetch
++ rich-v2 cache-upgrade) for any day still cached slim.
 
-Writes two artifacts, both incrementally (resumable — already-done dates are
-skipped, and a cache record that's already rich v2 is recomputed without an
-API call):
+Writes:
   data/elevation_measured.csv : date, run_type, watch_miles, corr_miles,
                                 elev_gain_ft, elev_loss_ft, minetti_factor,
                                 n_alt_pts
   data/elevation_splits.csv   : date, mile, pace_s, gain_ft, loss_ft
 
-Distance correction (corr_miles) drives the split axis: long/recovery use the
-watch/route-corrected mileage (shared.effective_mileage); races use the
-OFFICIAL course distance (certified > GPS) — only elevation/grade is taken
-from the watch.
+corr_miles drives the split axis: long/recovery use the watch/route-corrected
+mileage (shared.effective_mileage); races use the OFFICIAL course distance.
 
 Usage:
-  python scripts/backfill_elevation.py --run-type long      # pilot
-  python scripts/backfill_elevation.py --run-type all       # long+recovery+race
+  python scripts/backfill_elevation.py                 # incremental, no fetch
+  python scripts/backfill_elevation.py --full-regen    # recompute every day
+  python scripts/backfill_elevation.py --fetch          # upgrade slim days (network)
 """
 import argparse
 import json
 import os
+import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 
@@ -39,129 +42,140 @@ from src.coros.client import CorosClient
 from src.coros import elevation as E
 from src.shared.effective_mileage import effective_daily_miles
 
-# Elevation is meaningful only on outdoor GPS runs over real terrain: Run
-# (100) and Trail Run (102). Indoor/treadmill (101) has no altitude, and
-# Track Run (103) is flat by definition — its barometric stream is pure
-# drift (this is what produced the bogus 1.5-1.8 "Minetti factors" on track
-# races). Both are excluded from the elevation enrichment.
+# Elevation is meaningful only on outdoor GPS runs over real terrain: Run (100)
+# and Trail Run (102). Indoor (101) has no altitude; Track (103) is flat by
+# definition (its barometric stream is pure drift — the source of the bogus
+# 1.5-1.8 "Minetti factors"). Both are excluded.
 ELEV_SPORTS = {M.SPORT_RUN, M.SPORT_TRAIL_RUN}
 
-# Universal watch-validity gate: the watch must have actually recorded the run
-# (its distance within this band of the hand-logged distance). Days where the
-# watch failed — e.g. 2026-05-01, 0.5 of 7 mi recorded — are rejected for ALL
-# watch use: the day falls back to hand-logged distance/time and gets NO watch
-# elevation. This is the SAME validity verdict the distance correction
-# respects; the distance correction layers its extra criteria (paved, strides,
-# WATCH_FAIL_DEV) ON TOP. Elevation, being our only source of truth for grade
-# and more reliable than GPS distance, uses every VALID day regardless of
-# terrain or strides.
+# Watch-validity gate: the watch must have recorded the run (distance within
+# this band of the hand-logged distance), else the day is rejected for all
+# watch use and gets NO watch elevation.
 WATCH_VALID_BAND = (0.6, 1.5)
 
 DETAILS = DATA_DIR / 'profiles' / 'coros' / 'details'
 TOKEN = DATA_DIR / 'profiles' / 'coros' / 'coros_token.json'
+ACTIVITIES = DATA_DIR / 'watch_activities.csv'
 MEAS_OUT = DATA_DIR / 'elevation_measured.csv'
 SPLITS_OUT = DATA_DIR / 'elevation_splits.csv'
 
+MEAS_COLS = ['date', 'run_type', 'watch_miles', 'corr_miles', 'elev_gain_ft',
+             'elev_loss_ft', 'minetti_factor', 'n_alt_pts']
+SPLIT_COLS = ['date', 'mile', 'pace_s', 'gain_ft', 'loss_ft']
 
-def _cache_by_date():
-    """{iso_date: [(path, rec, Activity), ...]} for run activities in cache."""
-    by_date = {}
-    for path in sorted(DETAILS.glob('*.json')):
-        try:
-            rec = json.loads(path.read_text())
-        except Exception:
-            continue
-        if (rec.get('summary') or {}).get('sportType') is None:
-            continue
-        act = Activity(rec)
-        if act.sport_type not in M.RUN_SPORTS:
-            continue
-        by_date.setdefault(act.local_date.isoformat(), []).append((path, rec, act))
-    return by_date
+
+def _elev_ids_by_date():
+    """{iso_date: [labelId, ...]} of ELEV_SPORTS activities, from the per-
+    activity index — no per-second parse. None if the index is absent."""
+    if not ACTIVITIES.exists():
+        return None
+    idx = pd.read_csv(ACTIVITIES, dtype={'labelId': str, 'date': str})
+    out = {}
+    for _, r in idx.iterrows():
+        if int(r['sport_type']) in ELEV_SPORTS:
+            out.setdefault(r['date'], []).append(r['labelId'])
+    return out
+
+
+def _targets(daily, races, types):
+    """{date: (run_type, corr_miles)} — long/recovery use effective miles,
+    races use the official course distance (None -> fall back to watch)."""
+    targets = {}
+    for rt in ('long', 'recovery'):
+        if rt in types:
+            for _, r in daily[daily['run_type'] == rt].iterrows():
+                targets[r['date'].date().isoformat()] = (rt, float(r['eff_miles']))
+    if 'race' in types:
+        for _, r in races.iterrows():
+            if str(r.get('surface', '')).strip().lower() == 'track':
+                continue                      # flat — barometric drift only
+            d = r['date'].date().isoformat()
+            off_mi = (float(r['distance_m']) / 1609.344
+                      if pd.notna(r.get('distance_m')) else None)
+            targets.setdefault(d, ('race', off_mi))
+    return targets
 
 
 def main():
     load_env_file()
     p = argparse.ArgumentParser()
     p.add_argument('--run-type', choices=['long', 'recovery', 'race', 'all'],
-                   default='long')
-    p.add_argument('--sleep', type=float, default=0.4, help='s between fetches')
-    p.add_argument('--limit', type=int, default=0, help='cap days (0=all)')
+                   default='all')
+    p.add_argument('--full-regen', action='store_true',
+                   help='recompute every target day, ignoring the presence cache')
+    p.add_argument('--fetch', action='store_true',
+                   help='re-fetch + rich-upgrade days still cached slim (network)')
+    p.add_argument('--sleep', type=float, default=0.4)
+    p.add_argument('--limit', type=int, default=0)
     args = p.parse_args()
+
+    ids_by_date = _elev_ids_by_date()
+    if ids_by_date is None:
+        print('[elevation] no watch_activities.csv index — run watch_daily '
+              'first; skipped')
+        return
 
     daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
     logged_miles = {r.date.date().isoformat(): float(r.miles)
                     for r in daily.itertuples() if pd.notna(r.miles)}
     daily['eff_miles'] = effective_daily_miles(daily)
     races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
-
-    # target dates -> (run_type, corr_miles or None for race=official-by-date)
-    targets = {}
     types = (['long', 'recovery', 'race'] if args.run_type == 'all'
              else [args.run_type])
-    for rt in ('long', 'recovery'):
-        if rt in types:
-            sub = daily[daily['run_type'] == rt]
-            for _, r in sub.iterrows():
-                targets[r['date'].date().isoformat()] = (rt, float(r['eff_miles']))
-    if 'race' in types:
-        for _, r in races.iterrows():
-            # Track races are flat by definition — their barometric stream is
-            # drift, and on track-meet days the road warmup/cooldown (logged
-            # as sport 100) would otherwise leak a bogus profile in. Skip them.
-            if str(r.get('surface', '')).strip().lower() == 'track':
-                continue
-            d = r['date'].date().isoformat()
-            off_mi = float(r['distance_m']) / 1609.344 if pd.notna(r.get('distance_m')) else None
-            targets.setdefault(d, ('race', off_mi))
+    targets = _targets(daily, races, types)
 
-    by_date = _cache_by_date()
+    # Existing rows to reuse for days already computed (presence by date).
+    done, meas_keep, split_keep = set(), [], []
+    if MEAS_OUT.exists() and not args.full_regen:
+        em = pd.read_csv(MEAS_OUT, dtype={'date': str})
+        done = set(em['date'])
+        meas_keep = em.to_dict('records')
+        if SPLITS_OUT.exists():
+            sp = pd.read_csv(SPLITS_OUT, dtype={'date': str})
+            split_keep = sp.to_dict('records')
 
-    done = set()
-    if MEAS_OUT.exists():
-        done = set(pd.read_csv(MEAS_OUT)['date'].astype(str))
-    meas_rows, split_rows = [], []
-    client = None
-    fetched = skipped = computed = 0
-
-    todo = [d for d in sorted(targets) if d in by_date and d not in done]
+    todo = [d for d in sorted(targets) if d in ids_by_date and d not in done]
     if args.limit:
         todo = todo[:args.limit]
-    print(f"targets={len(targets)} in-cache&pending={len(todo)} already-done={len(done)}")
+    print(f"[elevation] targets={len(targets)} pending={len(todo)} "
+          f"reused={len(done)}")
 
-    for i, d in enumerate(todo):
+    client = None
+    meas_rows, split_rows = [], []
+    fetched = skipped_slim = skipped_invalid = computed = 0
+    for d in todo:
         rt, corr_mi = targets[d]
         recs, watch_m = [], 0.0
-        for path, rec, act in by_date[d]:
-            if act.sport_type not in ELEV_SPORTS:
-                continue  # skip indoor/track activities (no usable altitude)
+        for lid in ids_by_date[d]:
+            path = DETAILS / f'{lid}.json'
+            if not path.exists():
+                continue
+            rec = json.loads(path.read_text())
+            watch_m += Activity(rec).distance_m / 1609.344
             if rec.get('rich') == 2:
                 recs.append(rec)
-            else:
+            elif args.fetch:
                 if client is None:
                     client = CorosClient(os.environ['COROS_EMAIL'],
                                          os.environ['COROS_PASSWORD'],
                                          token_cache=TOKEN)
                 try:
-                    raw = client.activity_detail(path.stem, act.sport_type)
-                    rich = rich_detail(raw)
+                    rich = rich_detail(client.activity_detail(
+                        lid, (rec.get('summary') or {}).get('sportType')))
                     if rich is not None:
                         path.write_text(json.dumps(rich))
                         recs.append(rich)
                         fetched += 1
                     time.sleep(args.sleep)
                 except Exception as e:
-                    print(f"  {d} fetch fail {path.stem}: {e}")
-                    continue
-            watch_m += act.distance_m / 1609.344
+                    print(f"  {d} fetch fail {lid}: {e}")
         if not recs:
+            skipped_slim += 1                 # cached slim, no --fetch
             continue
-        # Universal validity gate: reject days where the watch didn't record
-        # the run (distance grossly off hand-logged). No watch elevation here.
         lg = logged_miles.get(d)
         if lg and watch_m and not (WATCH_VALID_BAND[0] <= watch_m / lg
                                    <= WATCH_VALID_BAND[1]):
-            skipped += 1
+            skipped_invalid += 1
             continue
         eff_corr = corr_mi if (corr_mi and corr_mi > 0) else watch_m
         res = E.measure_day_elevation(recs, eff_corr, watch_m)
@@ -177,23 +191,18 @@ def main():
         for s in res['splits']:
             split_rows.append({'date': d, **s})
         computed += 1
-        if computed % 25 == 0:
-            print(f"  [{i+1}/{len(todo)}] computed={computed} fetched={fetched}")
-            _flush(meas_rows, split_rows)
-            meas_rows, split_rows = [], []
 
-    _flush(meas_rows, split_rows)
-    print(f"DONE: computed={computed} fetched={fetched} "
-          f"skipped(watch-invalid)={skipped}")
-
-
-def _flush(meas_rows, split_rows):
-    if meas_rows:
-        df = pd.DataFrame(meas_rows)
-        df.to_csv(MEAS_OUT, mode='a', header=not MEAS_OUT.exists(), index=False)
-    if split_rows:
-        df = pd.DataFrame(split_rows)
-        df.to_csv(SPLITS_OUT, mode='a', header=not SPLITS_OUT.exists(), index=False)
+    meas = pd.DataFrame(meas_keep + meas_rows, columns=MEAS_COLS)
+    splits = pd.DataFrame(split_keep + split_rows, columns=SPLIT_COLS)
+    if len(meas):
+        meas = meas.sort_values('date').reset_index(drop=True)
+        meas.to_csv(MEAS_OUT, index=False)
+    if len(splits):
+        splits = splits.sort_values(['date', 'mile']).reset_index(drop=True)
+        splits.to_csv(SPLITS_OUT, index=False)
+    print(f"[elevation] computed={computed} reused={len(done)} fetched={fetched} "
+          f"slim-skipped={skipped_slim} watch-invalid={skipped_invalid} "
+          f"-> {len(meas)} days")
 
 
 if __name__ == '__main__':

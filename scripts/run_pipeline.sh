@@ -96,20 +96,27 @@ if [[ -d data/profiles/coros/details ]]; then
 fi
 # CS fit BEFORE reps: reps reconciles against the CS timeline, so on a refit
 # (e.g. a new race added) it must see the fresh CS. The fit only needs races,
-# so this order is safe. When the fit runs, reps does a full re-extract
-# (--full-regen safety valve) to rebuild against the new CS; otherwise reps is
-# incremental against the watch_activities presence cache.
-reps_regen=()
+# so this order is safe. When the fit runs, the watch producers do a full
+# re-extract (--full-regen safety valve) so they refresh against the new CS /
+# calibration; otherwise they're incremental against their presence caches.
+watch_regen=()
 if [[ $fit -eq 1 ]]; then
   loud_step "bayes_cs_fit"  python src/models/bayes_cs_fit.py "${diag_flag[@]}"
-  reps_regen=(--full-regen)
+  watch_regen=(--full-regen)
 fi
 # Watch-derived rep extraction: reconciles the Coros per-second stream against
 # the hand log (parse_workouts consumes the result). Incremental via the
 # watch_activities index. Skipped when the details cache or CS timeline is
 # absent — parse_workouts then falls back to string parsing.
 if [[ -d data/profiles/coros/details && -f data/bayes_cs_summary.csv ]]; then
-  quiet_step "reps"                  python src/coros/reps.py --details-dir data/profiles/coros/details "${reps_regen[@]}"
+  quiet_step "reps"                  python src/coros/reps.py --details-dir data/profiles/coros/details "${watch_regen[@]}"
+fi
+# Elevation enrichment (gain/loss, Minetti grade, per-mile splits). Incremental
+# via the watch_activities index; no network (the sync now caches outdoor runs
+# rich). corr_miles depends on the distance calibration, so --full-regen on a
+# fit run refreshes it too.
+if [[ -f data/watch_activities.csv ]]; then
+  quiet_step "elevation"             python scripts/backfill_elevation.py "${watch_regen[@]}"
 fi
 quiet_step "parse_workouts"          python src/parsers/parse_workouts.py "${diag_flag[@]}"
 

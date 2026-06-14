@@ -29,9 +29,12 @@ from src.parsers.snapshot import CURRENT_LOG_COLUMNS
 
 
 def _project(raw, sport_type):
-    """Slim or rich projection: Track Runs keep the per-second data that the
-    rep-extraction layer (reps.py) consumes; everything else stays slim."""
-    if sport_type == M.SPORT_TRACK_RUN:
+    """Rich or slim projection. Every OUTDOOR run keeps the per-second stream
+    (rich): Track Runs for rep extraction (reps.py), and Run/Trail for the
+    elevation grade enrichment + long-run stall/segment detection — so the
+    regular pipeline derives those without ever re-fetching. Indoor treadmill
+    has no spatial stream worth keeping, so it stays slim."""
+    if sport_type in (M.SPORT_RUN, M.SPORT_TRAIL_RUN, M.SPORT_TRACK_RUN):
         return rich_detail(raw) or slim_detail(raw)
     return slim_detail(raw)
 
