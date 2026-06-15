@@ -118,6 +118,13 @@ fi
 if [[ -f data/watch_activities.csv ]]; then
   quiet_step "elevation"             python scripts/backfill_elevation.py "${watch_regen[@]}"
 fi
+# Per-day altitude + local-time envelopes for the Misc. Trends plot, from the
+# rich detail cache (no network). Same lifecycle as elevation_measured.csv:
+# built wherever the details cache is present, gitignored, and the plot renders
+# those panels empty when the CSVs are absent.
+if [[ -d data/profiles/coros/details && -f data/watch_activities.csv ]]; then
+  quiet_step "daily_envelopes"       python -m src.coros.daily_envelopes
+fi
 quiet_step "parse_workouts"          python src/parsers/parse_workouts.py "${diag_flag[@]}"
 
 echo

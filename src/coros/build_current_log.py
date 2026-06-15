@@ -108,7 +108,7 @@ class Activity:
 
     __slots__ = ("sport_type", "distance_m", "moving_s", "total_s",
                  "start_utc", "tz_min", "lat", "lon", "temp_c",
-                 "wind_ms", "weather_type", "humidity_pct")
+                 "wind_mph", "weather_type", "humidity_pct")
 
     def __init__(self, record: dict):
         rec = slim_detail(record)
@@ -126,8 +126,9 @@ class Activity:
         w = rec["weather"]
         self.temp_c = (_num(w.get("temperature")) / M.WEATHER_DIV
                        if w.get("temperature") is not None else None)
-        self.wind_ms = (_num(w.get("windSpeed")) / M.WEATHER_DIV
-                        if w.get("windSpeed") is not None else None)
+        # raw/10 is km/h (see mappings.KMH_TO_MPH); store mph.
+        self.wind_mph = (_num(w.get("windSpeed")) / M.WEATHER_DIV * M.KMH_TO_MPH
+                         if w.get("windSpeed") is not None else None)
         self.weather_type = w.get("weatherType")
         self.humidity_pct = (_num(w.get("humidity")) / M.WEATHER_DIV
                              if w.get("humidity") is not None else None)
@@ -279,8 +280,8 @@ def build_current_log(details, *, geocode=True):
             "workout_raw": _workout_raw(runs),
             "partners": None,
             "conditions": None,
-            "wind": None if rep.is_indoor else M.wind_bin(rep.wind_ms),
-            "wind_ms": None if rep.is_indoor else _round_or_none(rep.wind_ms, 1),
+            "wind": None if rep.is_indoor else M.wind_bin(rep.wind_mph),
+            "wind_mph": None if rep.is_indoor else _round_or_none(rep.wind_mph, 1),
             "humidity_pct": None if rep.is_indoor
                             else _round_or_none(rep.humidity_pct, 0),
             "time_of_day": _day_time_of_day(runs),

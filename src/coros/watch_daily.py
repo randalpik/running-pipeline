@@ -32,11 +32,11 @@ from src.shared.paths import DATA_DIR
 
 # Bump when the set of derived columns / their derivation changes — forces a
 # full rebuild on the next run (mtimes can't see a code change).
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4   # 4: wind_ms -> wind_mph (raw/10 is km/h, displayed in mph)
 
 WATCH_DAILY_COLUMNS = [
     "date", "n_acts", "status",
-    "temp_c", "weather_bin", "wind_ms", "humidity_pct", "time_of_day",
+    "temp_c", "weather_bin", "wind_mph", "humidity_pct", "time_of_day",
     "any_indoor", "watch_miles", "watch_moving_s", "watch_total_s",
     "pause_s", "stall_s", "n_segs", "d_eff_frac", "longest_seg_mi",
     "label_ids", "schema_version",
@@ -49,7 +49,7 @@ WATCH_ACTIVITIES_COLUMNS = ["labelId", "date", "sport_type", "rich"]
 
 # weather_measured.csv projection (what build_dataset._apply_weather_measured
 # joins). `weather_bin` is deliberately excluded — the hand-logged bin is held.
-WEATHER_MEASURED_COLUMNS = ["date", "temp_c", "wind_ms", "humidity_pct",
+WEATHER_MEASURED_COLUMNS = ["date", "temp_c", "wind_mph", "humidity_pct",
                             "time_of_day"]
 
 
@@ -84,7 +84,7 @@ def _build_rows(targets):
             "status": m["status"],
             "temp_c": w["temp_c"],
             "weather_bin": w["weather"],
-            "wind_ms": w["wind_ms"],
+            "wind_mph": w["wind_mph"],
             "humidity_pct": w["humidity_pct"],
             "time_of_day": w["time_of_day"],
             "any_indoor": m["any_indoor"],

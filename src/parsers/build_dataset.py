@@ -207,9 +207,9 @@ def _backfill_location_metadata(daily, locations_df):
 
 def _apply_weather_measured(daily, data_dir):
     """Enrich daily with watch-derived weather (weather_measured.csv in
-    `data_dir`). Overrides temp_c + time_of_day and fills wind_ms +
+    `data_dir`). Overrides temp_c + time_of_day and fills wind_mph +
     humidity_pct on every day the watch covered; the `weather` bin is held.
-    Adds the wind_ms/humidity_pct columns if missing. No file -> no-op."""
+    Adds the wind_mph/humidity_pct columns if missing. No file -> no-op."""
     path = os.path.join(data_dir, "weather_measured.csv")
     if not os.path.exists(path):
         return daily
@@ -217,12 +217,12 @@ def _apply_weather_measured(daily, data_dir):
     if wm.empty:
         return daily
     wm = wm.drop_duplicates("date").set_index("date")
-    for col in ("wind_ms", "humidity_pct"):
+    for col in ("wind_mph", "humidity_pct"):
         if col not in daily.columns:
             daily[col] = None
     dstr = pd.to_datetime(daily["date"]).dt.date.astype(str)
     stats = []
-    for col in ("temp_c", "time_of_day", "wind_ms", "humidity_pct"):
+    for col in ("temp_c", "time_of_day", "wind_mph", "humidity_pct"):
         if col not in wm.columns:
             continue
         mapped = dstr.map(wm[col])
@@ -603,7 +603,7 @@ def main():
                   f"additions for dates not already in daily")
 
     # ---------- watch-derived weather enrichment ----------
-    # Override temp_c + time_of_day and fill wind_ms + humidity_pct from the
+    # Override temp_c + time_of_day and fill wind_mph + humidity_pct from the
     # watch on days it recorded (weather_measured.csv, written by
     # src/coros/weather_measured.py). The qualitative `weather` bin is held
     # (watch sky labels disagree too much with the hand log — see the accuracy

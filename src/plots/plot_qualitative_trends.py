@@ -1,32 +1,39 @@
-"""Qualitative trends plot: volume, temperature, weight.
+"""Miscellaneous Trends plot — two pages of four panels, top-right pill toggle.
 
-Three subplots stacked vertically with shared x-axis (2016-01-01 → present).
-Each subplot shows:
-  - 14-day rolling min/max envelope, drawn as N horizontal gradient strips.
-    Each strip is a fill='tonexty' Scatter pair whose lo/hi are clipped to
-    (lo_smooth, hi_smooth) intersected with the strip's y-band, and NaN'd
-    where the strip doesn't overlap the envelope. Smooth diagonal boundaries
-    come from lo_smooth/hi_smooth following the data; the vertical gradient
-    comes from N strips at fixed y-bands, each colored by gradient(y_mid).
-  - Continuous gradient trendline (50 line segments).
-  - Per-metric locked moving-average window:
-      Volume = 56d, Temp = 28d, Weight = 56d
+  Weather page:  Conditions, Temperature, Humidity, Wind
+  Other page:    Volume,     Altitude,    Time,     Weight
 
-Color via Running Log 2025 conditional formatting:
-  Volume:  0 #FFF2CC → max #F1C232
-  Temp:    -10 #00B0F0 → 22 #92D050 → 40 #FF0000
-  Weight:  145 #FFFFFF → 170 #E69138
+All eight panels live in ONE 4-row figure (render_plot's single-figure
+contract). Every trace is tagged ``meta.page`` ('weather' | 'other'); the
+sibling ``plot_qualitative_trends.js`` flips trace visibility by page and
+relayouts the four shared y-axes, the eight inset-title annotations, and the
+Time solar raster's visibility. Default page is Weather.
 
-Hover (custom):
-  mousemove on plot div + fixed-position spike line + tooltip overlay.
-  Variables with no data at the hovered day are hidden from the tooltip.
+Panel render paths:
+  - strip envelope + white trend line (the classic look): Temperature, Humidity,
+    Wind, Volume, Weight — a 14-day rolling min/max envelope drawn as N
+    horizontal gradient strips, colored by ``gradient_at(y_mid, anchors)``, with
+    a Gaussian-MA trend line.
+  - range-per-day envelope + TWO edge trends: Altitude, Time — the band is the
+    rolling min-of-daily-min / max-of-daily-max, and two white trend lines track
+    the smoothed daily min and daily max. Altitude fills with the strip stack
+    (terrain green->brown->white, feet); Time fills with a per-day SOLAR raster
+    (twilight-purple -> sunrise-orange -> noon-blue), built from each run's GPS.
+  - qualitative scatter: Conditions — one dot per logged day at y=temperature,
+    dot fill = weather CF color, dot ring = conditions CF color (dry = no ring).
 
-Weight MA visibility:
-  MA line is hidden on days where weight_interp is null (>7d gaps).
+Watch-only series (Humidity, Wind, Altitude, Time) are blank before the watch
+era (~late 2020) on the shared 2016->present axis; the other four carry full
+history, so each page always has populated panels.
+
+Tooltip (custom, per-tab): up to eight rows — a day-specific block (that day's
+actual recorded value per metric) above an averages block (trend value + range).
 """
 import argparse
+import json
 import os
 import sys
+from datetime import timezone, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -34,31 +41,45 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from scipy.interpolate import PchipInterpolator
+from scipy.signal import find_peaks
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import daily_floor
 from src.shared.effective_mileage import effective_daily_miles
+from src.coros.solar import solar_anchors_local
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            FG, FG_DIM, GRID,
+                            FG, FG_DIM, GRID, widgets,
                             yearly_x_axis_kwargs)
+from src.plotting.raster import render_gradient_raster
 
 
 DEFAULT_DAILY = str(DATA_DIR / 'daily.csv')
+DEFAULT_ALT = str(DATA_DIR / 'altitude_daily.csv')
+DEFAULT_TIME = str(DATA_DIR / 'time_daily.csv')
+DEFAULT_CF = str(Path(__file__).resolve().parents[2] / 'docs'
+                 / 'running_log_2025_cf.json')
 DEFAULT_OUT = str(OUTPUT_DIR)
 START_DATE = '2016-01-01'
 
-MA_WINDOW = {'volume': 56, 'temp': 28, 'sleep': 28, 'weight': 56}
+MA_WINDOW = {'temp': 28, 'humidity': 28, 'wind': 56,
+             'volume': 56, 'altitude': 28, 'time': 28, 'weight': 56}
 
-RANGE_WINDOW = 14
-RANGE_SMOOTH = 7
+RANGE_WINDOW = 7             # rolling min/max window for the tooltip "(min to max)"
+PEAK_DISTANCE_DAYS = 7       # min separation (days) between envelope peaks/troughs
+ENVELOPE_GAP_BREAK_DAYS = 21  # bridge gaps up to this (rest days, short breaks);
+                              # break the band only across longer layoffs
 WEIGHT_INTERP_MAX_GAP = 7
+RASTER_H = 480                # vertical px resolution of every gradient raster
 
-N_ENVELOPE_STRIPS = 40        # vertical gradient resolution per subplot
-ENVELOPE_X_STRIDE = 4         # x stride for strip traces (smoothed data, no visual loss)
-ENVELOPE_UPSAMPLE = 8         # sub-daily x resolution for short profiles (kills strip-edge verticals)
-ENVELOPE_ALPHA = 1.0          # fully opaque
-STRIP_OVERLAP_FRAC = 0.005    # small overlap to prevent hairline AA gaps
+# Solar gradient control colors (RGB). The day's anchor MINUTES come from
+# solar_anchors_local; these are the colors at each anchor. The purples are kept
+# light enough to read against the #1a1a1a panel (a near-black night vanishes).
+SOLAR_NIGHT = (48, 32, 82)        # before dawn / after dusk (lightened purple)
+SOLAR_TWILIGHT = (96, 58, 140)    # civil twilight (purple)
+SOLAR_HORIZON = (240, 138, 61)    # sunrise / sunset (orange)
+SOLAR_NOON = (154, 208, 245)      # full daylight, sun >= +18deg (light blue)
 
 
 # ---------- color utilities ----------
@@ -117,21 +138,116 @@ def interpolate_short_gaps(s, max_gap_days):
     return out
 
 
-def load_series(daily_path, start_date):
+def load_series(daily_path, alt_path, time_path, start_date):
     df = pd.read_csv(daily_path, parse_dates=['date'])
     df = df[df['date'] >= pd.Timestamp(start_date)].copy()
-    # Source of truth: watch/route distance-corrected mileage (decrease-only;
-    # corr <= logged) drives the volume trend. On-disk 'miles' is untouched.
+    # Source of truth: watch/route distance-corrected mileage drives the volume
+    # trend. On-disk 'miles' is untouched.
     df['miles'] = effective_daily_miles(df)
     end = df['date'].max()
     cal = pd.DataFrame({'date': pd.date_range(start_date, end, freq='D')})
-    keep = df[['date', 'miles', 'temp_c', 'sleep_cycles', 'weight_lbs']]
-    full = cal.merge(keep, on='date', how='left').set_index('date')
+    keep_cols = ['date', 'miles', 'minutes', 'temp_c', 'weight_lbs',
+                 'humidity_pct', 'wind_mph', 'weather', 'conditions',
+                 'time_of_day', 'city_state']
+    keep = df[[c for c in keep_cols if c in df.columns]]
+    full = cal.merge(keep, on='date', how='left')
+
+    # Per-day altitude / time envelopes (watch-era; graceful-empty if absent).
+    for path, cols in ((alt_path, ['min_elev_ft', 'max_elev_ft']),
+                       (time_path, ['start_min', 'end_min', 'lat', 'lon',
+                                    'tz_min'])):
+        if os.path.exists(path):
+            extra = pd.read_csv(path, parse_dates=['date'])
+            full = full.merge(extra[['date'] + cols], on='date', how='left')
+        else:
+            for c in cols:
+                full[c] = np.nan
+
+    full = full.set_index('date')
     full['miles'] = full['miles'].fillna(0.0)
-    full['sleep_hours'] = full['sleep_cycles'] * 1.5
     full['weight_interp'] = interpolate_short_gaps(
         full['weight_lbs'], WEIGHT_INTERP_MAX_GAP)
+
+    # Extend the Time panel into the pre-watch era from the hand-logged
+    # time-of-day bin + run length + the logged location's solar times.
+    cc_path = os.path.join(os.path.dirname(daily_path), 'city_coords.csv')
+    coords = {}
+    if os.path.exists(cc_path):
+        cc = pd.read_csv(cc_path)
+        coords = {r['city_state']: (r['latitude'], r['longitude'])
+                  for _, r in cc.iterrows()
+                  if pd.notna(r['latitude']) and pd.notna(r['longitude'])}
+    full['time_est'] = estimate_binned_time(full, coords)
     return full
+
+
+# ---------- pre-watch time-of-day estimate ----------
+
+def _us_dst(ts):
+    """US DST window: 2nd Sunday of March 02:00 -> 1st Sunday of November."""
+    import datetime as _dt
+    y = ts.year
+    mar1 = _dt.date(y, 3, 1)
+    second_sun_mar = mar1 + _dt.timedelta(days=(6 - mar1.weekday()) % 7 + 7)
+    nov1 = _dt.date(y, 11, 1)
+    first_sun_nov = nov1 + _dt.timedelta(days=(6 - nov1.weekday()) % 7)
+    return second_sun_mar <= ts.date() < first_sun_nov
+
+
+def _tz_min_from_lon(lon, ts):
+    """Approximate local tz offset (minutes) from longitude + US DST rule —
+    enough for a bin-derived estimate (keeps the band aligned to its own
+    solar gradient; absolute clock may be off where US DST doesn't apply)."""
+    return int(round(lon / 15.0)) * 60 + (60 if _us_dst(ts) else 0)
+
+
+# Bin -> run midpoint, expressed via the day's solar times (local minutes):
+#   early -> 1h before sunrise; morning -> midpoint(sunrise, noon);
+#   afternoon -> midpoint(noon, sunset); late -> 1h after sunset.
+BIN_SHOULDER_MIN = 60.0
+
+
+def estimate_binned_time(full, coords):
+    """Fill start_min/end_min/lat/lon/tz_min on days that have no watch time but
+    do have a hand-logged time_of_day bin, a run length, and a geocodable
+    location. Returns a bool Series flagging the estimated rows."""
+    est = pd.Series(False, index=full.index)
+    if not coords or 'time_of_day' not in full or 'city_state' not in full:
+        return est
+    need = (full['start_min'].isna() & full['time_of_day'].notna()
+            & (full['minutes'] > 0) & full['city_state'].notna())
+    for ts in full.index[need]:
+        ll = coords.get(full.at[ts, 'city_state'])
+        if ll is None:
+            continue
+        lat, lon = ll
+        tz = _tz_min_from_lon(lon, ts)
+        a = solar_anchors_local(ts.date(), lat, lon, tz)
+        sr, noon, ss = a['sunrise'], a['solar_noon'], a['sunset']
+        if sr is None or noon is None or ss is None:
+            continue
+        b = str(full.at[ts, 'time_of_day']).strip().lower()
+        if b == 'early':
+            mid = sr - BIN_SHOULDER_MIN
+        elif b == 'morning':
+            mid = (sr + noon) / 2.0
+        elif b == 'afternoon':
+            mid = (noon + ss) / 2.0
+        elif b == 'late':
+            mid = ss + BIN_SHOULDER_MIN
+        else:
+            continue
+        half = float(full.at[ts, 'minutes']) / 2.0
+        s, e = max(0.0, mid - half), min(1439.0, mid + half)
+        if e <= s:
+            continue
+        full.at[ts, 'start_min'] = round(s, 1)
+        full.at[ts, 'end_min'] = round(e, 1)
+        full.at[ts, 'lat'] = lat
+        full.at[ts, 'lon'] = lon
+        full.at[ts, 'tz_min'] = tz
+        est.at[ts] = True
+    return est
 
 
 def rolling_minmax_raw(s, window):
@@ -140,342 +256,517 @@ def rolling_minmax_raw(s, window):
     return lo, hi
 
 
-def smooth_series(s, window):
-    return s.rolling(window, min_periods=1, center=True).mean()
-
-
-def rolling_ma(s, window):
-    # Gaussian-weighted MA: same window as a uniform rolling mean, but
-    # the per-day weights taper at the edges, killing per-pixel jitter
-    # without widening the effective kernel meaningfully (σ ≈ window/7
-    # → ~4d for 28d, ~8d for 56d).
+def rolling_ma(s, window, min_periods=None):
     sigma = max(2.0, window / 7)
-    return s.rolling(window, min_periods=max(1, window // 4),
+    mp = min_periods if min_periods is not None else max(1, window // 4)
+    return s.rolling(window, min_periods=mp,
                      center=True, win_type='gaussian').mean(std=sigma)
 
 
-# ---------- envelope strips ----------
+# ---------- gradient ramp (x-independent panels) ----------
 
-def _strip_polygon(dates_list, lo_arr, hi_arr):
-    """Build a multi-region polygon path for a single strip.
+def gradient_ramp(anchors, y0, y1, h_px):
+    """(h_px, 3) uint8 vertical colour ramp = ``gradient_at`` sampled at each
+    output pixel-row's y. The x-independent case of a raster ``column_colors``
+    (same ramp every day), for the anchor-based panels (temp/humidity/wind/
+    volume/weight/altitude)."""
+    yp = y1 - (np.arange(h_px) + 0.5) / h_px * (y1 - y0)
+    return np.array([gradient_at(float(v), anchors) for v in yp],
+                    dtype=np.uint8)
 
-    Returns (xs, ys) where each contiguous valid run becomes one closed
-    sub-polygon (forward along hi, backward along lo). Sub-polygons are
-    separated by `None` so plotly's fill='toself' draws them independently.
+
+def _date_path(dates, yvals):
+    """SVG path string over (date, y) points for a layout 'path' shape, split
+    into independent subpaths at NaN gaps ('M' restarts the pen). Crisp vector
+    alternative to baking a line into a raster (which the stretch-resize blurs).
     """
-    n = len(dates_list)
-    xs, ys = [], []
-    i = 0
-    while i < n:
-        while i < n and (np.isnan(lo_arr[i]) or np.isnan(hi_arr[i])):
-            i += 1
-        if i >= n:
-            break
-        j = i
-        while j < n and not (np.isnan(lo_arr[j]) or np.isnan(hi_arr[j])):
-            j += 1
-        # Forward along hi
-        for k in range(i, j):
-            xs.append(dates_list[k])
-            ys.append(float(hi_arr[k]))
-        # Backward along lo
-        for k in range(j - 1, i - 1, -1):
-            xs.append(dates_list[k])
-            ys.append(float(lo_arr[k]))
-        # Subpath separator
-        xs.append(None)
-        ys.append(None)
-        i = j
-    return xs, ys
-
-
-def upsample_envelope(dates, lo_smooth, hi_smooth, factor):
-    """Resample the smooth envelope edges onto a `factor`x-finer x-grid by
-    linear interpolation between daily points.
-
-    The gradient is drawn as horizontal color strips; each strip switches on
-    where its y-band first falls under the envelope. Sampled only at daily x,
-    a steep one-day rise makes several strips switch on at the *same* x, and
-    their vertical closing edges stack into a visible vertical riser. On a
-    finer grid each band-crossing lands at its true x, so those risers spread
-    into diagonals — the edge becomes straight lines between points, no
-    verticals. NaN gaps (weight's >7d stretches) are preserved: a fine point
-    is NaN whenever either bracketing daily point is NaN, so gaps never bridge.
-    """
-    # Day offsets from the start — robust to the index's datetime resolution
-    # (ns/us/s); reconstructing via raw epoch ints would mis-scale otherwise.
-    day0 = dates[0]
-    o = ((dates - day0) / np.timedelta64(1, 'D')).to_numpy(dtype=np.float64)
-    fine_o = np.linspace(o[0], o[-1], (len(dates) - 1) * factor + 1)
-    fine_dates = day0 + pd.to_timedelta(fine_o, unit='D')
-
-    def up(s):
-        v = s.to_numpy(dtype=np.float64)
-        finite = np.isfinite(v)
-        if finite.all():
-            out = np.interp(fine_o, o, v)
-        else:
-            out = np.interp(fine_o, o[finite], v[finite])
-            idx = np.clip(np.searchsorted(o, fine_o), 1, len(o) - 1)
-            out[~finite[idx - 1] | ~finite[idx]] = np.nan
-        return pd.Series(out, index=fine_dates)
-
-    return fine_dates, up(lo_smooth), up(hi_smooth)
-
-
-def add_envelope_strips(fig, dates, lo_smooth, hi_smooth, anchors,
-                          n_strips, x_stride, row_i, alpha):
-    """Add n_strips Scatter traces forming a gradient-filled envelope.
-
-    Each strip k is a horizontal y-band [edges[k], edges[k+1]] (with tiny
-    overlap to hide hairline seams). At each x:
-      lo_arr[x] = max(strip_bottom, lo_smooth[x])
-      hi_arr[x] = min(strip_top,    hi_smooth[x])
-      where lo_arr >= hi_arr, both → NaN
-    Each strip is rendered as a single fill='toself' Scatter whose path
-    walks forward along hi then back along lo for every contiguous valid
-    region. None separators ensure multi-region strips render as multiple
-    independent polygons (no spurious horizontals across gaps).
-    """
-    dates_ds = list(dates[::x_stride])
-    lo_v = lo_smooth.iloc[::x_stride].values
-    hi_v = hi_smooth.iloc[::x_stride].values
-    valid = ~(np.isnan(lo_v) | np.isnan(hi_v))
-    if not valid.any():
-        return
-    y_min = float(np.nanmin(lo_v))
-    y_max = float(np.nanmax(hi_v))
-    if y_max <= y_min:
-        return
-    edges = np.linspace(y_min, y_max, n_strips + 1)
-    overlap = (y_max - y_min) * STRIP_OVERLAP_FRAC
-
-    for k in range(n_strips):
-        y_strip_lo = edges[k] - overlap
-        y_strip_hi = edges[k + 1] + overlap
-        y_mid = (edges[k] + edges[k + 1]) / 2
-
-        lo_arr = np.maximum(y_strip_lo, lo_v).astype(np.float64)
-        hi_arr = np.minimum(y_strip_hi, hi_v).astype(np.float64)
-        gone = (lo_arr >= hi_arr) | (~valid)
-        lo_arr[gone] = np.nan
-        hi_arr[gone] = np.nan
-
-        xs, ys = _strip_polygon(dates_ds, lo_arr, hi_arr)
-        if not xs:
+    parts, pen_up = [], True
+    for d, v in zip(dates, yvals):
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            pen_up = True
             continue
-
-        r, g, b = gradient_at(y_mid, anchors)
-        fillcolor = f'rgba({r},{g},{b},{alpha})'
-
-        fig.add_trace(go.Scatter(
-            x=xs, y=ys, mode='lines',
-            line=dict(color='rgba(0,0,0,0)', width=0),
-            fill='toself', fillcolor=fillcolor,
-            hoverinfo='skip', showlegend=False,
-            connectgaps=False,
-        ), row=row_i, col=1)
+        parts.append(f"{'M' if pen_up else 'L'}{d.strftime('%Y-%m-%d')},{v:.1f}")
+        pen_up = False
+    return ' '.join(parts)
 
 
-# ---------- continuous gradient trendline ----------
+# ---------- envelope edges (peak-interpolation, shared knots) ----------
 
-def add_trendline(fig, dates, ma_values, row_i, line_width=2.2):
-    """Single white trendline trace. NaN values break the line cleanly
-    (used for weight's >7d gaps)."""
-    fig.add_trace(go.Scatter(
-        x=dates, y=ma_values, mode='lines',
-        line=dict(color='#ffffff', width=line_width),
-        hoverinfo='skip', showlegend=False,
-        connectgaps=False,
-    ), row=row_i, col=1)
+def env_edges(lo_in, hi_in, distance, gap_break=ENVELOPE_GAP_BREAK_DAYS):
+    """Smooth (lo_s, hi_s) band that PASSES THROUGH the extrema yet never
+    spuriously collapses to zero width.
+
+    Both edges are PCHIP curves through a SHARED set of knot x-positions (the
+    union of ``hi_in``'s maxima and ``lo_in``'s minima, found by ``find_peaks``).
+    At each knot the upper value is the local max of ``hi_in`` and the lower the
+    local min of ``lo_in`` over a +/- (distance/2) neighborhood — so the band
+    width at every knot is the genuine local spread (never 0 just because a lone
+    peak and lone trough happened to coincide), while the upper still reaches the
+    true peaks (a peak knot's neighborhood-max IS that peak). Sharing the knots
+    keeps the two curves moving together, so they can't drift into a pinch.
+
+    ``hi_in``/``lo_in`` are the per-day high/low (equal for single-value panels;
+    the daily max/min for range panels). Works on OBSERVED (non-NaN) points at
+    their true day index, bridging rest days; the band breaks only across gaps
+    longer than ``gap_break`` days. PCHIP is shape-preserving (no overshoot)."""
+    hv = hi_in.to_numpy(dtype=float)
+    lv = lo_in.to_numpy(dtype=float)
+    n = len(hv)
+    out_hi = np.full(n, np.nan)
+    out_lo = np.full(n, np.nan)
+    obs = np.flatnonzero(np.isfinite(hv) & np.isfinite(lv))
+    if len(obs) == 0:
+        return pd.Series(out_lo, index=lo_in.index), pd.Series(out_hi, index=hi_in.index)
+    d = max(1, int(distance))
+    half = max(1, d // 2)
+    splits = np.flatnonzero(np.diff(obs) > gap_break) + 1
+    for seg in np.split(obs, splits):
+        m = len(seg)
+        sx = seg.astype(float)                         # true day indices (gappy)
+        hy, ly = hv[seg], lv[seg]                       # observed high / low
+        if m == 1:
+            out_hi[seg[0]], out_lo[seg[0]] = hy[0], ly[0]
+            continue
+        # Shared knots: union of hi-maxima and lo-minima, + global extremes + ends.
+        hp, _ = find_peaks(hy, distance=d)
+        lt, _ = find_peaks(-ly, distance=d)
+        kset = set(hp.tolist()) | set(lt.tolist())
+        kset.update((int(np.argmax(hy)), int(np.argmin(ly)), 0, m - 1))
+        ks = np.array(sorted(kset))
+        kx = sx[ks]
+        # Knot values = local max(hi)/min(lo) over the +-half neighborhood, so the
+        # knot width is the real local spread (upper still hits true peaks).
+        ky_hi = np.array([hy[max(0, k - half):k + half + 1].max() for k in ks])
+        ky_lo = np.array([ly[max(0, k - half):k + half + 1].min() for k in ks])
+        days = np.arange(seg[0], seg[-1] + 1)
+        if len(ks) >= 2:
+            out_hi[days] = PchipInterpolator(kx, ky_hi, extrapolate=False)(days.astype(float))
+            out_lo[days] = PchipInterpolator(kx, ky_lo, extrapolate=False)(days.astype(float))
+        else:
+            out_hi[days], out_lo[days] = ky_hi[0], ky_lo[0]
+    # Belt-and-suspenders: forbid any residual cross from PCHIP curvature.
+    out_hi = np.maximum(out_hi, out_lo)
+    return pd.Series(out_lo, index=lo_in.index), pd.Series(out_hi, index=hi_in.index)
+
+
+# ---------- solar raster color ramp ----------
+
+def solar_column_colors(date_py, lat, lon, tz_min, y_p):
+    """(len(y_p), 3) uint8 ramp for one day: night -> twilight -> sunrise
+    (orange) -> blue (once the sun reaches +18deg) -> noon -> blue -> +18deg
+    -> sunset (orange) -> twilight -> night, anchored at the day's solar times.
+    The orange->blue shoulder is the sunrise..+18deg span (astronomically tied,
+    wider than a fixed clock offset). ``y_p`` is the array of pixel-row clock
+    minutes (descending, top=late)."""
+    a = solar_anchors_local(date_py, lat, lon, tz_min)
+    noon = a['solar_noon'] if a['solar_noon'] is not None else 720.0
+    pts = [(0.0, SOLAR_NIGHT)]  # (minute, color)
+    if a['twilight_begin'] is not None:
+        pts.append((a['twilight_begin'], SOLAR_TWILIGHT))
+    if a['sunrise'] is not None:
+        pts.append((a['sunrise'], SOLAR_HORIZON))
+    if a['blue_begin'] is not None:
+        pts.append((a['blue_begin'], SOLAR_NOON))
+    pts.append((noon, SOLAR_NOON))
+    if a['blue_end'] is not None:
+        pts.append((a['blue_end'], SOLAR_NOON))
+    if a['sunset'] is not None:
+        pts.append((a['sunset'], SOLAR_HORIZON))
+    if a['twilight_end'] is not None:
+        pts.append((a['twilight_end'], SOLAR_TWILIGHT))
+    pts.append((1440.0, SOLAR_NIGHT))
+    # Enforce strictly increasing minutes for np.interp (clamp any disorder).
+    xs, last = [], -1.0
+    for m, _ in pts:
+        m = max(m, last + 1e-6)
+        xs.append(m)
+        last = m
+    xs = np.asarray(xs)
+    cols = np.asarray([c for _, c in pts], dtype=float)
+    out = np.empty((len(y_p), 3), dtype=np.uint8)
+    for ch in range(3):
+        out[:, ch] = np.clip(np.interp(y_p, xs, cols[:, ch]), 0, 255)
+    return out
 
 
 # ---------- main ----------
 
+def _round_arr(s, n=2):
+    return [None if (v is None or (isinstance(v, float) and np.isnan(v)))
+            else round(float(v), n) for v in s.values]
+
+
+def _str_arr(s):
+    return [None if (v is None or (isinstance(v, float) and np.isnan(v)))
+            else str(v) for v in s.values]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--daily', default=DEFAULT_DAILY)
+    ap.add_argument('--altitude', default=DEFAULT_ALT)
+    ap.add_argument('--time', default=DEFAULT_TIME)
+    ap.add_argument('--cf', default=DEFAULT_CF)
     ap.add_argument('--out-dir', default=DEFAULT_OUT)
-    ap.add_argument('--start', default=None,
-                    help='Left date bound (default: first non-race daily entry)')
+    ap.add_argument('--start', default=None)
     args = ap.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
     start = args.start or str(daily_floor().date())
-    full = load_series(args.daily, start)
+    full = load_series(args.daily, args.altitude, args.time, start)
     dates = full.index
+    n_days = len(dates)
+    with open(args.cf) as f:
+        cf = json.load(f)
+    weather_cf = cf['rules']['weather']
+    cond_cf = cf['rules']['conditions']
+    # Older / variant log vocabulary that predates the CF palette keys (esp.
+    # 2016, which logged 'clouds'/'drizzle'/'showers') -> nearest CF bin, so
+    # those days color correctly instead of falling to the gray fallback.
+    weather_syn = {'clouds': 'cloudy', 'drizzle': 'light rain',
+                   'showers': 'light rain', 'fog': 'foggy', 'indoors': 'inside'}
+    # The CF pastels for clear/cloudy/overcast/foggy are light-cell tints that
+    # wash into indistinguishable near-grays on the dark plot bg. Remap just
+    # those to dark-legible tones — clear stays a recognizable light blue, the
+    # cloud family stays neutral grays at distinct lightness; every other
+    # weather keeps its CF hex (already saturated enough).
+    weather_dark = {'clear': '#9FC5E8', 'cloudy': '#B0B0B0',
+                    'overcast': '#7F7F7F', 'foggy': '#D9D9D9'}
+
+    def wcolor(w):
+        return weather_dark.get(w) or weather_cf.get(w, '#888888')
+
     miles_max = float(full['miles'].max())
 
-    # Envelope x-stride: daily for short ranges (the 4-day stride stairsteps
-    # visibly on a few-month profile like a new watch import), 4-day beyond
-    # 1000 days where the difference is imperceptible and traces stay light.
-    short = len(dates) <= 1000
-    x_stride = 1 if short else ENVELOPE_X_STRIDE
+    def pad_range(series, frac=0.04, floor0=False):
+        v = pd.Series(series).dropna()
+        if v.empty:
+            return [0.0, 1.0]
+        lo, hi = float(v.min()), float(v.max())
+        p = (hi - lo) * frac if hi > lo else 1.0
+        return [0.0 if floor0 else lo - p, hi + p]
 
-    def env_smooth(s):
-        # Smooth the rolling min/max envelope edges. The min/max are plateau
-        # step functions (an extreme persists across RANGE_WINDOW), which on a
-        # dense decade-wide axis reads smooth but on a short (few-month) axis
-        # shows as visible stair treads. For short profiles, widen the window
-        # and use a gaussian kernel (round corners, no boxcar facets); dense
-        # profiles keep the original 7-day boxcar exactly (Max unchanged).
-        if not short:
-            return smooth_series(s, RANGE_SMOOTH)
-        w = max(RANGE_SMOOTH, round(len(dates) * 0.12))
-        return s.rolling(w, min_periods=1, center=True,
-                         win_type='gaussian').mean(std=max(2.0, w / 3))
+    temp_range = pad_range(full['temp_c'])
+    # Wind is AccuWeather ground truth (mph; raw/10 km/h x KMH_TO_MPH at the
+    # source) — taken at face value, no cap. Genuine outliers get invalidated by
+    # hand via the changes sheet, not clipped here.
+    w_v = pd.Series(full['wind_mph']).dropna()
+    wind_max = float(w_v.max()) if len(w_v) else 1.0
+    # Altitude floors at 0: uncalibrated-barometer dips below sea level are
+    # unphysical, so the axis cuts off at 0 and those dips clip; the top tracks
+    # the real ceiling (fourteener/foothill highs).
+    alt_hi_v = pd.Series(full.get('max_elev_ft')).dropna()
+    if len(alt_hi_v):
+        a1 = float(alt_hi_v.max())
+        alt_range = [0.0, a1 * 1.04]
+    else:
+        alt_range = [0.0, 1.0]
+    weight_range = pad_range(full['weight_interp'])
 
-    metrics: list[dict[str, Any]] = [
-        dict(key='volume', label='Daily volume', unit='mi',
-             series=full['miles'],
-             # 3-stop yellow-family gradient. Mid-stop at 8 mi places
-             # dramatic color shift across the typical envelope (~3-12 mi).
+    # ---- panel specs ----
+    # type: 'scatter' (Conditions) or 'envelope'. Every envelope renders the
+    # same way — a gradient RASTER fill (layer above) + white vector trend path
+    # shape(s) (layer above) — so there is one code path and no strip/banding.
+    # An envelope is single-value (``series`` -> one MA trend) or range
+    # (``lo``/``hi`` -> two edge trends); colour is anchor-based (``anchors``)
+    # or the per-day ``solar`` ramp (Time).
+    panels = [
+        # Weather page
+        dict(page='weather', row=1, key='conditions', label='Conditions',
+             unit='°C', type='scatter', y_range=temp_range),
+        dict(page='weather', row=2, key='temp', label='Temperature',
+             unit='°C', type='envelope', series=full['temp_c'],
+             anchors=[(-10.0, '#0E7BAA'), (22.0, '#5A9E3D'), (40.0, '#C82020')],
+             y_range=temp_range),
+        dict(page='weather', row=3, key='humidity', label='Humidity',
+             unit='%', type='envelope', series=full['humidity_pct'],
+             # Two-stop orange->blue (a white mid-stop washed out the trendline).
+             anchors=[(0.0, '#CC5500'), (100.0, '#10458C')],
+             y_range=[0.0, 100.0]),
+        dict(page='weather', row=4, key='wind', label='Wind',
+             unit='mph', type='envelope', series=full['wind_mph'],
+             anchors=[(0.0, '#9BD770'), (wind_max / 2, '#F2D034'),
+                      (wind_max, '#E23B2E')],
+             y_range=[0.0, wind_max * 1.05]),
+        # Other page
+        dict(page='other', row=1, key='volume', label='Daily volume',
+             unit='mi', type='envelope', series=full['miles'],
              anchors=[(0.0, '#3D2208'), (8.0, '#8B5C16'),
-                      (miles_max, '#F2D034')]),
-        dict(key='temp', label='Temperature', unit='°C',
-             series=full['temp_c'],
-             # Same Excel-defaults palette but each anchor darkened
-             # ~30% so white trendline pops at full opacity.
-             anchors=[(-10.0, '#0E7BAA'), (22.0, '#5A9E3D'),
-                      (40.0, '#C82020')]),
-        dict(key='sleep', label='Sleep', unit='hr',
-             series=full['sleep_hours'],
-             # CF source: gradients.sleep_cycles — 0c #C00000 → 8c
-             # #00B050, converted to hours (×1.5). Hues preserved from
-             # the spreadsheet; brightness left at CF level so the band
-             # matches Temp's #C82020 / #5A9E3D anchors rather than
-             # reading muted next to them.
-             anchors=[(0.0, '#C00000'), (12.0, '#00B050')]),
-        dict(key='weight', label='Weight', unit='lbs',
-             series=full['weight_interp'],
-             # 3-stop orange-family gradient. Mid-stop at 156 lbs places
-             # dramatic color shift across the typical envelope (152-160).
+                      (miles_max, '#F2D034')],
+             y_range=[0.0, miles_max * 1.05]),
+        dict(page='other', row=2, key='altitude', label='Altitude',
+             unit='ft', type='envelope',
+             lo=full.get('min_elev_ft'), hi=full.get('max_elev_ft'),
+             anchors=[(alt_range[0], '#2E7D32'),
+                      ((alt_range[0] + alt_range[1]) / 2, '#8B5A2B'),
+                      (alt_range[1], '#FFFFFF')],
+             y_range=alt_range),
+        dict(page='other', row=3, key='time', label='Time of day',
+             unit='', type='envelope', solar=True,
+             lo=full.get('start_min'), hi=full.get('end_min'),
+             y_range=[0.0, 1440.0]),
+        dict(page='other', row=4, key='weight', label='Weight',
+             unit='lbs', type='envelope', series=full['weight_interp'],
              anchors=[(145.0, '#2D1006'), (156.0, '#8C4F1F'),
-                      (170.0, '#E89535')]),
+                      (170.0, '#E89535')],
+             y_range=weight_range),
     ]
 
-    # Drop metrics with no data so an empty trend doesn't take up a subplot —
-    # e.g. a watch-import profile has no sleep or weight to populate. Volume is
-    # always present (rest days are 0, not null), so at least one row remains.
-    metrics = [m for m in metrics if m['series'].notna().any()]
-    dropped = {'sleep', 'temp', 'weight', 'volume'} - {m['key'] for m in metrics}
-    if dropped:
-        print(f"[trends] no data for {sorted(dropped)} — omitting those subplots")
-
     fig: go.Figure = make_subplots(
-        rows=len(metrics), cols=1, shared_xaxes=True,
-        vertical_spacing=0.03,
-        subplot_titles=[
-            f"{m['label']} ({MA_WINDOW[m['key']]}-day trend, min-max gradient)"
-            for m in metrics
-        ],
-    )
+        rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.025)
 
-    payload_lo = {}
-    payload_hi = {}
-    payload_ma = {}
+    # Invisible per-row anchor traces: with every envelope now a layout image +
+    # shapes (not traces), these are the only traces on rows 2-4, so they keep
+    # the four cartesian subplots (and the cursor-tooltip axis lookups) alive.
+    # No meta.page -> the toggle leaves them visible on both pages.
+    for r in range(1, 5):
+        fig.add_trace(go.Scatter(
+            x=[dates[0], dates[-1]], y=[0.0, 0.0], mode='markers',
+            marker=dict(opacity=0), hoverinfo='skip', showlegend=False),
+            row=r, col=1)
 
-    for row_i, m in enumerate(metrics, start=1):
-        lo_raw, hi_raw = rolling_minmax_raw(m['series'], RANGE_WINDOW)
-        ma = rolling_ma(m['series'], MA_WINDOW[m['key']])
+    # tooltip payload, per tab
+    pay = {'weather': {'avg': {}, 'lo': {}, 'hi': {}, 'day': {}},
+           'other': {'avg': {}, 'lo': {}, 'hi': {}, 'day': {}}}
+    images = []        # (image_index, page)
+    shapes_list = []   # (shape_index, page)
 
-        # Gap alignment: where the underlying value is null, force every
-        # derived series to null so the trendline and envelope start/end
-        # together at gap boundaries. Currently only weight has these gaps
-        # (>WEIGHT_INTERP_MAX_GAP day stretches without a measurement);
-        # volume has no nulls (rest days = 0) and temp's per-rest-day
-        # nulls are filled by the rolling window's neighbors anyway.
-        if m['key'] == 'weight':
-            valid = m['series'].notna()
-            lo_raw = lo_raw.where(valid, other=np.nan)
-            hi_raw = hi_raw.where(valid, other=np.nan)
-            ma = ma.where(valid, other=np.nan)
+    for pn in panels:
+        row = pn['row']
+        page = pn['page']
+        tab = pay[page]
+        y0, y1 = pn['y_range']
 
-        lo_smooth = env_smooth(lo_raw)
-        hi_smooth = env_smooth(hi_raw)
+        if pn['type'] == 'scatter':
+            # Conditions: dot per logged day at y=temp; fill=weather, ring=conditions.
+            sub = full[full['weather'].notna() & full['temp_c'].notna()]
+            fill, ring, ringw = [], [], []
+            for w, c in zip(sub['weather'], sub['conditions']):
+                ws = str(w).strip().lower()
+                fill.append(wcolor(weather_syn.get(ws, ws)))
+                # NaN conditions (the new pandas `str` dtype yields pd.NA, which
+                # never equals the literal 'nan') and 'dry' mean no ring.
+                cs = str(c).strip().lower() if pd.notna(c) else ''
+                if cs in ('', 'dry', 'none', 'nan'):
+                    ring.append('rgba(0,0,0,0)')
+                    ringw.append(0.0)
+                else:
+                    ring.append(cond_cf.get(cs, '#cccccc'))
+                    ringw.append(1.4)
+            fig.add_trace(go.Scatter(
+                x=sub.index, y=sub['temp_c'], mode='markers',
+                marker=dict(size=6, color=fill, opacity=1.0,
+                            line=dict(color=ring, width=ringw)),
+                hoverinfo='skip', showlegend=False, meta={'page': page},
+            ), row=row, col=1)
+            tab['day']['weather'] = _str_arr(full['weather'])
+            tab['day']['conditions'] = _str_arr(full['conditions'])
+            tab['day']['cond_temp'] = _round_arr(full['temp_c'], 1)
+            continue
 
-        # Re-mask post-smoothing — the rolling mean's min_periods=1 can
-        # spread valid neighbours back into the gap.
-        if m['key'] == 'weight':
-            lo_smooth = lo_smooth.where(valid, other=np.nan)
-            hi_smooth = hi_smooth.where(valid, other=np.nan)
+        # ---- envelope panel: gradient raster fill + vector trend shape(s) ----
+        key = pn['key']
 
-        # Envelope as gradient strip stack. Short profiles render on a
-        # sub-daily x-grid so strip band-crossings become diagonals, not
-        # stacked verticals (see upsample_envelope); dense profiles stride.
-        if short:
-            ev_dates, ev_lo, ev_hi = upsample_envelope(
-                dates, lo_smooth, hi_smooth, ENVELOPE_UPSAMPLE)
-            ev_stride = 1
+        if 'series' in pn:                          # single-value envelope
+            s = pn['series']
+            lo_s, hi_s = env_edges(s, s, PEAK_DISTANCE_DAYS)
+            if key == 'weight':                     # don't bridge >7d gaps
+                lo_s, hi_s = lo_s.where(s.notna()), hi_s.where(s.notna())
+            # The envelope is the single source of truth for gaps; force the
+            # trend (and tooltip range) onto exactly its valid days so the white
+            # line starts/stops/breaks WITH the band. min_periods=1 keeps the MA
+            # finite to the band edges; masking trims it to no further.
+            env_valid = lo_s.notna() & hi_s.notna()
+            ma = rolling_ma(s, MA_WINDOW[key], min_periods=1).where(env_valid)
+            lo_raw, hi_raw = rolling_minmax_raw(s, RANGE_WINDOW)
+            lo_raw, hi_raw = lo_raw.where(env_valid), hi_raw.where(env_valid)
+            trends = [ma]                           # one white MA trend line
+            tab['avg'][key] = _round_arr(ma)
+            tab['lo'][key] = _round_arr(lo_raw)
+            tab['hi'][key] = _round_arr(hi_raw)
+            tab['day'][key] = _round_arr(s, 1)
+        else:                                       # range (two-edge) envelope
+            lo_in = pd.Series(pn['lo'], index=dates)
+            hi_in = pd.Series(pn['hi'], index=dates)
+            lo_s, hi_s = env_edges(lo_in, hi_in, PEAK_DISTANCE_DAYS)
+            trends = []                             # range panels draw no lines
+            # Tooltip avg row (unified format): avg = smoothed band midpoint;
+            # (min to max) = the rolling envelope. Masked to the band's valid
+            # days so the tooltip only reports where the band is drawn.
+            env_valid = lo_s.notna() & hi_s.notna()
+            avg = rolling_ma((lo_in + hi_in) / 2.0,
+                             MA_WINDOW[key], min_periods=1).where(env_valid)
+            lo_raw = lo_in.rolling(RANGE_WINDOW, min_periods=1,
+                                   center=True).min().where(env_valid)
+            hi_raw = hi_in.rolling(RANGE_WINDOW, min_periods=1,
+                                   center=True).max().where(env_valid)
+            d = 0 if key == 'altitude' else 1
+            tab['avg'][key] = _round_arr(avg, d)
+            tab['lo'][key] = _round_arr(lo_raw, d)
+            tab['hi'][key] = _round_arr(hi_raw, d)
+            tab['day'][key + '_lo'] = _round_arr(lo_in, 1)
+            tab['day'][key + '_hi'] = _round_arr(hi_in, 1)
+            if key == 'time' and 'time_est' in full:
+                tab['day']['time_est'] = [bool(v) for v in full['time_est'].values]
+
+        # Per-day colour ramp: the per-day solar gradient (Time) or a constant
+        # anchor-based vertical ramp (every other panel).
+        if pn.get('solar'):
+            y_p = y1 - (np.arange(RASTER_H) + 0.5) / RASTER_H * (y1 - y0)
+            date_py = [d.date() for d in dates]
+            # The rolling envelope can reach a few days past the last GPS fix;
+            # fill coords forward/back so every rendered column has a location.
+            lat_arr = full['lat'].ffill().bfill().fillna(40.015).values
+            lon_arr = full['lon'].ffill().bfill().fillna(-105.27).values
+            tz_arr = full['tz_min'].ffill().bfill().fillna(-420).values
+
+            def column_colors(d, _yp=y_p, _dp=date_py,
+                              _lat=lat_arr, _lon=lon_arr, _tz=tz_arr):
+                return solar_column_colors(
+                    _dp[d], float(_lat[d]), float(_lon[d]), int(_tz[d]), _yp)
         else:
-            ev_dates, ev_lo, ev_hi = dates, lo_smooth, hi_smooth
-            ev_stride = x_stride
-        add_envelope_strips(
-            fig, ev_dates, ev_lo, ev_hi, m['anchors'],
-            N_ENVELOPE_STRIPS, ev_stride, row_i, ENVELOPE_ALPHA)
+            ramp = gradient_ramp(pn['anchors'], y0, y1, RASTER_H)
 
-        # Trendline (pure white for contrast against gradient envelope).
-        add_trendline(fig, dates, ma, row_i)
+            def column_colors(d, _r=ramp):
+                return _r
 
-        y_min_env = float(lo_smooth.min())
-        y_max_env = float(hi_smooth.max())
-        pad = (y_max_env - y_min_env) * 0.04 if y_max_env > y_min_env else 1.0
-        fig.update_yaxes(
-            range=[y_min_env - pad, y_max_env + pad],
-            row=row_i, col=1,
-            title=dict(text=m['unit'],
-                       font=dict(color=FG_DIM, size=11)),
-            gridcolor=GRID, zerolinecolor=GRID,
-        )
+        # Gradient raster, drawn ABOVE gridlines (covers them like the old fill).
+        idx = render_gradient_raster(
+            fig, row, dates, lo_s, hi_s, column_colors,
+            y_range=(y0, y1), h_px=RASTER_H, layer='above',
+            visible=(page == 'weather'))
+        images.append((idx, page))
 
-        def _round_arr(s, n=2):
-            return [None if (v is None
-                             or (isinstance(v, float) and np.isnan(v)))
-                    else round(float(v), n)
-                    for v in s.values]
-        payload_lo[m['key']] = _round_arr(lo_raw)
-        payload_hi[m['key']] = _round_arr(hi_raw)
-        payload_ma[m['key']] = _round_arr(ma)
+        # White trend(s) as crisp vector path shapes ABOVE the raster (a trace
+        # would be hidden under the above-layer image; a baked line blurs under
+        # the stretch-resize). Per-page visibility set in the page relayout.
+        if trends:
+            axn_r = '' if row == 1 else str(row)
+            for tr in trends:
+                pth = _date_path(dates, tr.values)
+                if not pth:
+                    continue
+                fig.add_shape(dict(
+                    type='path', path=pth,
+                    xref=f'x{axn_r}', yref=f'y{axn_r}',
+                    line=dict(color='#ffffff', width=2.0),
+                    layer='above', visible=(page == 'weather')))
+                shapes_list.append((len(fig.layout.shapes) - 1, page))
+        continue
 
-    # Yearly gridlines — shared helper, standard tick styling.
+    # ---- per-page axis configs + inset-title annotations ----
+    def axkey(r):
+        return 'yaxis' if r == 1 else f'yaxis{r}'
+
+    def axn(r):
+        return '' if r == 1 else str(r)
+
+    TIME_TICKVALS = [0, 240, 480, 720, 960, 1200, 1440]
+    TIME_TICKTEXT = ['0:00', '4:00', '8:00', '12:00', '16:00', '20:00', '']
+
+    pages = {'weather': {'relayout': {}}, 'other': {'relayout': {}}}
+    annotations = []
+    for pn in panels:
+        r = pn['row']
+        page = pn['page']
+        rel = pages[page]['relayout']
+        rel[f'{axkey(r)}.range'] = pn['y_range']
+        rel[f'{axkey(r)}.title.text'] = pn['unit']
+        if pn['key'] == 'time':
+            rel[f'{axkey(r)}.tickmode'] = 'array'
+            rel[f'{axkey(r)}.tickvals'] = TIME_TICKVALS
+            rel[f'{axkey(r)}.ticktext'] = TIME_TICKTEXT
+        else:
+            rel[f'{axkey(r)}.tickmode'] = 'auto'
+            rel[f'{axkey(r)}.tickvals'] = None
+            rel[f'{axkey(r)}.ticktext'] = None
+        # inset title (top-left of subplot)
+        annotations.append(dict(
+            xref=f'x{axn(r)} domain', yref=f'y{axn(r)} domain',
+            x=0.008, y=0.97, xanchor='left', yanchor='top',
+            text=pn['label'], showarrow=False,
+            font=dict(color=FG, size=12.5),
+            bgcolor='rgba(26,26,26,0.55)', borderpad=2,
+            visible=(page == 'weather'),
+        ))
+
+    # Record per-page annotation + image visibility into the relayout dicts.
+    for i, pn in enumerate(panels):
+        for page in ('weather', 'other'):
+            pages[page]['relayout'][f'annotations[{i}].visible'] = (
+                pn['page'] == page)
+    for idx, pg in images:
+        pages['weather']['relayout'][f'images[{idx}].visible'] = (pg == 'weather')
+        pages['other']['relayout'][f'images[{idx}].visible'] = (pg == 'other')
+    for idx, pg in shapes_list:
+        pages['weather']['relayout'][f'shapes[{idx}].visible'] = (pg == 'weather')
+        pages['other']['relayout'][f'shapes[{idx}].visible'] = (pg == 'other')
+
+    fig.update_layout(annotations=annotations)
+
+    # Initial state = weather page: apply weather axis config, hide other-page
+    # traces. (Annotations/image already initialized to weather above.)
+    for pn in panels:
+        r = pn['row']
+        kw = dict(title=dict(text=pn['unit'],
+                             font=dict(color=FG_DIM, size=11)),
+                  gridcolor=GRID, zerolinecolor=GRID)
+        if pn['page'] == 'weather':
+            kw['range'] = pn['y_range']
+            if pn['key'] == 'time':
+                kw['tickmode'] = 'array'
+                kw['tickvals'] = TIME_TICKVALS
+                kw['ticktext'] = TIME_TICKTEXT
+            fig.update_yaxes(row=r, col=1, **kw)
+    # Also set ranges for 'other'-page rows so the hidden axes are sane until
+    # first toggle is unnecessary — weather config already covers every row
+    # (each row has exactly one weather panel).
+
+    for tr in fig.data:
+        if (tr.meta or {}).get('page') == 'other':
+            tr.visible = False
+
     fig.update_xaxes(**yearly_x_axis_kwargs(start, str(dates.max().date())))
-
     apply_default_layout(
         fig,
         font=dict(color=FG, size=12),
-        margin=dict(t=24, l=70, r=40, b=56),
+        margin=dict(t=20, l=70, r=40, b=56),
         showlegend=False,
         hovermode=False,
     )
-    fig.update_annotations(font=dict(color=FG, size=13))
 
     epoch = pd.Timestamp('1970-01-01')
     first_day = int((pd.Timestamp(start) - epoch).days)
-    last_day = first_day + len(dates) - 1
+    last_day = first_day + n_days - 1
 
     payload = {
         'first_day': first_day,
-        'n_days': len(dates),
-        'lo': payload_lo,
-        'hi': payload_hi,
-        'ma': payload_ma,
-        'ma_window': MA_WINDOW,
+        'n_days': n_days,
         'range_window': RANGE_WINDOW,
-        # Only the metrics actually plotted, in row order — the tooltip JS
-        # iterates this rather than a fixed list so omitted trends don't break it.
-        'metrics': [m['key'] for m in metrics],
+        'ma_window': MA_WINDOW,
+        'city': _str_arr(full['city_state']) if 'city_state' in full else None,
+        'tabs': pay,
     }
 
-    shown = ', '.join(m['label'].lower() for m in metrics)
+    sib = Path(__file__).with_suffix('.js')
+    toggle = widgets.toggle_bar(
+        'trends-toggle',
+        [('weather', 'Weather'), ('other', 'Other')],
+        default_id='weather')
+    globals_html = widgets.js_globals({'TRENDS_PAGES': pages})
 
     out_path = os.path.join(args.out_dir, 'qualitative_trends.html')
     render_plot(
         fig, out_path,
         title_slug='qualitative_trends',
-        page_title='Volume / temp / weight',
+        page_title='Misc. Trends',
         title='Miscellaneous Trends',
-        subtitle=f'{shown[:1].upper()}{shown[1:]}: moving-average trendlines '
-                 'with 14-day rolling min-max envelopes',
+        subtitle='Weather &amp; training conditions — moving-average trends '
+                 'with rolling min-max envelopes',
+        overlay_html=toggle + '\n' + globals_html,
+        overlay_js_files=[str(sib)],
+        extra_head_css='.rp-tooltip .tt-sep{height:1px;margin:6px 0;'
+                       'background:#444;}',
         cursor_tooltip=CursorTooltip(
             payload=payload,
             build_js=_BUILD_JS,
@@ -483,25 +774,16 @@ def main():
             last_day=last_day,
             spike_full_plot=True,
         ),
+        # Fully non-interactive: no native zoom/pan/double-click (which fought
+        # the per-page fixed axis ranges and could wedge the plot). The toggle,
+        # cursor tooltip, and spike are all custom DOM/Plotly.relayout — none
+        # rely on Plotly's drag interactions.
+        plotly_config={'staticPlot': True},
     )
     print(f'wrote {out_path}')
-
-    print('\nseries summaries (post-shaping):')
-    print(f"  volume  rest-days={int((full['miles']==0).sum())}  "
-          f"min={full['miles'].min():.1f}  max={full['miles'].max():.1f}  "
-          f"median(running)={full['miles'][full['miles']>0].median():.1f}")
-    t = full['temp_c'].dropna()
-    print(f"  temp    n={len(t):>5d}  min={t.min():.1f}  "
-          f"max={t.max():.1f}  median={t.median():.1f}")
-    s = full['sleep_hours'].dropna()
-    print(f"  sleep   n={len(s):>5d}  min={s.min():.1f}  "
-          f"max={s.max():.1f}  median={s.median():.1f}")
-    w = full['weight_interp'].dropna()
-    raw_w = full['weight_lbs'].dropna()
-    print(f"  weight  n={len(w):>5d}  ({len(raw_w)} raw, "
-          f"{len(w) - len(raw_w)} interpolated)  "
-          f"min={w.min():.1f}  max={w.max():.1f}  median={w.median():.1f}")
-    print(f"\ntotal traces: {len(tuple(fig.data))}")
+    print(f'  panels=8 traces={len(tuple(fig.data))} '
+          f'images={len(fig.layout.images)} shapes={len(fig.layout.shapes)} '
+          f'days={n_days}')
 
 
 _BUILD_JS = r"""
@@ -509,48 +791,124 @@ function buildTooltip(day) {
   var P = window.__TT_DATA;
   var idx = day - P.first_day;
   if (idx < 0 || idx >= P.n_days) return '';
+  var tab = window.__rpActiveTab || 'weather';
+  var T = P.tabs[tab];
+  if (!T) return '';
 
   var DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  // Only the metrics actually plotted (set by the builder); iterating a fixed
-  // list would dereference P.ma[<omitted>] and throw.
-  var metricKeys   = P.metrics || ['volume', 'temp', 'sleep', 'weight'];
-  var metricLabels = {volume: 'Avg. volume', temp: 'Avg. temp',
-                      sleep: 'Avg. sleep', weight: 'Avg. weight'};
-  var metricUnits  = {volume: 'mi', temp: '°C', sleep: 'hr', weight: 'lbs'};
-
   function fmt(v, n) {
     if (v === null || v === undefined || isNaN(v)) return null;
     return Number(v).toFixed(n);
   }
+  function clock(m) {
+    if (m === null || m === undefined || isNaN(m)) return null;
+    m = Math.round(m); var h = Math.floor(m / 60), mm = m % 60;
+    return h + ':' + String(mm).padStart(2, '0');
+  }
+  function row(label, valHtml) {
+    return '<div class="tt-row"><span>' + label + '</span><span>'
+         + valHtml + '</span></div>';
+  }
+  function muted(t) { return '<span class="tt-mute">' + t + '</span>'; }
 
   var dt = new Date(day * 86400000);
   var y = dt.getUTCFullYear();
   var mo = String(dt.getUTCMonth() + 1).padStart(2, '0');
   var dd = String(dt.getUTCDate()).padStart(2, '0');
-  var dateStr = y + '-' + mo + '-' + dd + ' (' + DOW[dt.getUTCDay()] + ')';
+  var html = '<div class="tt-date">' + y + '-' + mo + '-' + dd
+           + ' (' + DOW[dt.getUTCDay()] + ')</div>';
+  // Location (both tabs) — easy to cross-reference with the data.
+  var city = P.city ? P.city[idx] : null;
+  if (city) html += row('Location', muted(city));
 
-  var html = '<div class="tt-date">' + dateStr + '</div>';
-  var anyShown = false;
-  for (var i = 0; i < metricKeys.length; i++) {
-    var m = metricKeys[i];
-    var maStr = fmt(P.ma[m][idx], 1);
-    var loStr = fmt(P.lo[m][idx], 1);
-    var hiStr = fmt(P.hi[m][idx], 1);
-    if (maStr === null && loStr === null && hiStr === null) continue;
-    anyShown = true;
-    var maOut = (maStr === null) ? '—' : maStr;
-    var rangeOut = (loStr === null || hiStr === null)
-                    ? '—' : ('(' + loStr + ' to ' + hiStr + ')');
-    html += '<div class="tt-row">'
-          +   '<span>' + metricLabels[m] + '</span>'
-          +   '<span>'
-          +     '<b>' + maOut + '</b> '
-          +     '<span class="tt-mute">' + metricUnits[m]
-          +     ' ' + rangeOut + '</span>'
-          +   '</span>'
-          + '</div>';
+  // metric display config per tab. dec = decimals (default 1); range = the
+  // day value is a lo–hi band; clock = y is minute-of-day.
+  var META = {
+    weather: [
+      {k:'conditions', label:'Conditions'},
+      {k:'temp', label:'Temp', unit:'°C'},
+      {k:'humidity', label:'Humidity', unit:'%'},
+      {k:'wind', label:'Wind', unit:'mph'}
+    ],
+    other: [
+      {k:'volume', label:'Volume', unit:'mi'},
+      {k:'altitude', label:'Altitude', unit:'ft', range:true, dec:0},
+      {k:'time', label:'Time', clock:true, range:true},
+      {k:'weight', label:'Weight', unit:'lbs'}
+    ]
+  };
+  var metrics = META[tab];
+  function dec(m) { return (m.dec == null) ? 1 : m.dec; }
+
+  function dayValue(m) {
+    if (m.k === 'conditions') {
+      var w = T.day.weather ? T.day.weather[idx] : null;
+      var c = T.day.conditions ? T.day.conditions[idx] : null;
+      if (!w) return null;
+      var s = w; if (c) s += ' / ' + c; else s += ' / dry';
+      return s;
+    }
+    if (m.range) {                              // day = the band [lo, hi]
+      var lo = T.day[m.k + '_lo'] ? T.day[m.k + '_lo'][idx] : null;
+      var hi = T.day[m.k + '_hi'] ? T.day[m.k + '_hi'][idx] : null;
+      if (m.clock) {
+        var a = clock(lo), b = clock(hi);
+        if (!(a && b)) return null;
+        var estA = T.day.time_est;              // bin-derived (pre-watch) estimate
+        var tail = (estA && estA[idx]) ? ' ' + muted('(estimated)') : '';
+        return a + '–' + b + tail;
+      }
+      var fa = fmt(lo, dec(m)), fb = fmt(hi, dec(m));
+      return (fa && fb) ? (fa + '–' + fb + ' ' + (m.unit||'')) : null;
+    }
+    var v = T.day[m.k] ? T.day[m.k][idx] : null;
+    var fv = fmt(v, dec(m));
+    return (fv === null) ? null : (fv + ' ' + (m.unit||''));
   }
-  return anyShown ? html : '';
+
+  // Average row — same shape for every metric: <avg> unit (min to max), where
+  // (min to max) is the rolling envelope (the band on the graph). For range
+  // metrics the avg is the smoothed band midpoint.
+  function avgValue(m) {
+    if (m.k === 'conditions') return null;
+    var av = T.avg[m.k] ? T.avg[m.k][idx] : null;
+    var lo = T.lo[m.k] ? T.lo[m.k][idx] : null;
+    var hi = T.hi[m.k] ? T.hi[m.k][idx] : null;
+    if (m.clock) {
+      var a = clock(av);
+      if (a === null) return null;
+      var lc = clock(lo), hc = clock(hi);
+      var rgc = (lc && hc) ? ' (' + lc + ' to ' + hc + ')' : '';
+      return '<b>' + a + '</b> ' + muted(rgc);
+    }
+    var fa = fmt(av, dec(m));
+    if (fa === null) return null;
+    var rg = (fmt(lo, dec(m)) !== null && fmt(hi, dec(m)) !== null)
+             ? ' (' + fmt(lo, dec(m)) + ' to ' + fmt(hi, dec(m)) + ')' : '';
+    return '<b>' + fa + '</b> ' + muted((m.unit||'') + rg);
+  }
+
+  // Day-specific block (actuals for this date)
+  var dayRows = '', anyDay = false;
+  for (var i = 0; i < metrics.length; i++) {
+    var dv = dayValue(metrics[i]);
+    if (dv === null) continue;
+    anyDay = true;
+    dayRows += row(metrics[i].label, dv);
+  }
+  // Averages block
+  var avgRows = '', anyAvg = false;
+  for (var j = 0; j < metrics.length; j++) {
+    var av = avgValue(metrics[j]);
+    if (av === null) continue;
+    anyAvg = true;
+    avgRows += row('Avg. ' + metrics[j].label.toLowerCase(), av);
+  }
+  if (!anyDay && !anyAvg) return '';
+  if (anyDay) html += dayRows;
+  if (anyDay && anyAvg) html += '<div class="tt-sep"></div>';
+  if (anyAvg) html += avgRows;
+  return html;
 }
 """
 

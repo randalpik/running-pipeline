@@ -54,7 +54,7 @@ import pandas as pd
 # list; duplicated here so this module stands alone).
 CURRENT_LOG_COLUMNS = [
     "date", "sleep_cycles", "miles", "minutes", "temp_c", "weather",
-    "workout_raw", "partners", "conditions", "wind", "wind_ms",
+    "workout_raw", "partners", "conditions", "wind", "wind_mph",
     "humidity_pct", "time_of_day", "shoes", "location", "weight_lbs",
 ]
 

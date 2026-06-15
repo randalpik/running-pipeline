@@ -78,7 +78,7 @@ DAILY_COLUMNS = [
     "date", "year", "month", "day_of_year", "dow",
     "miles", "minutes", "pace_sec_per_mi",
     "temp_c", "sleep_cycles",
-    "weather", "conditions", "wind", "wind_ms", "humidity_pct", "time_of_day",
+    "weather", "conditions", "wind", "wind_mph", "humidity_pct", "time_of_day",
     "shoes", "location", "weight_lbs", "surface",
     "partners", "workout_raw",
     "run_type",
@@ -443,7 +443,7 @@ def _derive_daily_row(dt, year, schema_key, source_file,
                       miles, minutes, temp, sleep_cycles,
                       weather, workout, partners, conditions, wind,
                       time_of_day, shoes, location, weight,
-                      wind_ms=None, humidity_pct=None,
+                      wind_mph=None, humidity_pct=None,
                       hill_lookup=None):
     """Assemble one daily row dict from already-normalized cell values.
 
@@ -489,7 +489,7 @@ def _derive_daily_row(dt, year, schema_key, source_file,
         "weather": weather,
         "conditions": conditions,
         "wind": wind,
-        "wind_ms": wind_ms,
+        "wind_mph": wind_mph,
         "humidity_pct": humidity_pct,
         "time_of_day": time_of_day,
         "shoes": shoes,
@@ -739,7 +739,7 @@ def ingest_year_standard_csv(df_or_path, year, source_file=None):
         wind = (_str("wind") or "").lower() or None
         # Numeric watch weather (current_log from build_current_log). Optional:
         # absent in hand-logged drive snapshots, so default to None.
-        wind_ms = _safe_float(r.get("wind_ms"))
+        wind_mph = _safe_float(r.get("wind_mph"))
         humidity_pct = _safe_float(r.get("humidity_pct"))
         time_of_day = (_str("time_of_day") or "").lower() or None
         shoes = _str("shoes")
@@ -750,7 +750,7 @@ def ingest_year_standard_csv(df_or_path, year, source_file=None):
             miles, minutes, temp, sleep_cycles,
             weather, workout, partners, conditions, wind,
             time_of_day, shoes, location, weight,
-            wind_ms=wind_ms, humidity_pct=humidity_pct,
+            wind_mph=wind_mph, humidity_pct=humidity_pct,
         ))
     return rows
 

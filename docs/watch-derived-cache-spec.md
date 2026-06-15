@@ -68,7 +68,7 @@ not compression of the stream but **not re-parsing immutable history**.
 date,
 n_acts, status,                 # status = rich | slim (best stream available)
 # --- weather (from the day's rep activity) ---
-temp_c, weather_bin, wind_ms, humidity_pct, time_of_day,
+temp_c, weather_bin, wind_mph, humidity_pct, time_of_day,
 # --- distance / structure (whole-day, watch-measured) ---
 watch_miles, watch_moving_s, watch_total_s, pause_s, stall_s,
 n_segs, d_eff_frac, longest_seg_mi,
@@ -186,7 +186,7 @@ the unified row + satellites. Each current producer is refactored so its
 for standalone/back-compat but delegates to the builder.
 
 - **weather** — fold `weather_measured.py` derivation into `watch_daily`
-  (`temp_c, weather_bin, wind_ms, humidity_pct, time_of_day`). `build_dataset`'s
+  (`temp_c, weather_bin, wind_mph, humidity_pct, time_of_day`). `build_dataset`'s
   `_apply_weather_measured` reads `watch_daily.csv` instead of
   `weather_measured.csv` (or we keep emitting `weather_measured.csv` as a
   projection for zero consumer churn — TBD §11).
