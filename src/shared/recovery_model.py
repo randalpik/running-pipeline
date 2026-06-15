@@ -119,6 +119,7 @@ TRANSFERABLE_FEATURES = ['temp_centered', 'fat_marathon', 'fat_race_short',
 REC_MEASURED_PATH = DATA_DIR / 'recovery_measured.csv'
 REC_CAL_PATH      = DATA_DIR / 'long_run_calibration.csv'
 ELEV_MEASURED_PATH = DATA_DIR / 'elevation_measured.csv'
+ALT_DAILY_PATH = DATA_DIR / 'altitude_daily.csv'
 
 # Elevation-enrichment constants (June 2026, watch enrichment —
 # docs/watch-stream-enrichment-plan.md thread 1). The grade-cost model itself
@@ -363,6 +364,32 @@ def per_run_elevation(rec):
                          'elev_loss_pm': loss.fillna(0.0)})
 
 
+def per_run_altitude(df):
+    """Per-run altitude (thousands of feet above sea level) for the hypoxia
+    term: the run's MEASURED mean elevation — midpoint of the watch's smoothed
+    daily min/max (``altitude_daily.csv``, the same per-day layer that feeds
+    the Altitude trend) — where available, falling back to the location's
+    base-elevation constant (the daily ``altitude`` join column) on pre-watch /
+    unmeasured days, then 0 (sea level). Measured per-run beats the
+    per-location constant: it adds within-location resolution and fixes
+    hand-set constant errors (e.g. watershed's 580 ft constant is ~255 ft
+    measured). Aligned to ``df.index``; both sources are in feet."""
+    const = pd.to_numeric(df.get('altitude', pd.Series(np.nan, index=df.index)),
+                          errors='coerce')
+    mid = pd.Series(np.nan, index=df.index, dtype=float)
+    if ALT_DAILY_PATH.exists():
+        try:
+            a = pd.read_csv(ALT_DAILY_PATH, parse_dates=['date'])
+        except (pd.errors.EmptyDataError, FileNotFoundError):
+            a = None
+        if a is not None and not a.empty and 'min_elev_ft' in a.columns:
+            a_mid = ((a['min_elev_ft'] + a['max_elev_ft']) / 2.0)
+            a_mid.index = a['date']
+            a_mid = a_mid[~a_mid.index.duplicated()]
+            mid = df['date'].map(a_mid)
+    return (mid.fillna(const).fillna(0.0) / 1000.0)
+
+
 def days_since(daily, source_dates_sorted):
     if not source_dates_sorted:
         return np.full(len(daily), np.nan)
@@ -454,7 +481,101 @@ def transferable_contributions(df, betas, quality_dates):
 
 # ---------- fit ----------
 
-def fit_recovery_model(daily, races, cs_summary, verbose=True):
+_PHYS_BETAS_CACHE: dict = {}
+
+
+def physical_route_betas():
+    """Pooled flat-footing (``is_offroad``) + altitude (``alt_kft``) pace costs
+    (s/mi), fit jointly on recovery + in-slice long runs on a shared run-pace
+    residual scale (``pace − cs_pace``) with a corpus level dummy (``is_long``)
+    and the recovery era-backfit. THE single source of truth for these two
+    physical constants: the recovery model pins them (``fit_recovery_model``)
+    and the long-run 5K conversion credits them
+    (``workouts.project_long_runs``), so one constant per channel applies
+    everywhere. Pooling lets the large recovery corpus + shared era control
+    discipline the era-confounded long-run off-road rows (which alone read a
+    spurious +12.7); the betas are corpus-stable (footing +4.1→+4.7, altitude
+    +0.87→+0.78 when long runs join).
+
+    Cached per data dir. Degrades gracefully: recovery-only when there are no
+    long-run rows, zeros when the recovery fit is unavailable (sparse profiles,
+    CI without a details cache) — a zero cost is just no correction."""
+    key = str(DATA_DIR)
+    if key in _PHYS_BETAS_CACHE:
+        return _PHYS_BETAS_CACHE[key]
+    from src.shared.workouts import long_run_fit_rows
+    out = {'is_offroad': 0.0, 'alt_kft': 0.0}
+    try:
+        daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
+        races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
+        cs = pd.read_csv(DATA_DIR / 'bayes_cs_summary.csv', parse_dates=['date'])
+        if 'cs_pace_sec' not in cs.columns:
+            cs['cs_pace_sec'] = cs['cs_pace_med'] * 60.0
+        # Recovery side: self-fit (pin_physical=False) ONLY to build the frame
+        # — this is the call that breaks the recursion.
+        fr = fit_recovery_model(daily, races, cs, verbose=False,
+                                pin_physical=False)
+        if fr is None:
+            _PHYS_BETAS_CACHE[key] = out
+            return out
+        rec = fr.rec[~fr.rec['is_pruned']].copy()
+        rec['resid'] = rec['residual_raw']
+        rec['is_long'] = 0.0
+        rows = [rec]
+
+        lr = long_run_fit_rows()
+        if lr is not None and not lr.empty:
+            lr = add_quality_features(lr, quality_category_dates(daily, races))
+            lr['temp_centered'] = (lr['temp_c'] - TEMP_REFERENCE_C).fillna(0.0)
+            lr['tod_is_pm'] = tod_is_pm(lr)
+            _epoch = pd.Timestamp('1970-01-01')
+            cs_pace = np.interp((lr['date'] - _epoch).dt.days.to_numpy(),
+                                (cs['date'] - _epoch).dt.days.to_numpy(),
+                                cs['cs_pace_sec'].values)
+            lr['resid'] = lr['pace_for_fit'] - cs_pace
+            terr = (lr.get('terrain_type', pd.Series('', index=lr.index))
+                    .astype(str).str.strip().str.lower())
+            lr['is_offroad'] = terr.isin(('mixed', 'trail')).astype(float)
+            lr['alt_kft'] = per_run_altitude(lr)
+            terr_c = terr.where(terr.isin(('paved', 'mixed', 'trail')), 'paved')
+            lr['elev_cost'] = elevation_cost(
+                lr['elev_gain_pm'].fillna(0).to_numpy(),
+                lr['elev_loss_pm'].fillna(0).to_numpy(), terr_c.to_numpy())
+            lr['is_long'] = 1.0
+            rows.append(lr)
+
+        base = ['temp_centered'] + [f'fat_{c}' for c in QUALITY_CATS] + ['tod_is_pm']
+        # is_long only when both corpora are present (else collinear w/ const).
+        fit_cols = base + ['is_offroad', 'alt_kft'] + (
+            ['is_long'] if len(rows) > 1 else [])
+        rcols = ['date', 'resid', 'elev_cost', 'is_long'] + base + \
+            ['is_offroad', 'alt_kft']
+        pool = pd.concat([r.reindex(columns=rcols, fill_value=0.0)
+                          for r in rows], ignore_index=True)
+        pool = pool.dropna(subset=['resid', 'elev_cost'] + fit_cols)
+        if len(pool) > len(fit_cols) + 1:
+            X = np.hstack([np.ones((len(pool), 1)),
+                           pool[fit_cols].fillna(0.0).to_numpy(float)])
+            elev = pool['elev_cost'].to_numpy(float)
+            raw = pool['resid'].to_numpy(float)
+            dates = pool['date'].tolist()
+            coef = np.zeros(X.shape[1])
+            for _ in range(BACKFIT_ITERS):
+                cleaned = raw - elev - (X @ coef)
+                era = np.asarray(centered_rolling_mean(
+                    dates, dates, cleaned, ERA_WINDOW_HALF_DAYS,
+                    ERA_WINDOW_MIN_POINTS), dtype=float)
+                coef, *_ = np.linalg.lstsq(X, raw - elev - era, rcond=None)
+            cmap = dict(zip(['const'] + fit_cols, coef))
+            out = {'is_offroad': float(cmap['is_offroad']),
+                   'alt_kft': float(cmap['alt_kft'])}
+    except Exception:
+        pass
+    _PHYS_BETAS_CACHE[key] = out
+    return out
+
+
+def fit_recovery_model(daily, races, cs_summary, verbose=True, pin_physical=True):
     """Fit the recovery factor model on loaded frames.
 
     ``daily`` is the (already era-filtered) daily log; ``races`` is
@@ -621,8 +742,7 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True):
     # era/altitude), so they're isolated via the backfit, not a sequential
     # era-detrend that would absorb them.
     rec['is_offroad'] = terr.isin(('mixed', 'trail')).astype(float)
-    rec['alt_kft'] = (rec.get('altitude', pd.Series(np.nan, index=rec.index))
-                      .astype(float).fillna(0.0) / 1000.0)
+    rec['alt_kft'] = per_run_altitude(rec)
     # PINNED grade-aware elevation cost (shared.elevation_cost): climbing
     # costs, descents refund a terrain-dependent fraction (paved ~full at
     # recovery effort, mixed ~1/3 — the downhill-braking asymmetry). It SCALES
@@ -648,9 +768,25 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True):
     base_features = (['temp_centered']
                      + [f'fat_{c}' for c in QUALITY_CATS]
                      + ['tod_is_pm'])
-    # Fitted physical route terms: flat-footing (is_offroad) + altitude. The
-    # grade cost is the PINNED elev_cost (subtracted as a fixed offset).
-    physical_features = ['is_offroad', 'alt_kft']
+    # Physical route terms: flat-footing (is_offroad) + altitude. Identified
+    # on the POOLED recovery+long-run corpus (physical_route_betas — the
+    # single source of truth, shared with the long-run 5K conversion) and
+    # PINNED here alongside the grade-aware elev_cost, NOT re-fit per call, so
+    # there's one physical constant per channel everywhere it's applied.
+    # pin_physical is False only when physical_route_betas itself calls in to
+    # build the recovery side of the pool — it self-fits is_offroad/alt_kft
+    # then (that's the recovery estimate the pool reads), which is what breaks
+    # the recursion.
+    if pin_physical:
+        pooled = physical_route_betas()
+        pinned_phys = (pooled['is_offroad'] * rec['is_offroad'].fillna(0.0)
+                       + pooled['alt_kft'] * rec['alt_kft'].fillna(0.0)
+                       ).to_numpy(float)
+        physical_features = []
+    else:
+        pooled = None
+        pinned_phys = np.zeros(len(rec))
+        physical_features = ['is_offroad', 'alt_kft']
     feature_cols = base_features + physical_features
 
     rec_fit = rec[~rec['is_pruned']].dropna(
@@ -675,7 +811,10 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True):
     fit_mask = rec.index.isin(rec_fit.index)
     Xall = np.hstack([np.ones((len(rec), 1)),
                       rec[feature_cols].fillna(0.0).to_numpy(float)])
-    elev_all = rec['elev_cost'].to_numpy(float)
+    # Pinned offset: grade-aware elev_cost + (when pinned) pooled
+    # footing/altitude, both subtracted as fixed terms so the backfit isolates
+    # the era trend + fast factors.
+    elev_all = rec['elev_cost'].to_numpy(float) + pinned_phys
     raw_all = rec['residual_raw'].to_numpy(float)
     dates_all = rec['date'].tolist()
     pool_dates = rec.loc[pool_mask, 'date'].tolist()
@@ -691,6 +830,9 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True):
         coef, *_ = np.linalg.lstsq(Xf, target, rcond=None)
     intercept = float(coef[0])
     betas = {f: float(b) for f, b in zip(feature_cols, coef[1:])}
+    if pin_physical:
+        betas['is_offroad'] = float(pooled['is_offroad'])
+        betas['alt_kft'] = float(pooled['alt_kft'])
 
     rec['era_trend'] = era_all
     rec['residual_detrended'] = rec['residual_raw'] - rec['era_trend']
@@ -702,7 +844,9 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True):
               f'(mean era level; era fit on the physically-cleaned residual)')
 
     rec_fit = rec[fit_mask].copy()
-    elev_fit = rec_fit['elev_cost'].to_numpy(float)
+    # Includes the pinned footing/altitude offset so yhat predicts the full
+    # model when physical terms are pinned rather than fit.
+    elev_fit = rec_fit['elev_cost'].to_numpy(float) + pinned_phys[fit_mask]
     era_fit = rec_fit['era_trend'].to_numpy(float)
     resid_target = rec_fit['residual_raw'].to_numpy(float) - era_fit
     yhat = Xf @ coef + elev_fit  # predicts the era-detrended residual

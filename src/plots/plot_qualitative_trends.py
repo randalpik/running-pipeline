@@ -75,7 +75,8 @@ PEAK_DISTANCE_DAYS = 7       # min separation (days) between envelope peaks/trou
 ENVELOPE_GAP_BREAK_DAYS = 21  # bridge gaps up to this (rest days, short breaks);
                               # break the band only across longer layoffs
 WEIGHT_INTERP_MAX_GAP = 7
-RASTER_H = 480                # vertical px resolution of every gradient raster
+RASTER_H = 1080               # vertical px resolution of every gradient raster
+                              # (full-page 1080p; panels can render full-height)
 
 # Solar gradient control colors (RGB). The day's anchor MINUTES come from
 # solar_anchors_local; these are the colors at each anchor. The purples are kept
@@ -362,13 +363,18 @@ def _date_path(dates, yvals):
     """SVG path string over (date, y) points for a layout 'path' shape, split
     into independent subpaths at NaN gaps ('M' restarts the pen). Crisp vector
     alternative to baking a line into a raster (which the stretch-resize blurs).
+
+    y is emitted at 3-decimal precision: the slow (56-day) trends sit on a
+    near-constant value, so rounding to 0.1 quantized them into visible
+    stairsteps on the zoomed-in panels (wind/volume/weight). 3 dp is smooth
+    against any y-range here while keeping the path string compact.
     """
     parts, pen_up = [], True
     for d, v in zip(dates, yvals):
         if v is None or (isinstance(v, float) and np.isnan(v)):
             pen_up = True
             continue
-        parts.append(f"{'M' if pen_up else 'L'}{d.strftime('%Y-%m-%d')},{v:.1f}")
+        parts.append(f"{'M' if pen_up else 'L'}{d.strftime('%Y-%m-%d')},{v:.3f}")
         pen_up = False
     return ' '.join(parts)
 
@@ -537,12 +543,16 @@ def build_panels(full):
         dict(page='weather', row=3, key='humidity', label='Humidity',
              unit='%', type='envelope', series=full['humidity_pct'],
              # Two-stop orange->blue (a white mid-stop washed out the trendline).
-             anchors=[(0.0, '#CC5500'), (100.0, '#10458C')],
+             # Lightened both stops — the originals read darker than the white
+             # trend line against the panel bg.
+             anchors=[(0.0, '#E2701E'), (100.0, '#2C63AE')],
              y_range=[0.0, 100.0]),
         dict(page='weather', row=4, key='wind', label='Wind',
              unit='mph', type='envelope', series=full['wind_mph'],
-             anchors=[(0.0, '#9BD770'), (wind_max / 2, '#F2D034'),
-                      (wind_max, '#E23B2E')],
+             # Darkened/desaturated the green->yellow->red ramp — the originals
+             # read brighter than the white trend line against the panel bg.
+             anchors=[(0.0, '#7BB050'), (wind_max / 2, '#D4B028'),
+                      (wind_max, '#C0342A')],
              y_range=[0.0, wind_max * 1.05]),
         # Other page
         dict(page='other', row=1, key='volume', label='Daily volume',

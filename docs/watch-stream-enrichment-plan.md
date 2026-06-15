@@ -9,7 +9,7 @@ corrections. Three threads from the June 2026 watch-correction work:
 
 | Thread | State |
 |---|---|
-| 1. Elevation enrichment | data layer + **recovery** model SHIPPED; **long-run & race NEXT** |
+| 1. Elevation enrichment | data layer + **recovery** + **long-run** models SHIPPED; **race NEXT** |
 | 2. Corrected mileage | SHIPPED |
 | 3. Terrain backlog | resolved (every route typed; build-join bug fixed) |
 
@@ -115,23 +115,54 @@ the metadata join).
 
 ## NEXT — Thread 1 applications
 
-### A. Long-run 5K conversion
-Replace the route-constant `elev_per_mile × LR_ELEV_SLOPE` (0.17) in
-`long_run_model.py` with the per-run `elevation_cost` engine.
-- **Effort matters here** (unlike recovery, where grade washed out): long runs
-  sit at effort ~0.85–0.98, so use `paved_refund(effort)` per run — between
-  recovery's full refund and race's 0.85. The grade cost is a **live term**.
-- Enter the grade cost as a pace/`t_eff` correction *before* the β_long
-  hyperbola projection (the long-run model's existing race-equivalent path);
-  the distance correction (`corr_miles`/D_eff) already landed — layer grade on
-  top, don't re-correct distance.
-- **Reconsider adding altitude.** It was removed from the long-run model for
-  era-confounding, but the recovery work shows it's identifiable via backfit +
-  footing control, and long-run effort should make it *larger* than recovery's
-  ~1%. Worth a backfit-style fit.
-- Keep elevation / terrain-footing / altitude **separate** (as in recovery) to
-  avoid double-counting the mixed penalty.
-- Same validity gate + location-terrain bucketing.
+### A. Long-run 5K conversion — SHIPPED (June 2026)
+The route-constant `elev_per_mile × 0.17` was replaced by the full physical
+route decomposition (grade + footing + altitude), all **credited as
+flat/sea-level-equivalent time corrections** in `workouts.project_long_runs`
+*before* the β_long projection (`corr_miles`/D_eff distance correction already
+landed; grade layered on top). `long_run_model.py` no longer fits anything
+physical (`LR_ELEV_SLOPE`/`elev_pm_c` removed) — it carries only temp/fatigue.
+
+Hard-won findings (course-corrected several wrong turns — honor these):
+- **Grade** = per-run measured gain/loss through `elevation_cost`, paved refund
+  effort-aware via `paved_refund`. (The premise that long runs are
+  *higher*-effort than recovery was WRONG: by the frontier-pace-fraction
+  metric both center at effort ~0.85, so paved refund lands ~1.0 — same as
+  recovery. The effort ranges fully overlap.)
+- **Footing + altitude can't be fit on long runs alone** — era-confounded
+  (off-road routes cluster in 2016–22; altitude tracks the Boulder era).
+  Naive long-run OLS gives a spurious `is_offroad` +12.7 and a wrong-signed
+  altitude −0.5. The within-2023+-era altitude check (+1.18/kft) confirmed the
+  cross-era −0.5 was pure era confounding.
+- **Effort-dependence of footing/altitude is NOT testable by regression** —
+  effort (pace ÷ race-pace-at-distance) is mechanically the residual being fit
+  (`corr ≈ −0.99`). The marathon/short-fatigue-ratio trick fails here because
+  effort is endogenous, unlike days-since-race.
+- **Resolution — `recovery_model.physical_route_betas()`**: the single source
+  of truth. Pools recovery + in-slice long runs on a shared `pace − cs_pace`
+  scale with an `is_long` level dummy and the recovery era-backfit; the large
+  recovery corpus + shared era control discipline the long-run rows (footing
+  reads +4.7, not +12.7). Pinned constants: **footing +4.78 s/mi**,
+  **altitude +0.86 s/mi/kft** (corpus-stable: recovery-only +4.09/+0.87, both
+  shift <1 se when long runs join — footing-up is the real long-run
+  fatigue-on-rough-terrain signal). **No effort scaling** (ranges coincide →
+  constant-effort transfer, no assumption needed).
+  `fit_recovery_model(pin_physical=True)` now consumes the same betas, so one
+  constant per channel applies in both models (recovery R² unchanged 0.626).
+- **Altitude is per-run MEASURED** (`per_run_altitude`), not a per-location
+  estimate: `alt_kft` = midpoint of the watch's smoothed daily min/max
+  (`altitude_daily.csv`, the layer feeding the Altitude trend), location
+  base-elevation constant only as the pre-watch fallback. Adds within-location
+  resolution and fixes hand-set constant errors (watershed 580→~255 ft). Both
+  recovery and the long-run conversion use it (grade already uses per-second
+  watch gain/loss).
+- Channels kept **separate** (grade / footing / altitude) as in recovery — no
+  double-count; same validity gate + location-terrain bucketing.
+
+Net effect: off-road long runs credited grade(~10)+footing(4.7)+altitude
+(~6.6 at Nederland) ≈ project faster; Boulder paved normalized to sea level
+(+4.2 s/mi credit); the dashboard long-run prediction moved +16.4→+14.8 s/mi
+vs CS. Frontier (fed by long runs) re-levels accordingly.
 
 ### B. Race CS (the prize)
 Watch-covered races → measured grade profile **replaces the XC/Downhill

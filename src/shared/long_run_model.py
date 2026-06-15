@@ -1,10 +1,12 @@
 """Long-run residual regression: ``raw_resid ~ physical route + covariates``.
 
-Fits PHYSICAL route terms (elevation gain per mile) and
-temperature / recent-race-fatigue covariates on long-run pace residuals (vs
-CS-implied), with iterative MAD-based outlier prune. Output is a
+Fits temperature / recent-race-fatigue covariates (and any FITTED physical
+terms in ``LR_PHYS_FITTED``, empty by default) on long-run pace residuals (vs
+CS-implied), with iterative MAD-based outlier prune. Elevation is no longer
+fitted here — it's priced per-run upstream in ``workouts.project_long_runs``
+(physical grade engine) and already lives in ``raw_resid``. Output is a
 SimpleNamespace with ``intercept``, ``phys_coefs``, ``cov_coefs``,
-``elev_ref``, ``rsquared``, ``resid_sd``, ``n_kept``.
+``rsquared``, ``resid_sd``, ``n_kept``.
 
 Distance carries NO term (June 2026): a threshold/knot sweep under the
 physical model showed the old 21mi bin was worse than no distance term
@@ -97,35 +99,26 @@ MIN_COV_N = 30
 # fitted scale instead of two free betas; expanded back to per-category
 # keys in cov_coefs after the fit.
 LR_COVARIATES = ['temp_centered', 'fat_race']
-# Physical route terms: feet of climbing per mile (centered at the in-slice
-# median so the intercept reads as "typical-elevation route"; missing →
-# reference).
+# Physical route terms fitted here. ELEVATION IS NO LONGER ONE OF THEM
+# (June 2026, watch-stream-enrichment §A): the route-constant median-centered
+# slope (0.17·elev_per_mile) that used to live on this residual scale was
+# replaced by the per-run, effort-aware physical grade engine, applied
+# upstream as a TIME correction in workouts.project_long_runs — so raw_resid
+# already carries the flat-equivalent grade correction by the time it reaches
+# this fit. Pricing grade on the run's own pace (before the β un-bias and the
+# hyperbola), with measured per-mile gain/loss and a terrain/effort-aware
+# descent refund, is strictly better than a single pinned slope on a
+# balanced-route constant centered at the era median.
 #
-# The elevation slope is PINNED, not fitted: hilly routes are concentrated
-# in quality-effort eras, so the empirically-fit slope comes out
-# wrong-signed (−0.13, i.e. "hills make you faster") — the same era
-# confounding that sank the route dummies, in continuous form. The pinned
-# value is the paved-route slope from the recovery-side cross-route fit
-# (route-normalization-reference.md: β = −13.7 + 0.17·elev_per_mile +
-# 6.6·is_mixed, R² = 0.70), which is effort-uncontaminated because recovery
-# effort is uniform and recovery routes span eras. Elevation cost is
-# mechanical work, not a physiological state response, so unlike the
-# fatigue betas it transfers across effort types.
-#
-# Altitude was a fitted term until June 2026, REMOVED (Max): on the
-# race-equivalent residual scale its beta flipped sign (−0.47 s/mi per
-# 1000 ft, "altitude makes you faster") — the same era/route confounding,
-# in a third costume (Boulder-era long runs are also Boulder-era effort
-# policy). A cross-check on quality workouts, where Max's approach is
-# more consistent across eras, found altitude honestly dead there too:
-# β −0.37, t = −0.6 with Manhattan Track's 5400 ft filled in (the one
-# at-altitude track tripled the regressor's precision, se 2.1 → 0.64,
-# without moving the estimate; 2σ bounds ≈ [−1.7, +0.9] s/mi per 1000 ft,
-# excluding even textbook altitude costs — consistent with residuals
-# being measured against a CS curve whose races already absorb altitude).
-# So there is no identified altitude effect anywhere to pin from.
-# LR_PHYS_FITTED stays as the (now empty) extension point.
-LR_ELEV_SLOPE = 0.17
+# LR_PHYS_FITTED is the extension point for FITTED physical terms (footing,
+# altitude). Empty by default: altitude was a fitted term until June 2026,
+# REMOVED (Max) — on the race-equivalent residual scale its beta flipped sign
+# (−0.47 s/mi per 1000 ft, "altitude makes you faster"), the same era/route
+# confounding that sank the route dummies (Boulder-era long runs are also
+# Boulder-era effort policy). A quality-workout cross-check found it dead too
+# (β −0.37, t −0.6). Any term added here must clear the identification battery
+# (LOO β-swing, sign sanity, count support, AIC vs no-term, collinearity with
+# the upstream grade cost) and Max's explicit approval before it ships.
 LR_PHYS_FITTED: list = []
 
 
@@ -175,13 +168,13 @@ def load_quality_dates():
 def fit_long_run_model(lr_in, quality_dates=None, fatigue_ratio=None):
     """Fit ``raw_resid ~ physical route + covariates`` on the in-slice long
     runs via OLS, with an iterative MAD-based outlier prune at
-    ``PRUNE_SIGMA`` on the corrected residuals. Physical terms (elevation
-    gain per mile at the pinned ``LR_ELEV_SLOPE``) and
-    covariates (``LR_COVARIATES``: temperature + the ratio-pinned combined
-    race-fatigue decay — see module docstring) are included only when the
-    sample has at least ``MIN_COV_N`` rows; each physical term additionally
-    requires variation in the data. Distance carries no term — see module
-    docstring.
+    ``PRUNE_SIGMA`` on the corrected residuals. Fitted physical terms
+    (``LR_PHYS_FITTED``, empty by default — elevation is priced upstream in
+    project_long_runs, not here) and covariates (``LR_COVARIATES``:
+    temperature + the ratio-pinned combined race-fatigue decay — see module
+    docstring) are included only when the sample has at least ``MIN_COV_N``
+    rows; each physical term additionally requires variation in the data.
+    Distance carries no term — see module docstring.
 
     ``quality_dates`` is the per-category race-date dict from
     ``load_quality_dates()`` / ``recovery_model.quality_category_dates``;
@@ -194,8 +187,7 @@ def fit_long_run_model(lr_in, quality_dates=None, fatigue_ratio=None):
     SimpleNamespace with ``intercept``, ``phys_coefs`` (dict), ``cov_coefs``
     (dict; both empty when gated off; race fatigue appears as per-category
     ``fat_marathon`` / ``fat_race_short`` keys expanded from the single
-    fitted scale), ``fatigue_ratio``, ``elev_ref`` (the in-slice median
-    ft/mi the elevation term is centered at), ``rsquared``, ``resid_sd``,
+    fitted scale), ``fatigue_ratio``, ``rsquared``, ``resid_sd``,
     ``n_kept``.
 
     The augmented frame carries ``route`` (descriptive label only), per-row
@@ -216,28 +208,17 @@ def fit_long_run_model(lr_in, quality_dates=None, fatigue_ratio=None):
         fatigue_ratio = recovery_fatigue_ratio()
     lr_in['fat_race'] = (lr_in['fat_race_short']
                          + fatigue_ratio * lr_in['fat_marathon'])
-    # Physical route terms. Elevation is centered at the in-slice median so
-    # the intercept reads as a typical-elevation route; rows missing
-    # elev_per_mile fall to the reference (contribution 0). Altitude is in
-    # kft, missing = sea level.
-    # .get(): watch profiles' daily.csv may lack the metadata columns
-    # entirely, not just carry NaNs.
-    _nan = pd.Series(np.nan, index=lr_in.index)
-    elev = lr_in.get('elev_per_mile', _nan).astype(float)
-    elev_ref = float(elev.median()) if elev.notna().any() else 0.0
-    lr_in['elev_pm_c'] = (elev - elev_ref).fillna(0.0)
-    # Gate extra terms on sample size, and each physical term additionally
-    # on having any variation (watch profiles without route metadata get a
-    # constant 0 column that can't be fit).
+    # Physical terms (LR_PHYS_FITTED) and covariates enter the fit only when
+    # the sample can support them; each physical term additionally requires
+    # variation (watch profiles without route metadata get a constant column
+    # that can't be fit). Elevation is no longer fitted here — it's priced
+    # upstream in project_long_runs and already lives in raw_resid (see the
+    # LR_PHYS_FITTED comment).
     if len(lr_in) >= MIN_COV_N:
         cov_cols = list(LR_COVARIATES)
         phys_cols = [c for c in LR_PHYS_FITTED if lr_in[c].nunique() > 1]
-        elev_slope = LR_ELEV_SLOPE if lr_in['elev_pm_c'].nunique() > 1 else 0.0
     else:
-        cov_cols, phys_cols, elev_slope = [], [], 0.0
-    # Pinned elevation contribution comes off the target before the fit and
-    # back into the model offset after — see LR_ELEV_SLOPE comment.
-    lr_in['elev_contrib'] = elev_slope * lr_in['elev_pm_c']
+        cov_cols, phys_cols = [], []
     lr_in['route'] = lr_in['location'].where(
         lr_in['location'].isin(qualifying_routes), 'other')
 
@@ -246,7 +227,7 @@ def fit_long_run_model(lr_in, quality_dates=None, fatigue_ratio=None):
         lr_in[phys_cols].astype(float),
         lr_in[cov_cols].astype(float),
     ], axis=1)
-    y = (lr_in['raw_resid'] - lr_in['elev_contrib']).astype(float)
+    y = lr_in['raw_resid'].astype(float)
 
     pruned: set = set()
     coef = np.zeros(X.shape[1])
@@ -269,12 +250,10 @@ def fit_long_run_model(lr_in, quality_dates=None, fatigue_ratio=None):
     coef_map = {str(name): float(c) for name, c in zip(X.columns, coef)}
     intercept = coef_map['Intercept']
     phys_coefs = {c: coef_map[c] for c in phys_cols}
-    if elev_slope:
-        phys_coefs['elev_pm_c'] = elev_slope  # pinned, not fitted
     cov_coefs = {c: coef_map[c] for c in cov_cols}
 
     lr_in['phys_contrib'] = sum((coef_map[c] * lr_in[c] for c in phys_cols),
-                                lr_in['elev_contrib'].copy())
+                                pd.Series(0.0, index=lr_in.index))
     lr_in['cov_contrib'] = sum((cov_coefs[c] * lr_in[c] for c in cov_cols),
                                pd.Series(0.0, index=lr_in.index))
     # Expand the combined fatigue scale back to per-category keys so
@@ -305,7 +284,6 @@ def fit_long_run_model(lr_in, quality_dates=None, fatigue_ratio=None):
         phys_coefs=phys_coefs,
         cov_coefs=cov_coefs,
         fatigue_ratio=fatigue_ratio,
-        elev_ref=elev_ref,
         rsquared=1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan'),
         resid_sd=float(np.sqrt(ss_res / (n_kept - p))) if n_kept > p else float('nan'),
         n_kept=n_kept,

@@ -41,6 +41,14 @@ SCHEMAS = {
            "conditions": 11, "wind": 12, "time_of_day": 13,
            "shoes": 14, "location": 15, "weight": 16,
            "sleep_unit": "cycles"},
+    # 2026 reorg: sleep/temp/wind/time_of_day dropped from the hand log (now
+    # sourced from watch data); remaining columns reordered. Watch override
+    # refills temp_c/time_of_day/wind_mph downstream; sleep is unused.
+    2026: {"month": 2, "day": 3, "sleep": None, "miles": 4, "minutes": 5,
+           "temp": None, "weather": 6, "workout": 8, "partners": 11,
+           "conditions": 7, "wind": None, "time_of_day": None,
+           "shoes": 9, "location": 10, "weight": 12,
+           "sleep_unit": "cycles"},
 }
 
 # Map each year -> (default_sheet_name, schema_era). Sheet name is a fallback;
@@ -55,8 +63,8 @@ YEAR_SCHEMAS = {
     2023: ("Sheet1", 2022),
     2024: ("Data",   2022),
     2025: ("Data",   2025),
-    2026: ("Data",   2025),
-    2027: ("Data",   2025),  # assume 2027 uses same schema as 2025 by default
+    2026: ("Data",   2026),
+    2027: ("Data",   2026),  # assume 2027 uses same schema as 2026 by default
 }
 
 # Authoritative annual totals from Lifetime Miles, for validation.

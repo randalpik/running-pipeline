@@ -412,27 +412,26 @@ function onEdit() {
   var totalPace = [0, 0, 0, 0, 0, 0];
   var totalNum = [0, 0, 0, 0, 0, 0];
   var filledCells = 0;
-  var itemLists = [[], [], [], [], [], [], []]; //List order: weathers, partners, conditions, wind, time of day, shoes, location
-  var countLists = [[], [], [], [], [], [], []]; //Pulled from spreadsheet columns 7, 9, 10, 11, 12, 13, 14
+  var itemLists = [[], [], [], [], []]; //List order: weathers, partners, conditions, shoes, location
+  var countLists = [[], [], [], [], []]; //Pulled from spreadsheet columns (0-indexed) 5, 10, 6, 8, 9
   var locDistances = [];
   var locTimes = [];
   var locPaces = [];
   var shoeDistances = [];
-  var mergedLists = [[], [], [], [], [], [], []];
+  var mergedLists = [[], [], [], [], []];
   var colors = ['#d9ead3', '#d9d2e9', '#fff2cc', '#ffe599', '#f9cb9c', '#fce5cd'];
   var color, i, j, k, n, s, col;
-  var presets = [[], [], [], [], [], []]; //weather, conditions, wind, time of day, shoes, location
+  var presets = [[], [], [], [], []]; //runtype, weather, conditions, shoes, location
 
   const daysInYear = 365;
-  const ts = 17; //total start column in case more parameters get added
+  const ts = 13; //total start column in case more parameters get added
+  const listCols = [5, 10, 6, 8, 9]; //0-indexed data columns for: weather, partners, conditions, shoes, location
 
   presets[0] = {"r": "rec.", "l": "long."};
   presets[1] = {".": "clear", "c": "cloudy", "o": "overcast", "l": "light rain", "h": "heavy rain", "i": "inside", "f": "foggy", "s": "snow"};
   presets[2] = {".": "dry", "w": "wet", "i": "inside", "c": "icy", "m": "muddy", "s": "snow"};
-  presets[3] = {".": "low", "m": "moderate", "h": "high"};
-  presets[4] = {".": "morning", "e": "early", "a": "afternoon", "l": "late"};
-  presets[5] = {".": data[10][ts + 10], "t": data[13][ts + 10], "x": data[12][ts + 10], "r": data[11][ts + 10], "h": data[14][ts + 10]};
-  presets[6] = {
+  presets[3] = {".": data[10][ts + 10], "t": data[13][ts + 10], "x": data[12][ts + 10], "r": data[11][ts + 10], "h": data[14][ts + 10]};
+  presets[4] = {
     ".": data[9][ts + 10],
     "12": "12 south",
     "bc": "boulder creek",
@@ -467,51 +466,49 @@ function onEdit() {
   };
 
   for (i=2;i<daysInYear+2;i++) { //iterates through each day
-    if(data[i][3] !== "") {
+    if(data[i][3] !== "") { //miles column (D)
       filledCells++;
     }
 
-    if(data[i][7].charAt(0) == ".") { //uses code presets to populate info cells if a code was given
-      var runTypePreset = presets[0][data[i][7].charAt(1)];
+    if(data[i][5].charAt(0) == ".") { //weather column (F) holds the shorthand code
+      var runTypePreset = presets[0][data[i][5].charAt(1)];
       if (runTypePreset !== undefined) { //skip workout autofill when char[1] is '.'; user fills it manually
-        sheet.getRange(i+1,9).setValue(runTypePreset);
+        sheet.getRange(i+1,8).setValue(runTypePreset); //workout (H)
       }
-      var weatherPreset = presets[1][data[i][7].charAt(2)];
-      sheet.getRange(i+1,8).setValue(weatherPreset);
-      sheet.getRange(i+1,10).setValue("solo");
-      sheet.getRange(i+1,11).setValue(presets[2][data[i][7].charAt(3)]);
-      sheet.getRange(i+1,12).setValue(presets[3][data[i][7].charAt(4)]);
-      sheet.getRange(i+1,13).setValue(presets[4][data[i][7].charAt(5)]);
-      sheet.getRange(i+1,14).setValue(presets[5][data[i][7].charAt(6)]);
-      sheet.getRange(i+1,15).setValue(presets[6][data[i][7].slice(7)]);
-      data[i][7] = weatherPreset; //force update
+      var weatherPreset = presets[1][data[i][5].charAt(2)];
+      sheet.getRange(i+1,6).setValue(weatherPreset); //weather (F)
+      sheet.getRange(i+1,11).setValue("solo"); //partners (K)
+      sheet.getRange(i+1,7).setValue(presets[2][data[i][5].charAt(3)]); //conditions (G)
+      sheet.getRange(i+1,9).setValue(presets[3][data[i][5].charAt(4)]); //shoes (I)
+      sheet.getRange(i+1,10).setValue(presets[4][data[i][5].slice(5)]); //location (J)
+      data[i][5] = weatherPreset; //force update
       if (runTypePreset !== undefined) {
-        data[i][8] = runTypePreset; //force update
+        data[i][7] = runTypePreset; //force update (workout)
       }
     }
 
     //totals distances and paces for workouts where min/mile pace is stated
-    color = sheet.getRange(i+1,9).getBackground();
+    color = sheet.getRange(i+1,8).getBackground(); //workout (H)
     if(colors.indexOf(color) != -1) {
       n = colors.indexOf(color);
       if (n<2) { //if recovery or long run, gets distance from total workout distance, and adds to total
-        totalMiles[n] += data[i][4];
-        var pace = asTime(data[i][5]*60/data[i][4]);
-        if(data[i][8].includes(".")) { //autofills pace from time and distance if needed, adding hill sprints
-          var newText = data[i][8].replace(".", data[i][8].endsWith(".") ? `@${pace}` : `@${pace}/`);
-          sheet.getRange(i+1,9).setValue(newText);
-          data[i][8] = newText; //to update for later in the script
+        totalMiles[n] += data[i][3]; //miles (D)
+        var pace = asTime(data[i][4]*60/data[i][3]); //minutes (E) over miles (D)
+        if(data[i][7].includes(".")) { //autofills pace from time and distance if needed, adding hill sprints
+          var newText = data[i][7].replace(".", data[i][7].endsWith(".") ? `@${pace}` : `@${pace}/`);
+          sheet.getRange(i+1,8).setValue(newText);
+          data[i][7] = newText; //to update for later in the script
         }
       } else { //if quality workout, gets distance from workout notes, converts to miles, and adds distance to total
-        totalMiles[n] += data[i][8].slice(data[i][8].indexOf(",") + 2, data[i][8].indexOf("@") - 1)/1609;
+        totalMiles[n] += data[i][7].slice(data[i][7].indexOf(",") + 2, data[i][7].indexOf("@") - 1)/1609;
       }
-      totalPace[n] += asSecs(data[i][8], data[i][8].indexOf("@") + 1);
+      totalPace[n] += asSecs(data[i][7], data[i][7].indexOf("@") + 1);
       totalNum[n]++; //increments the number of workouts of that type
     }
 
-    //handles listing of weather, partners, conditions, time of day, and location
-    for (j=0;j<7;j++) { //for clarity, j is the identifier of the type of list being made
-      col = (j == 0) ? 7 : (j + 8); //function to map this identifier to the actual column as it appears in the spreadsheet
+    //handles listing of weather, partners, conditions, shoes, and location
+    for (j=0;j<5;j++) { //for clarity, j is the identifier of the type of list being made
+      col = listCols[j]; //0-indexed column for this list type
       if (data[i][col] != "") {
         if(j == 1) { //handles separating lists of partner names if necessary
           s = data[i][col].split(", ");
@@ -526,21 +523,21 @@ function onEdit() {
           if(itemLists[j].indexOf(data[i][col]) == -1) {
             itemLists[j].push(data[i][col]);
             countLists[j].push(0);
-            if(j == 5) {
+            if(j == 3) {
               shoeDistances.push(0);
             }
-            if(j == 6) {
+            if(j == 4) {
               locDistances.push(0);
               locTimes.push(0);
             }
           }
           countLists[j][itemLists[j].indexOf(data[i][col])]++;
-          if(j == 5) {
-            shoeDistances[itemLists[j].indexOf(data[i][col])] += data[i][4];
+          if(j == 3) {
+            shoeDistances[itemLists[j].indexOf(data[i][col])] += data[i][3];
           }
-          if(j == 6) {
-            locDistances[itemLists[j].indexOf(data[i][col])] += data[i][4];
-            locTimes[itemLists[j].indexOf(data[i][col])] += data[i][5];
+          if(j == 4) {
+            locDistances[itemLists[j].indexOf(data[i][col])] += data[i][3];
+            locTimes[itemLists[j].indexOf(data[i][col])] += data[i][4];
           }
         }
       }
@@ -553,35 +550,35 @@ function onEdit() {
     locPaces[i] = asTime(60 * locTimes[i] / locDistances[i]);
   }
 
-  for (i=0;i<7;i++) { //sorts and prints each list with its count
+  for (i=0;i<5;i++) { //sorts and prints each list with its count
     for(j=0;j<itemLists[i].length;j++) {
-      if(i<5) { //concatenates items and counts into single objects to be sorted, and pace if applicable
+      if(i<3) { //concatenates items and counts into single objects to be sorted, and pace if applicable
         mergedLists[i].push({count: countLists[i][j], item: itemLists[i][j]});
-      } else if (i<6) {
+      } else if (i<4) {
         mergedLists[i].push({count: countLists[i][j], item: itemLists[i][j], distance: shoeDistances[j]});
       } else {
         mergedLists[i].push({count: countLists[i][j], item: itemLists[i][j], pace: locPaces[j], distance: locDistances[j]});
       }
     }
     mergedLists[i] = mergedLists[i].sort((a, b) => a.distance ? b.distance - a.distance : b.count - a.count);
-    var offset = i == 6 ? 1 : 0;
+    var offset = i == 4 ? 1 : 0;
     for(j=0;j<mergedLists[i].length;j++) {
       sheet.getRange(18+j,ts+1+(2*i)+offset).setValue(mergedLists[i][j].item);
       sheet.getRange(18+j,ts+2+(2*i)+offset).setValue(mergedLists[i][j].count);
-      if(i>4) {
+      if(i>=3) {
         sheet.getRange(18+j,ts+3+(2*i)+offset).setValue(mergedLists[i][j].distance);
       }
-      if(i>5) {
+      if(i>=4) {
         sheet.getRange(18+j,ts+4+(2*i)+offset).setValue(mergedLists[i][j].pace);
       }
     }
     for(j=0;j<5;j++) { //erases any list entry that could have been left behind
       sheet.getRange(18+mergedLists[i].length+j,ts+1+(2*i)+offset).setValue("");
       sheet.getRange(18+mergedLists[i].length+j,ts+2+(2*i)+offset).setValue("");
-      if(i>4) {
+      if(i>=3) {
         sheet.getRange(18+mergedLists[i].length+j,ts+3+(2*i)+offset).setValue("");
       }
-      if(i>5) {
+      if(i>=4) {
         sheet.getRange(18+mergedLists[i].length+j,ts+4+(2*i)+offset).setValue("");
       }
     }

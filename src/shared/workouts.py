@@ -35,7 +35,11 @@ import pandas as pd
 from src.shared.paths import DATA_DIR
 from src.shared.hill_model import minetti_net_factor
 from src.shared.cs_projection import cp3_dprime, cp3_implied_cs, cp3_time
-from src.shared.recovery_model import ADMITTED_PARTNERS, MISLOGGED_ROUTES
+from src.shared.elevation_cost import (elevation_cost, paved_refund,
+                                       REFUND_RECOVERY)
+from src.shared.recovery_model import (ADMITTED_PARTNERS, MISLOGGED_ROUTES,
+                                       per_run_elevation, per_run_altitude,
+                                       physical_route_betas)
 from src.parsers.snapshot import find_snapshot, read_snapshot
 
 
@@ -496,6 +500,56 @@ def _load_beta_long():
             float(p['d_thresh_long'].iloc[0]))
 
 
+def _long_run_gated(d):
+    """Long-run rows (``run_type == 'long'``, valid pace/miles) with the
+    ``excluded_reason`` flag (slice / partner / snow). Shared by
+    ``project_long_runs`` (the 5K conversion) and ``long_run_fit_rows`` (the
+    pooled physical-route fit) so both see the same population."""
+    lr = d[d['run_type'] == 'long'].copy().dropna(
+        subset=['recovery_pace_sec_per_mi', 'miles'])
+    snow_w = lr['workout_raw'].astype(str).str.contains('snow', case=False, na=False)
+    snow_c = lr['conditions'].astype(str).str.contains('snow', case=False, na=False)
+    dur_min = lr['recovery_pace_sec_per_mi'] * lr['miles'] / 60.0
+    out_of_slice = (dur_min < LONG_MIN_MINUTES) | (lr['miles'] >= LONG_CEIL_MILES)
+    # Partner exclusion (June 2026): same population logic as the recovery
+    # fit — a long run paced by someone else's targets isn't Max's effort
+    # policy. Solo and varsity admitted (ADMITTED_PARTNERS), matching the
+    # recovery prune; fillna('') for profiles with no partners column data.
+    partners = (lr.get('partners', pd.Series(np.nan, index=lr.index))
+                .fillna('').astype(str).str.strip().str.lower())
+    is_partner = ~partners.isin(ADMITTED_PARTNERS)
+    lr['excluded_reason'] = None
+    lr.loc[out_of_slice, 'excluded_reason'] = 'long_out_of_slice'
+    lr.loc[is_partner, 'excluded_reason'] = 'partners'
+    # Snow takes priority over slice/partners (an out-of-slice snow run gets
+    # 'snow' — the ringed reasons win so the chart explains the exclusion).
+    lr.loc[snow_w | snow_c, 'excluded_reason'] = 'snow'
+    return lr
+
+
+def long_run_fit_rows():
+    """In-slice long-run rows with corrected pace + physical-route features,
+    for the pooled physical-route fit (recovery_model.physical_route_betas).
+    No CS projection — just the honest run-pace residual inputs that put long
+    runs on the same scale as recovery rows. Returns a frame with ``date``,
+    ``pace_for_fit`` (corrected where available), ``elev_gain_pm`` /
+    ``elev_loss_pm``, ``terrain_type``, ``altitude``, ``temp_c``,
+    ``time_of_day``, ``miles``; empty frame if no long runs."""
+    d = pd.read_csv(DAILY_PATH, parse_dates=['date'])
+    lr = _long_run_gated(d)
+    lr = lr[lr['excluded_reason'].isna()].copy()
+    if lr.empty:
+        return lr
+    lr = _lr_watch_corrections(lr)
+    lr['pace_for_fit'] = np.where(lr['corr_pace_sec_per_mi'].notna(),
+                                  lr['corr_pace_sec_per_mi'],
+                                  lr['recovery_pace_sec_per_mi'])
+    ev = per_run_elevation(lr)
+    lr['elev_gain_pm'] = ev['elev_gain_pm']
+    lr['elev_loss_pm'] = ev['elev_loss_pm']
+    return lr
+
+
 def project_long_runs(cs, epoch):
     """Return ALL `run_type == 'long'` rows with absolute pace + 5K-equiv
     projection + `excluded_reason` flag. No filtering by miles or snow.
@@ -522,28 +576,34 @@ def project_long_runs(cs, epoch):
     a stoplight pause doesn't reset. The slice gate stays on LOGGED values:
     the 26.2 ceiling is a logging convention (training marathons are logged
     as exactly 26.2) and corrections never move a run across either bound.
+
+    PHYSICAL ROUTE COST (June 2026, watch-stream-enrichment §A): grade,
+    off-road footing, and altitude are all removed from the run's TIME
+    *before* the β un-bias and the hyperbola, yielding the flat /
+    sea-level-equivalent time the run's fitness actually earned. Grade is each
+    run's measured per-mile gain/loss (per_run_elevation) priced through the
+    shared elevation engine (src/shared/elevation_cost.py); footing and
+    altitude are pinned from the pooled recovery+long physical fit
+    (physical_route_betas — one set of constants shared with the recovery
+    model). This replaces the
+    old route-constant median-centered slope (0.17·elev_per_mile) that lived
+    on the residual scale in long_run_model. The cost is the FULL net grade
+    cost (not deviation-from-median), so a net-uphill run projects faster and
+    a net-downhill (Boston-type) run projects slower — intentionally shifting
+    absolute 5K-equivalent levels and the demonstrated-capability frontier.
+    The descent refund is effort-aware on paved terrain (paved_refund): long
+    runs sit near race effort, so descents refund less than at recovery. The
+    effort uses the run's uncorrected pace to pick the refund that corrects
+    it — a benign one-pass, second-order input on the paved descent arm only
+    (NOT iterated). Mixed/trail use the terrain-default recovery refund (rough
+    footing caps the descent at all efforts). Validity/fallback ride
+    per_run_elevation: a run with no measured grade (no watch, or the
+    watch-failure guard) falls back to the route constant, then 0 — degrading
+    to the prior behavior with no correction, never a crash (GHA has no
+    details cache; see watch-stream-enrichment-plan.md open items).
     """
     d = pd.read_csv(DAILY_PATH, parse_dates=['date'])
-    lr = d[d['run_type'] == 'long'].copy().dropna(subset=['recovery_pace_sec_per_mi', 'miles'])
-
-    snow_w = lr['workout_raw'].astype(str).str.contains('snow', case=False, na=False)
-    snow_c = lr['conditions'].astype(str).str.contains('snow', case=False, na=False)
-    dur_min = lr['recovery_pace_sec_per_mi'] * lr['miles'] / 60.0
-    out_of_slice = (dur_min < LONG_MIN_MINUTES) | (lr['miles'] >= LONG_CEIL_MILES)
-    # Partner exclusion (June 2026): same population logic as the recovery
-    # fit — a long run paced by someone else's targets isn't Max's effort
-    # policy. Solo and varsity admitted (ADMITTED_PARTNERS), matching the
-    # recovery prune; fillna('') for profiles with no partners column data.
-    partners = (lr.get('partners', pd.Series(np.nan, index=lr.index))
-                .fillna('').astype(str).str.strip().str.lower())
-    is_partner = ~partners.isin(ADMITTED_PARTNERS)
-
-    lr['excluded_reason'] = None
-    lr.loc[out_of_slice, 'excluded_reason'] = 'long_out_of_slice'
-    lr.loc[is_partner, 'excluded_reason'] = 'partners'
-    # Snow takes priority over slice/partners (an out-of-slice snow run gets
-    # 'snow' — the ringed reasons win so the chart explains the exclusion).
-    lr.loc[snow_w | snow_c, 'excluded_reason'] = 'snow'
+    lr = _long_run_gated(d)
 
     lr = add_cs(lr, cs, epoch)
     lr = _lr_watch_corrections(lr)
@@ -552,13 +612,60 @@ def project_long_runs(cs, epoch):
     lr['d_m']   = np.where(lr['corr_miles'].notna(),
                            lr['corr_miles'] * 1609.344,
                            lr['miles'] * 1609.344)
+
+    # Physical grade cost (see docstring): price each run's measured per-mile
+    # gain/loss through the shared engine and remove it from the run's TIME,
+    # yielding the flat-equivalent the projection treats as the race.
+    ev = per_run_elevation(lr)
+    lr['elev_gain_pm'] = ev['elev_gain_pm']
+    lr['elev_loss_pm'] = ev['elev_loss_pm']
+    terr = (lr.get('terrain_type', pd.Series(np.nan, index=lr.index))
+            .astype(str).str.strip().str.lower())
+    terr = terr.where(terr.isin(('paved', 'mixed', 'trail')), 'paved')
+    # Effort = CS-implied pace at the run's own distance / run pace (1.0 =
+    # racing this distance). Uncorrected pace by design — a second-order input
+    # to the paved descent refund, one pass, not iterated.
+    t5k_cs = lr['p5k_cs_min'] * 60.0 * 5000.0 / 1609.344
+    cs_mps = cp3_implied_cs(5000.0, t5k_cs.to_numpy(), lr['dp3_t'],
+                            WORKOUT_VMAX_MPS)
+    t_pred = cp3_time(lr['d_m'].to_numpy(float), cs_mps, lr['dp3_t'],
+                      WORKOUT_VMAX_MPS)
+    lr['effort'] = t_pred / lr['t_run']
+    # Refund: effort-aware on paved; terrain-default recovery refund on
+    # mixed/trail. Fully numeric (no NaN) so the engine prices every row.
+    refund = terr.map(REFUND_RECOVERY).astype(float).to_numpy(copy=True)
+    paved = (terr == 'paved').to_numpy()
+    refund[paved] = [paved_refund(e) for e in lr['effort'].to_numpy()[paved]]
+    cost = elevation_cost(lr['elev_gain_pm'].fillna(0.0).to_numpy(),
+                          lr['elev_loss_pm'].fillna(0.0).to_numpy(),
+                          terr.to_numpy(), refund=refund)
+    # Footing + altitude: pinned from the pooled recovery+long physical fit
+    # (physical_route_betas, the single source of truth shared with the
+    # recovery model), credited the same way as grade — removed from the run's
+    # time to get the flat / sea-level-equivalent the projection treats as the
+    # race. Off-road footing is the FLAT-surface penalty on top of the grade
+    # engine's mixed refund-asymmetry (separate channels, no double-count,
+    # exactly as in the recovery decomposition); altitude normalizes Boulder
+    # runs to sea level so the frontier measures fitness, not where Max ran.
+    pb = physical_route_betas()
+    is_offroad = terr.isin(('mixed', 'trail')).astype(float).to_numpy()
+    alt_kft = per_run_altitude(lr).to_numpy()
+    lr['grade_cost_s_per_mi'] = cost
+    lr['footing_cost_s_per_mi'] = pb['is_offroad'] * is_offroad
+    lr['alt_cost_s_per_mi'] = pb['alt_kft'] * alt_kft
+    phys_credit = (cost + lr['footing_cost_s_per_mi'].to_numpy()
+                   + lr['alt_cost_s_per_mi'].to_numpy())
+    t_run_flat = lr['t_run'] - phys_credit * (lr['d_m'] / 1609.344)
+
     # Connected D_eff (watch days; full distance elsewhere) enters the
     # hyperbola the same way enriched workouts do: t_eff = D_eff / v with v
     # the run's mean moving speed. At long-run distances the hyperbola is
     # nearly flat in D_eff so this is a small, one-directional refinement
-    # (~+1-3 s/mi) — the distance calibration does the heavy lifting.
+    # (~+1-3 s/mi) — the distance calibration does the heavy lifting. The
+    # grade cost rides on the run's pace (t_run_flat over the real distance
+    # d_m); D_eff only rescales the fatigue work.
     d_eff = np.where(lr['d_eff_m'].notna(), lr['d_eff_m'], lr['d_m'])
-    t_eff = d_eff / (lr['d_m'] / lr['t_run'])
+    t_eff = d_eff / (lr['d_m'] / t_run_flat)
     # Race-equivalent un-bias (see docstring): β at the run's full distance.
     beta_long, d_thresh = _load_beta_long()
     beta = np.where(lr['d_m'] > d_thresh,
