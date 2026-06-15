@@ -64,7 +64,7 @@ A residual layer on top of CS. Translates each workout, long run, and hill effor
 
 ### Layer 3 — Recovery
 
-Era-windowed regression on recovery-run pace, with a small set of OLS features (temperature, route, recent race exposure, time-of-day). Volume normalizers and bodyweight features were explored and rejected. Captures the slow drift in baseline aerobic fitness independent of race performance.
+Era-windowed regression on recovery-run pace, with a small set of OLS features (apparent/"feels-like" temperature — humidity folded in via the heat index, recent race exposure, time-of-day, pinned physical footing/altitude/elevation, and a pinned wind cost on watch-measured days). Volume normalizers and bodyweight features were explored and rejected. Captures the slow drift in baseline aerobic fitness independent of race performance.
 
 → See `recovery-runs-reference.md`
 

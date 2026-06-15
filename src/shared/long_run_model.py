@@ -81,7 +81,7 @@ from src.shared.plot_window import daily_floor
 from src.shared.recovery_model import (quality_category_dates,
                                        add_quality_features,
                                        fit_recovery_model,
-                                       TEMP_REFERENCE_C)
+                                       temp_centered_feature)
 
 # Min long runs per location for the DESCRIPTIVE 'route' label (locations
 # below this fold into 'other'). No longer a model term — see module
@@ -200,8 +200,10 @@ def fit_long_run_model(lr_in, quality_dates=None, fatigue_ratio=None):
         quality_dates = load_quality_dates()
     lr_in = add_quality_features(lr_in, quality_dates)
     # Missing temp = reference temp (contribution 0) so no row drops out of
-    # the fit for lacking a thermometer reading.
-    lr_in['temp_centered'] = (lr_in['temp_c'] - TEMP_REFERENCE_C).fillna(0.0)
+    # the fit for lacking a thermometer reading. Apparent ("feels-like") temp —
+    # humidity folded in via the heat index, matching the recovery encoding the
+    # temp beta was fit on (felt-°C units).
+    lr_in['temp_centered'] = temp_centered_feature(lr_in).fillna(0.0)
     # Combined race-fatigue regressor: one fitted scale, marathon/short
     # contrast pinned from the recovery fit (see module docstring).
     if fatigue_ratio is None:

@@ -9,10 +9,19 @@ be stale or missing — an import is build-order-independent. Same precedent as
 Model (fit on the era-detrended residual = pace − CS − era_trend):
 
   residual_detrended ~ β_temp · temp_centered
-                     + Σ β_r · route_dummy_r       (n ≥ MIN_ROUTE_N)
                      + β_marathon · fatigue_marathon
                      + β_race    · fatigue_race_short
                      + β_tod     · tod_is_pm
+                     + (pinned) is_offroad·β + alt_kft·β + grade-aware elev_cost
+                     + (pinned) wind_mph · β_wind
+
+``temp_centered`` is APPARENT ("feels-like") temperature — humidity folded in
+via the NWS heat index (``temp_centered_feature`` / ``apparent_temp_c``),
+centered at TEMP_REFERENCE_C. Below 80°F and where humidity is missing it is
+plain air temp, so humidity only moves hot-humid days. Wind enters as a pooled,
+pinned per-mph cost (``wind_beta``) applied where a watch wind reading exists —
+both estimated on the watch-enriched subset but applied as fixed offsets so the
+main fit keeps the full corpus (June 2026).
 
 Three classes of rows are pruned from BOTH the era-trend window contents AND
 the OLS fit (flags are independent — a row can be in multiple classes):
@@ -86,6 +95,9 @@ OUTLIER_MIN_NEIGHBORS      = 5
 
 # ---------- model parameters ----------
 TEMP_REFERENCE_C       = 12.0
+# Wind enters as a pooled, pinned per-mph cost (wind_beta) applied where a
+# watch wind reading exists; calm (0 mph) is the zero-contribution baseline.
+WIND_REFERENCE_MPH     = 0.0
 # Recent-race fatigue uses exponential decay: contribution = exp(−t/τ) at
 # day t post-race, fitted via OLS for amplitude. Per-category τ in days,
 # from empirical curve fits on days-since-last-race vs marathon-revealed
@@ -103,6 +115,53 @@ QUALITY_CATS = ['marathon', 'race_short']
 # experiments). Route and era are intentionally absent — see module docstring.
 TRANSFERABLE_FEATURES = ['temp_centered', 'fat_marathon', 'fat_race_short',
                          'tod_is_pm']
+
+
+def apparent_temp_c(temp_c, humidity_pct):
+    """Apparent ("feels-like") temperature in Celsius — the NWS heat index.
+
+    Clamped: equals the air temperature below 80°F (humidity is physiologically
+    inert when cool — and the heat-index regression isn't defined there) and is
+    never below air temp. Where humidity is missing the air temp is returned
+    unchanged, so pre-watch rows (no humidity) and CI without a watch cache both
+    fall back gracefully to plain temperature.
+
+    Accepts scalars / arrays / Series; returns a float ndarray. NaN air temp
+    propagates to NaN so callers' existing NaN handling is preserved.
+    """
+    t = np.asarray(temp_c, dtype=float)
+    rh = (np.asarray(humidity_pct, dtype=float) if humidity_pct is not None
+          else np.full(t.shape, np.nan))
+    tf = t * 9.0 / 5.0 + 32.0
+    full = (-42.379 + 2.04901523 * tf + 10.14333127 * rh
+            - 0.22475541 * tf * rh - 0.00683783 * tf**2 - 0.05481717 * rh**2
+            + 0.00122874 * tf**2 * rh + 0.00085282 * tf * rh**2
+            - 0.00000199 * tf**2 * rh**2)
+    adj_low = ((13 - rh) / 4) * np.sqrt(np.clip((17 - np.abs(tf - 95.0)) / 17,
+                                                0, None))
+    full = np.where((rh < 13) & (tf > 80) & (tf < 112), full - adj_low, full)
+    adj_high = ((rh - 85) / 10) * ((87 - tf) / 5)
+    full = np.where((rh > 85) & (tf > 80) & (tf < 87), full + adj_high, full)
+    # Use the heat index only where it's defined (≥80°F) AND humidity is known;
+    # elsewhere the air temperature stands, never reduced below it.
+    hi_f = np.where((tf >= 80) & np.isfinite(rh), np.maximum(full, tf), tf)
+    return (hi_f - 32.0) * 5.0 / 9.0
+
+
+def temp_centered_feature(df):
+    """Apparent-temperature feature centered at ``TEMP_REFERENCE_C``.
+
+    The single place temperature is encoded for the model — humidity is folded
+    in here via the heat index, so every consumer (recovery fit, transferable
+    contributions, the physical-betas pool, the long-run model) sees felt
+    temperature in one consistent unit. Preserves NaN where ``temp_c`` is NaN;
+    callers apply ``.fillna(0)`` where they want a zero contribution.
+    """
+    appt = apparent_temp_c(
+        df['temp_c'].to_numpy(dtype=float),
+        df['humidity_pct'].to_numpy(dtype=float)
+        if 'humidity_pct' in df.columns else None)
+    return pd.Series(appt, index=df.index) - TEMP_REFERENCE_C
 
 
 # ---------- watch / route-rule distance corrections ----------
@@ -615,7 +674,7 @@ def transferable_contributions(df, betas, quality_dates):
     """
     df = add_quality_features(df, quality_dates)
     contrib = betas.get('temp_centered', 0.0) * (
-        (df['temp_c'] - TEMP_REFERENCE_C).fillna(0.0))
+        temp_centered_feature(df).fillna(0.0))
     for cat in QUALITY_CATS:
         contrib = contrib + betas.get(f'fat_{cat}', 0.0) * df[f'fat_{cat}']
     contrib = contrib + betas.get('tod_is_pm', 0.0) * tod_is_pm(df)
@@ -657,7 +716,7 @@ def physical_route_betas():
         # Recovery side: self-fit (pin_physical=False) ONLY to build the frame
         # — this is the call that breaks the recursion.
         fr = fit_recovery_model(daily, races, cs, verbose=False,
-                                pin_physical=False)
+                                pin_physical=False, apply_wind=False)
         if fr is None:
             _PHYS_BETAS_CACHE[key] = out
             return out
@@ -669,7 +728,7 @@ def physical_route_betas():
         lr = long_run_fit_rows()
         if lr is not None and not lr.empty:
             lr = add_quality_features(lr, quality_category_dates(daily, races))
-            lr['temp_centered'] = (lr['temp_c'] - TEMP_REFERENCE_C).fillna(0.0)
+            lr['temp_centered'] = temp_centered_feature(lr).fillna(0.0)
             lr['tod_is_pm'] = tod_is_pm(lr)
             _epoch = pd.Timestamp('1970-01-01')
             cs_pace = np.interp((lr['date'] - _epoch).dt.days.to_numpy(),
@@ -718,7 +777,66 @@ def physical_route_betas():
     return out
 
 
-def fit_recovery_model(daily, races, cs_summary, verbose=True, pin_physical=True):
+_WIND_BETA_CACHE: dict = {}
+
+
+def wind_beta():
+    """Pooled wind pace cost (s/mi per mph) estimated on the watch-enriched
+    recovery rows (those carrying a ``wind_mph`` reading, ~2021+).
+
+    Wind is near-orthogonal to temp/fatigue/TOD, so — like the physical route
+    betas — it's pinned and applied as an additive offset only where wind is
+    known (0 elsewhere). That keeps the main fit on the full corpus instead of
+    collapsing it to the ~60% of rows with a watch wind value. Estimated by
+    re-fitting the base features + wind on the watch subset against the model's
+    own fit target (``residual_raw − era − route``), so the slope is net of the
+    other factors (matches the validated diagnostic, +0.29 s/mi per mph).
+
+    Cached per data dir. Degrades to 0.0 (a no-op correction) when there's no
+    watch wind data — e.g. CI without a details cache — so the model still fits,
+    just without the wind channel."""
+    key = str(DATA_DIR)
+    if key in _WIND_BETA_CACHE:
+        return _WIND_BETA_CACHE[key]
+    out = 0.0
+    try:
+        daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
+        races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
+        cs = pd.read_csv(DATA_DIR / 'bayes_cs_summary.csv', parse_dates=['date'])
+        if 'cs_pace_sec' not in cs.columns:
+            cs['cs_pace_sec'] = cs['cs_pace_med'] * 60.0
+        # Standard fit WITHOUT wind — breaks the wind→fit→wind recursion and
+        # gives a residual that's the genuine leftover after every other factor.
+        fr = fit_recovery_model(daily, races, cs, verbose=False,
+                                apply_wind=False)
+        if fr is None:
+            _WIND_BETA_CACHE[key] = out
+            return out
+        rec = fr.rec.copy()
+        rec['target'] = (rec['residual_raw'] - rec['era_trend']
+                         - rec['contrib_route'])
+        base = (['temp_centered'] + [f'fat_{c}' for c in QUALITY_CATS]
+                + ['tod_is_pm'])
+        m = (~rec['is_pruned']) & rec['wind_mph'].notna() & rec['target'].notna()
+        for c in base:
+            m = m & rec[c].notna()
+        s = rec[m]
+        if len(s) > len(base) + 2:
+            X = np.column_stack(
+                [np.ones(len(s))]
+                + [s[c].to_numpy(float) for c in base]
+                + [s['wind_mph'].to_numpy(float) - WIND_REFERENCE_MPH])
+            coef, *_ = np.linalg.lstsq(X, s['target'].to_numpy(float),
+                                       rcond=None)
+            out = float(coef[-1])
+    except Exception:
+        pass
+    _WIND_BETA_CACHE[key] = out
+    return out
+
+
+def fit_recovery_model(daily, races, cs_summary, verbose=True,
+                       pin_physical=True, apply_wind=True):
     """Fit the recovery factor model on loaded frames.
 
     ``daily`` is the (already era-filtered) daily log; ``races`` is
@@ -780,7 +898,11 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True, pin_physical=True
                   f'{len(moved)} moved rows)')
 
     # Features (sleep_centered and miles_centered are intentionally NOT computed)
-    rec['temp_centered'] = rec['temp_c'] - TEMP_REFERENCE_C
+    # Temperature is encoded as apparent ("feels-like") temp — humidity folded
+    # in via the heat index (temp_centered_feature). Below 80°F and where
+    # humidity is missing this is plain air temp, so the change is confined to
+    # hot-humid days.
+    rec['temp_centered'] = temp_centered_feature(rec)
     rec['residual_raw'] = rec['pace_for_fit'] - rec['cs_pace_sec']
 
     # Time-of-day binary indicator: 1 for PM (afternoon/late), 0 for AM
@@ -932,6 +1054,18 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True, pin_physical=True
         physical_features = ['is_offroad', 'alt_kft']
     feature_cols = base_features + physical_features
 
+    # Wind: pooled, pinned per-mph cost applied as a fixed offset where a watch
+    # wind reading exists (0 elsewhere — calm baseline), so the full corpus
+    # stays in the fit. apply_wind is False only on the bootstrap calls
+    # (wind_beta / physical_route_betas) that build the pools — breaks recursion.
+    if apply_wind:
+        wind_b = wind_beta()
+        wind_off = (wind_b * (rec['wind_mph'].fillna(WIND_REFERENCE_MPH)
+                              - WIND_REFERENCE_MPH)).to_numpy(float)
+    else:
+        wind_b = 0.0
+        wind_off = np.zeros(len(rec))
+
     rec_fit = rec[~rec['is_pruned']].dropna(
         subset=feature_cols + ['residual_raw', 'elev_cost']).copy()
     if len(rec_fit) <= len(feature_cols) + 1:
@@ -955,9 +1089,9 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True, pin_physical=True
     Xall = np.hstack([np.ones((len(rec), 1)),
                       rec[feature_cols].fillna(0.0).to_numpy(float)])
     # Pinned offset: grade-aware elev_cost + (when pinned) pooled
-    # footing/altitude, both subtracted as fixed terms so the backfit isolates
-    # the era trend + fast factors.
-    elev_all = rec['elev_cost'].to_numpy(float) + pinned_phys
+    # footing/altitude + the pinned wind cost, all subtracted as fixed terms so
+    # the backfit isolates the era trend + fast factors.
+    elev_all = rec['elev_cost'].to_numpy(float) + pinned_phys + wind_off
     raw_all = rec['residual_raw'].to_numpy(float)
     dates_all = rec['date'].tolist()
     pool_dates = rec.loc[pool_mask, 'date'].tolist()
@@ -976,6 +1110,7 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True, pin_physical=True
     if pin_physical:
         betas['is_offroad'] = float(pooled['is_offroad'])
         betas['alt_kft'] = float(pooled['alt_kft'])
+    betas['wind_mph'] = wind_b
 
     rec['era_trend'] = era_all
     rec['residual_detrended'] = rec['residual_raw'] - rec['era_trend']
@@ -987,9 +1122,10 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True, pin_physical=True
               f'(mean era level; era fit on the physically-cleaned residual)')
 
     rec_fit = rec[fit_mask].copy()
-    # Includes the pinned footing/altitude offset so yhat predicts the full
-    # model when physical terms are pinned rather than fit.
-    elev_fit = rec_fit['elev_cost'].to_numpy(float) + pinned_phys[fit_mask]
+    # Includes the pinned footing/altitude AND wind offsets so yhat predicts the
+    # full model when those terms are pinned rather than fit.
+    elev_fit = (rec_fit['elev_cost'].to_numpy(float) + pinned_phys[fit_mask]
+                + wind_off[fit_mask])
     era_fit = rec_fit['era_trend'].to_numpy(float)
     resid_target = rec_fit['residual_raw'].to_numpy(float) - era_fit
     yhat = Xf @ coef + elev_fit  # predicts the era-detrended residual
@@ -1011,6 +1147,9 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True, pin_physical=True
         print(f'\n  Per-day factors:')
         for f in base_features:
             print(f'    {f:18s}  β = {betas[f]:+.3f}')
+        if apply_wind:
+            print(f'    {"wind_mph":18s}  β = {betas["wind_mph"]:+.3f} s/mi per '
+                  f'mph (pinned; applied where a watch reading exists)')
         print(f'\n  Physical route model (replaces per-route dummies):')
         print(f'    elevation grade: PINNED grade-aware cost '
               f'(shared.elevation_cost); mean {rec_fit["elev_cost"].mean():+.1f} '
@@ -1028,6 +1167,8 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True, pin_physical=True
     rec['contrib_quality'] = sum(
         betas[f'fat_{c}'] * rec[f'fat_{c}'].fillna(0) for c in QUALITY_CATS)
     rec['contrib_tod'] = betas['tod_is_pm'] * rec['tod_is_pm'].fillna(0)
+    # Wind cost (s/mi); 0 where no watch wind reading exists or on calm days.
+    rec['contrib_wind'] = wind_off
 
     # Physical route cost, split into 3 independently-toggleable channels:
     #   elevation = NET grade at the paved/full-refund baseline,

@@ -314,11 +314,35 @@ evidence.** Each entry below documents the test and rationale.
   truly anomalous days, and adding a binary feature for a small
   structural shift wasn't worth the knob.
 
-- **Wind (high)** — tested April 2026. n=23 days, Δmean +0.27 vs clear,
-  p=0.93. Effectively zero. Even the single "extreme" wind row sits
-  just under the ±45 outlier threshold. Wind is logged sparsely (only
-  ~15% of recent runs have a value), so the test is power-limited, but
-  the effect — if any — is well below what we'd care about.
+- **Wind — ADOPTED June 2026.** The April 2026 qualitative-bin test
+  (n=23, Δmean +0.27 vs clear, p=0.93) failed on power, not effect: hand
+  logging only captured ~15% of runs. With continuous watch `wind_mph`
+  now on ~60% of recovery days (n=1446 unpruned), wind comes in at
+  **+0.29 s/mi per mph (t=2.6, p=0.009)** — ~+3.3 s/mi at 15 mph. It's
+  near-orthogonal to temp (r=−0.04) so it leaves the temp beta untouched,
+  and it pulls ~0.3 s/mi out of the PM (tod) effect (afternoons run
+  windier). Wired as a **pooled, pinned per-mph cost** (`wind_beta`),
+  estimated on the watch subset but applied as a fixed offset only where a
+  watch reading exists — so the main fit keeps the full corpus instead of
+  collapsing to watch-era rows. Calm (0 mph) is the zero-contribution
+  baseline. Degrades to 0 (no-op) without watch data.
+
+- **Humidity → heat index — ADOPTED June 2026 (as a temp transform, not
+  a standalone term).** A standalone humidity main effect is small
+  (~+0.04 s/mi/%, t=2.6) and confounded with mild-dry-Boulder-ideal days;
+  the hypothesized temp×humidity *compounding* interaction is **not
+  supported and reverses** in Max's data (humid−dry is +2.8 s/mi at mild
+  temps but −0.7 at ≥22°C — his hot days are dry Boulder/altitude, and
+  the hot-humid travel days e.g. Baton Rouge June 2024 carry no penalty
+  beyond temp once the lost sea-level/altitude bonus is accounted for).
+  So humidity enters only by replacing air temp with **apparent
+  ("feels-like") temperature** (NWS heat index, `apparent_temp_c`),
+  centered at 12°C. Adopted on principle (validated physiological
+  construct, correct-by-default for humid-climate profiles, sharpens the
+  residual toward behavior) rather than fit: it touches only ~80 hot-humid
+  rows (max +4.8°C felt), shrinks the temp beta ~1.5% (+0.241→+0.239), and
+  every other beta holds to <0.1%. Below 80°F and where humidity is
+  missing it equals plain air temp.
 
 - **Shoe age** (cumulative miles in this physical pair before the run) —
   tested April 2026. n=1671 runs across 18 pairs with ≥30 runs each,
@@ -699,8 +723,9 @@ in joint OLS, not just bivariate.
 - Tighter era window (would absorb cross-sectional signal)
 - Linear or hard-cutoff fatigue decay (replaced with exponential —
   empirically better-shaped, no arbitrary cutoff)
-- Rejected weather/wind/sleep features without a concrete new
-  hypothesis or data improvement
+- Rejected sleep features without a concrete new hypothesis or data
+  improvement (wind and humidity were re-tested with richer watch data
+  and adopted June 2026 — see rejected/adopted list above)
 
 ## Naming notes
 
