@@ -22,8 +22,8 @@ disqualified — see DISQUALIFIED):
     noise-mangled blocks, GPS-inflation/deflation lap-ratio rescales, and
     GPS-freeze distance restoration.
  4. Extents snap to 100m multiples (±75m), each variant priced by Max's
-    rep-length prior: tier1 {200,300,400,500,800,1600} free, other ×200
-    cheap, other ×100 expensive.
+    rep-length prior: tier1 {200,300,400,800,1600} free, tier2
+    {100,500,other ×200} cheap, other ×100 expensive.
  5. RECONCILIATION (the invariant): a segment-grouped DP picks per-block
     candidates + optional fragments so the day total EXACTLY equals the
     hand-logged quality distance (target snapped to 100m), minimizing
@@ -80,7 +80,13 @@ MARGIN = 0.85         # refined score must be <= 85% of grid-edge score
 MIN_TRIM = 80.0       # m, minimum leading-jog run to trim at a segment start
 MIN_JOG_EST = 60.0    # m, jog gap needed to estimate a local jog level
 
-TIER1 = {200, 300, 400, 500, 800, 1600}
+TIER1 = {200, 300, 400, 800, 1600}
+# Max runs 100s only occasionally (descending-ladder tails) and 500s only in
+# continuous fartlek (never as structured intervals/reps) — so both are
+# plausible-but-non-standard lengths: tier-2, not free. Demoting 500 is what
+# lets a spurious 100m float glued onto a 400 (read as a "500") lose to the
+# true 400 in reconciliation, instead of forcing the error onto a neighbour.
+TIER2 = {100, 500}
 ALT_W, OPT_W = 2.0, 0.5
 
 # Days adjudicated by Max (June 2026) as not worth watch enrichment: the
@@ -515,6 +521,37 @@ def refine_blocks(blocks, cs_cut):
                 blk[5].append((d_start, e))
                 break
 
+        # interior-relative trailing-float trim: the block's tail decelerated
+        # into a float — slower than the rep core but UNDER the absolute CS
+        # cutoff, so the 2-means glued it on (the trailing-jog trim above,
+        # keyed on cs_cut, can't see a sub-cutoff float) — while real jog lies
+        # past the block end. Cut at the START of the trailing contiguous run
+        # above core+45 (scan back from d_end, NOT the first interior window
+        # over it — an interior dead-zone spike followed by clean rep must not
+        # move the boundary). Only for blocks that do NOT reach the segment
+        # end (a watch stop pins the rep there); over-reaching at_end blocks
+        # are handled by the sibling-rep prior below.
+        if not at_end and seg.d1 - d_end >= 150:
+            bw = seg.chunk_paces(d_start, d_end)
+            core = (statistics.quantiles(bw, n=4)[0] if len(bw) >= 4
+                    else statistics.median(bw)) if bw else None
+            beyond = jog_level_for_gap(seg, d_end, seg.d1)
+            if core is not None and beyond is not None and beyond > core + 90:
+                fw = []
+                x = d_start
+                while x + FINE_W <= d_end:
+                    fw.append((x, seg.pace(x, x + FINE_W)))
+                    x += CHUNK
+                thr = core + 45
+                if fw and fw[-1][1] is not None and fw[-1][1] > thr:
+                    k = len(fw) - 1
+                    while k >= 0 and fw[k][1] is not None and fw[k][1] > thr:
+                        k -= 1
+                    cut = fw[k + 1][0]
+                    if (cut - d_start >= 200 and d_end - cut >= 80
+                            and abs(cut - d_end) >= 40):
+                        blk[5].append((d_start, cut))
+
         # valley split: a brief jog valley bridged by a trailing stride into
         # the watch stop (rep + jog + stride reads as one fast block).
         if at_end and d_end - d_start <= 800:
@@ -585,9 +622,15 @@ def refine_blocks(blocks, cs_cut):
                     blk[5].append((alt_start, best_e))
 
     # sibling-jog prior: trailing jogs are consistent within a day; the
-    # day-median jog length pins rep extents — but only on noise-mangled
-    # blocks (window-pace IQR > 60 s/mi). Ungated, it overthrows verified
-    # structures with cheap bogus alternatives.
+    # day-median jog length pins rep extents. Fires on two evidence patterns
+    # (gated — ungated it overthrows verified structures with cheap bogus
+    # alternatives): (a) noise-mangled blocks (window-pace IQR > 60 s/mi);
+    # (b) an at_end block whose proposed rep (d1 - J) matches the day's clean
+    # SIBLING rep length — a uniform Nx workout where one segment's recovery
+    # jog got bridged onto the rep (a fast dip dropping below the cluster
+    # threshold) so the coarse block over-reached to the segment end. The
+    # sibling match is robust to a noisy/gentle recovery that jog-depth gates
+    # miss (the rep core + the consistent segment length carry it).
     last_in_seg = {}
     for blk in blocks:
         sid = id(blk[0])
@@ -595,6 +638,10 @@ def refine_blocks(blocks, cs_cut):
             last_in_seg[sid] = blk
     tails = [blk[0].d1 - blk[2] for blk in last_in_seg.values()
              if blk[0].d1 - blk[2] >= 150]
+    # clean sibling rep lengths: last-block extents that end before the
+    # segment end (a watch stop pinned the rep — not over-reached)
+    sib_reps = [blk[2] - blk[1] for blk in last_in_seg.values() if not blk[4]]
+    sib_med = statistics.median(sib_reps) if len(sib_reps) >= 2 else None
     if len(tails) >= 3:
         J = statistics.median(tails)
         for blk in last_in_seg.values():
@@ -607,20 +654,24 @@ def refine_blocks(blocks, cs_cut):
             while x + FINE_W <= blk[2]:
                 wins.append(seg.pace(x, x + FINE_W))
                 x += CHUNK
-            if len(wins) >= 4:
-                qs = statistics.quantiles(wins, n=4)
-                if qs[2] - qs[0] > 60:
-                    blk[5].append((blk[1], alt_e))
+            noise_mangled = (len(wins) >= 4
+                             and statistics.quantiles(wins, n=4)[2]
+                             - statistics.quantiles(wins, n=4)[0] > 60)
+            sibling_match = (blk[4] and sib_med is not None
+                             and abs((alt_e - blk[1]) - sib_med) <= 75)
+            if noise_mangled or sibling_match:
+                blk[5].append((blk[1], alt_e))
     return blocks
 
 
 # ---------- candidates (snap variants + distance-scale corrections) ----------
 
 def tier_penalty(L):
-    """Max's rep-length prior: tier1 free, other x200 cheap, other x100 dear."""
+    """Max's rep-length prior: tier1 free, tier2 (100/500/other x200) cheap,
+    other x100 dear."""
     if L in TIER1:
         return 0.0
-    if L % 200 == 0:
+    if L in TIER2 or L % 200 == 0:
         return 0.6
     return 2.5
 
