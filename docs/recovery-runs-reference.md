@@ -21,11 +21,12 @@ curve; right panel shows residual (pace − CS) vs flat zero.
 ## Files
 
 - `make_recovery_plots.py` — single script. Reads `daily.csv`, `races.csv`,
-  `bayes_cs_summary_{tag}.csv`. Writes `recovery_pace.html` and
-  `route_betas_{tag}.csv` (per-route empirical betas, recovery-only,
-  effort-uncontaminated — consumable by downstream long-run TQ work, see
-  `route-normalization-reference.md`). Default invocation: `python
-  make_recovery_plots.py --tag v11`. Runtime: seconds.
+  `bayes_cs_summary_{tag}.csv`. Writes `recovery_pace.html`. Default
+  invocation: `python make_recovery_plots.py --tag v11`. Runtime: seconds.
+  The model itself (the physical route channels + the fitted confounds) lives
+  in `recovery_model.py`; `physical_route_betas()` there is the single source
+  of truth for the footing/altitude constants shared with the long-run and
+  race conversions (see `route-normalization-reference.md`).
 
 Location metadata (display_name, city_state, elev_per_mile, altitude,
 terrain_type) is read directly from columns on `daily.csv` — populated
@@ -61,22 +62,35 @@ job to within its window.
 
 ```
 residual_detrended ~ β_temp     · temp_centered
-                   + Σ β_r      · route_dummy_r       (n ≥ MIN_ROUTE_N)
+                   + β_foot     · is_offroad          (pinned, physical)
+                   + β_alt      · altitude_regressor  (pinned, physical)
+                   +              elev_cost            (pinned, grade-aware)
                    + β_marathon · fatigue_marathon    (exp(−t/τ_mar))
                    + β_race     · fatigue_race_short  (exp(−t/τ_rs))
                    + β_tod      · tod_is_pm
 ```
+
+The route handling is a **physical, era-free model** (June 2026 — replaced
+the per-route dummies; see the "Physical route model" subsection below). The
+temp / fatigue / TOD terms are the fast-varying, era-immune confounds fitted
+on the era-detrended residual; the three physical channels (footing,
+altitude, grade) are pinned from `recovery_model.physical_route_betas()` and
+consumed via `fit_recovery_model(pin_physical=True)`.
 
 - **Temperature**: linear, reference 12°C. β ≈ +0.28 sec/mi per °C from
   reference. Real but small — captures roughly 25% of the seasonal pace
   pattern; the rest is summer-training-intensity confound that era trend
   absorbs.
 
-- **Route dummies**: one per location with n ≥ 13 recovery runs. 12
-  qualifying routes typically. Coefficients range from −10 (centennial,
-  fast flat Nashville) to +27 (banff, altitude+terrain) sec/mi. Recovery-
-  only by design — see `route-normalization-reference.md` for why long
-  runs are excluded from the route-beta fit.
+- **Route handling — physical, era-free model** (June 2026): the per-route
+  dummies were **removed** and replaced by three physical channels that
+  re-explain the route variance without any per-route knob. See the
+  "Physical route model" subsection below for the full decomposition and why
+  the fit is a backfit. The three channels are footing (`is_offroad`),
+  altitude, and a grade-aware `elev_cost`; the first two are pinned from
+  `recovery_model.physical_route_betas()` (the single source of truth shared
+  with the long-run and race conversions), the third is imported from
+  per-mile elevation data.
 
 - **Recent race** (renamed from "Recent effort" in April 2026): two
   categories — marathon and race_short — using **exponential decay
@@ -92,6 +106,73 @@ residual_detrended ~ β_temp     · temp_centered
   `fat_long` to noise (long runs are predominantly morning, so the
   morning-slowness signal had been wrongly absorbed by long-run fatigue
   before TOD was in the model). `fat_long` removed in the same iteration.
+
+### Physical route model (June 2026 — replaced per-route dummies)
+
+The watch-stream enrichment work (`docs/watch-stream-enrichment-plan.md`,
+now complete) retired the per-route dummies in favour of a **physical,
+era-free** route model. The route's pace cost is no longer a hand-set
+`elev_per_mile × constant` or a fitted per-location offset — it decomposes
+into three physical channels that apply identically across eras (off-road
+routes cluster early/sea-level, paved/altitude in the Boulder era, so the
+dummies were partly encoding the era trend itself).
+
+**Fit via a backfit.** The era trend is a temporal smoother, and footing /
+altitude vary on the same era timescale, so a one-pass era-detrend *absorbs*
+them (footing collapsed to 0). The model is fit by **iterating the era
+smoother against the parametric factors** (era ↔ factors) until they
+stabilize, which isolates the physical terms from the overlap years. The
+fast-varying confounds (temp / fatigue / TOD) are era-immune and fitted
+freely; the physical channels are pinned.
+
+**Channels:**
+
+- **Off-road footing** (`is_offroad`, the mixed+trail binary — bucket every
+  run by its LOCATION `terrain_type`, never by surface): the flat-surface
+  penalty for running on non-paved ground, ≈ **+4.78 sec/mi**. Pinned, not
+  fitted in this model.
+- **Altitude** (hypoxia): ≈ **+2.28 sec/mi per 1000 ft above a ~3000 ft
+  threshold** (VO2max is ~flat below the threshold, then declines roughly
+  linearly — the shape is science-pinned, only the slope is data-fit).
+  Below ~3000 ft the term is exactly 0. Pinned, not fitted here. (Threshold-
+  curve derivation lives with the engine — → see `route-normalization-reference.md`.)
+- **Grade-aware `elev_cost`** (pinned): scales with each route's *per-run
+  measured* gain/loss, so a hilly-mixed route costs far more than a flat one.
+  Imported from the per-mile elevation data (where gain and loss separate),
+  not chosen — gain/loss are collinear within loops at run-level. The
+  `elevation_cost` formula, the terrain×effort descent refund, and the
+  altitude threshold-curve derivation are not duplicated here →
+  see `route-normalization-reference.md` (elevation engine).
+
+**`physical_route_betas()` is the single source of truth** for the footing
+and altitude constants. It pools recovery + in-slice long runs on a shared
+`pace − cs_pace` scale (with an `is_long` level dummy and the recovery
+era-backfit), so one constant per channel applies in both the recovery model
+and the long-run / race conversions. `fit_recovery_model(pin_physical=True)`
+consumes those pinned betas. (Recovery-only would give footing +4.09 /
+altitude +0.87; both shift <1 se when the long runs join.)
+
+**Per-run features (the physical channels read these, not per-location
+constants):**
+
+- `per_run_elevation` — gain/loss in ft/mi, with the fallback chain
+  per-run watch-measured → route-median → the route's `elev_per_mile`
+  constant → 0.
+- `per_run_altitude` — the midpoint of the watch's smoothed daily min/max
+  (from `altitude_daily.csv`, the layer feeding the Altitude trend), with the
+  location base-elevation constant as the pre-watch fallback, then 0. This is
+  per-run MEASURED, not a per-city estimate, so it adds within-location
+  resolution and fixes hand-set constant errors.
+
+**Elevation source — barometric, not DEM.** Recovery runs use the watch's
+barometric elevation directly: across a large recovery corpus the per-run
+barometric noise averages out. Only RACES throw away the barometric vertical
+and resample from a DEM along the GPS track (the per-race net is too noisy to
+trust on a single course) — see the cache/route references for that path.
+
+**Fit quality:** R²_detrended ≈ 0.298, raw ≈ 0.622 — essentially unchanged
+from the old per-route-dummy model. The physical terms re-explain the route
+variance era-free, so nothing was lost by dropping the dummies.
 
 ### Pruning: three classes, can overlap
 
@@ -425,7 +506,7 @@ The scaffold itself owns the date header, the CS-pace / Trend-pace section, and 
 ```
 daily.csv ──┐
 races.csv ──┼─→ make_recovery_plots.py ─→ recovery_pace.html
-bayes_cs_   │                            └→ route_betas_{tag}.csv
+bayes_cs_   │
 summary.csv ┘
 ```
 
@@ -435,12 +516,16 @@ Single-pass:
 3. Compute `is_bad_cond`, `is_partner_run`, `tod_is_pm`
 4. Compute `is_outlier_loo` against clean neighbor pool (LOO 28d)
 5. Combine: `is_pruned = is_bad_cond | is_partner_run | is_outlier_loo`
-6. Determine qualifying routes (n ≥ MIN_ROUTE_N on non-pruned subset)
-7. Compute era trend (centered rolling mean over non-pruned pool)
+6. Pin the physical route channels from `physical_route_betas()` (footing,
+   altitude); attach the per-run `per_run_elevation` / `per_run_altitude`
+   features for the grade-aware `elev_cost`
+7. Compute era trend (centered rolling mean over non-pruned pool), backfit
+   against the physical channels
 8. Compute exponential fatigue features (per-category τ)
-9. Fit OLS on era-detrended residual using non-pruned, non-NaN rows
-10. Build per-point contribution channels (5: temp, route, recent_race,
-    tod, era — order matches JS `FACTOR_ORDER`)
+9. Fit the era-immune confounds (temp/fatigue/TOD) on the era-detrended
+   residual using non-pruned, non-NaN rows, with the physical channels pinned
+10. Build per-point contribution channels (temp, route [grade+footing+
+    altitude], recent_race, tod, era — order matches JS `FACTOR_ORDER`)
 11. Render plot with embedded JS for normalization toggles, visibility
     toggles, custom tooltip, and trend recomputation
 
@@ -453,34 +538,20 @@ fat_marathon        +17.0       exp(−t/6) decay from marathon
 fat_race_short       +8.7       exp(−t/5) decay from short race
 tod_is_pm            −4.7       sec/mi for afternoon/late vs early/morning
 
-Route offsets (vs unspecified-location baseline):
-  centennial         −10.1     n≈519 — Nashville flat/road
-  baton rouge         −9.6     n≈20  — Nashville-era flat-paved
-  east boulder        −7.1     n≈394 — Boulder flat
-  mccabe              −6.8     n≈400 — Nashville rolling
-  lakefront           −3.7     n≈216 — Chicago lakefront
-  nike>nature         +4.6     n≈51  — Redmond rolling
-  english hill        +6.8     n≈140 — Redmond hilly
-  river trail         +8.0     n≈32  — Sammamish River Trail
-  nike>powerline     +11.2     n≈82  — Redmond hilly
-  suburbia           +12.5     n≈108 — Redmond very hilly
-  boulder creek      +13.1     n=14  — Boulder creek path
-  banff              +26.8     n≈25  — altitude + terrain
+Physical route channels (pinned, not fitted here — from physical_route_betas):
+  is_offroad          +4.78     sec/mi flat-surface footing (mixed+trail)
+  altitude            +2.28     sec/mi per 1000 ft above the ~3000 ft threshold
+  elev_cost           (per-run) grade-aware, scales with measured gain/loss
 
-R² on detrended:    0.323
-R² on raw residual: 0.542
-fit n ≈ 2,231
-unique pruned: 281 (96 bad-cond, 170 partner, 32 outlier; classes overlap)
+R² on detrended:    0.298
+R² on raw residual: 0.622
 ```
 
 Note: numbers shift slightly between rebuilds as the locations sheet
 evolves and additional days log into the high-volume routes. Don't
 treat the table as authoritative — re-run the plotter for current
-values.
-
-Side-output: `route_betas_{tag}.csv` writes the per-route betas in a
-3-column flat file (`route, n, beta_sec_per_mi`) for consumption by
-downstream tooling.
+values. The footing/altitude constants are pinned from
+`physical_route_betas()`, so they move only when that pooled fit is re-run.
 
 ## Findings
 

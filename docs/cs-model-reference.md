@@ -400,21 +400,28 @@ timescale are cleanly visible. Findings:
   1600: fit degenerates (MAD prune keeps 12/26 near-identical track
   miles; its "significant" beta is an artifact, not a finding).
   10k+HM pooled: +0.08 ± 0.25, n = 18. No usable temp beta anywhere.
-- **Elevation gain: CLOSED (June 2026)** — not fittable (26/245 race
-  rows carry elev_per_mile, and it's location-level, not course-level;
-  only ~28 road races are even fillable by log-location key, nearly all
-  flat), and the acid test fails: Deception Pass HM (2016-04-02,
-  1:51:32, ~275 ft/mi by Max's recollection) stays excluded under every
-  defensible correction. The full calculation: Minetti net factor for
-  3600 ft up+down over the HM = 1.138 (a 13.8% time penalty — bigger
-  than the 8% XC correction); stacking terrain × climb (1.08 × 1.138 =
-  1.229) brings the residual from +114 to +61 s/mi at the 5K anchor —
-  ~+866s on the exclusion metric, still well over the +500s HM
+- **Elevation gain: categorical regression CLOSED (June 2026) — but a
+  per-run measured correction now SHIPS** (see "Race physical correction"
+  below). The *categorical/whole-corpus* approach was never fittable
+  (26/245 race rows carry elev_per_mile, and it's location-level, not
+  course-level; only ~28 road races are even fillable by log-location
+  key, nearly all flat), and its acid test failed: Deception Pass HM
+  (2016-04-02, 1:51:32, ~275 ft/mi by Max's recollection) stays excluded
+  under every defensible correction. The full calculation: Minetti net
+  factor for 3600 ft up+down over the HM = 1.138 (a 13.8% time penalty —
+  bigger than the 8% XC correction); stacking terrain × climb (1.08 ×
+  1.138 = 1.229) brings the residual from +114 to +61 s/mi at the 5K
+  anchor — ~+866s on the exclusion metric, still well over the +500s HM
   threshold. Landing at normal race scatter (+15 s/mi) would need a
   total factor of 1.40 (~6,500 ft at the Minetti curve): the remainder
   is stairs/bottlenecked singletrack/sand that no grade-or-footing
-  model prices in. The race is excluded because it genuinely isn't
-  CS-informative, not because the model lacks a term.
+  model prices in. That race is excluded because it genuinely isn't
+  CS-informative, not because the model lacks a term. **What changed:**
+  the categorical regression stays closed, but for races WITH watch
+  coverage a per-run DEM-based physical correction now ships and feeds
+  CS directly — superseding the "not fittable" conclusion *for the
+  watch-covered subset*. The categorical rules (XC ×1.08, Downhill
+  hard-exclusion) survive as the pre-watch fallback.
 
 One durable insight from the Deception Pass decomposition: the **XC
 correction is FOOTING, not elevation** — the hill model's trail term
@@ -429,6 +436,53 @@ already excluded), temperature (null everywhere, 5K hypothesis
 rejected), elevation (the one motivating race is unsalvageable; the
 fillable remainder is flat). Re-affirms the earlier no-beta-adjustments
 decision, now with numbers.
+
+## Race physical correction (June 2026, SHIPPED)
+
+Supersedes the "elevation not fittable" conclusion above **for races with
+watch coverage**: the categorical regression stays closed, but a per-run
+measured correction now corrects each watch-covered race's TIME for grade +
+off-road footing + altitude to its flat / sea-level / smooth-equivalent
+BEFORE it informs CS, so the demonstrated-capability frontier measures
+fitness, not the course. Full design + handoff: watch-stream-enrichment-plan.md
+"B. Race CS — SHIPPED". (Engine: the `elevation_cost` cost model,
+`physical_route_betas`, the altitude threshold curve, the DEM mechanics —
+→ see route-normalization-reference.md (elevation engine).)
+
+- **Single source of truth: `recovery_model.race_physical_correction(races)`**.
+  Applied IDENTICALLY in two places that must stay consistent: **(a)** the CS
+  fit (`bayes_cs_fit.py`) — subtracted from `race_times` before the β_long
+  un-bias and the likelihood; `build_eligible` now ADMITS a watch-covered
+  Downhill race (the measured grade discounts its assisted time) where it
+  used to hard-exclude all Downhill; `derive_exclusions` applies the same
+  correction so exclusion residuals match. **(b)**
+  `cs_projection.project_races_to_5k_pace` — the displayed race diamonds and
+  the performance frontier they feed, gated by an `apply_physical_correction`
+  flag (default on; OFF for the actual-pace race plots in `make_race_plots`).
+  If the fit and the projection disagreed, the plotted race position wouldn't
+  match what fed CS.
+- **Replaces the categorical ONLY WHERE WATCH DATA EXISTS.** It supersedes
+  the categorical XC ×1.08 pre-correction and the Downhill hard-exclusion
+  only for watch-covered races; the categorical rules remain the pre-watch
+  fallback. Today no XC or Downhill race has watch coverage, so the
+  replacement paths are armed but no-op — all current XC still get ×1.08, and
+  the one pre-watch Downhill TT stays excluded.
+- **Sign convention.** A net-DOWNHILL race (e.g. Boston) gets time ADDED, so
+  it projects SLOWER and correctly discounts the assisted time for CS.
+  Net-uphill / altitude races are credited faster.
+- **Track races: grade gated OFF** (by surface — flat, barometric noise) but
+  the **altitude (hypoxia) term still applies** (a Boulder track race is
+  altitude-suppressed).
+- **Race effort ≈ 1.0 by construction**, so paved descents refund at the race
+  edge (`paved_refund(1.0) ≈ 0.85`) — grade bites hardest at race effort.
+- **Inputs.** Per-race grade/altitude come from a DEM resampled along the
+  watch GPS track (the barometric per-race net is noise). Footing + altitude
+  betas are pinned from `physical_route_betas` (the same constants recovery
+  and long runs use); altitude uses a threshold curve (zero below ~3000 ft).
+- **Refit results.** ~96% 95%-coverage, residual bands tight; the dominant CS
+  change was 2020 getting ~5.5 s/mi slower (a previously-mis-admitted
+  downhill-assisted mile removed). The per-race correction is a PyMC
+  model-input change.
 
 ## Working assumptions
 

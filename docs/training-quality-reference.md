@@ -67,21 +67,30 @@ sits next to CS without feeding back into it.
   long runs — the per-bin empirical means differed by 0.3 s/mi (the
   split conditioned on nothing) while recency moves the estimate
   ~+7 s/mi.
-- **Physical route terms (pinned elevation slope + fitted altitude)
-  replace per-route dummies (June 2026).** Empirical route betas were
-  almost perfectly era-confounded — every named route lives in one
-  contiguous era with its own long-run effort policy, so betas encoded
-  "typical effort that year", not terrain (physically identical flat
-  routes south lakefront / north greenway sat 31 s/mi apart; a moderate
-  2026 effort out-ranked the all-time-best 2023 long run after
-  correction). The elevation slope is pinned at +0.17 s/mi per ft/mi
-  from the recovery cross-route fit (effort-uncontaminated; mechanical
-  cost transfers across effort types, unlike fatigue betas) because the
-  long-run-fit slope comes out wrong-signed (−0.13) from the same
-  confounding. Altitude is fitted (≈ +3 s/mi per 1000 ft), identified by
-  the within-Boulder-era sea-level contrast. Era effort policy now stays
-  visible in the corrected residuals — the smoother track reading
-  reverts to "fitness/effort vs CS", no longer "within-route trend".
+- **Full physical route decomposition replaces per-route dummies, then
+  the route-constant elevation term (June 2026, watch-stream
+  enrichment).** Empirical route betas were almost perfectly
+  era-confounded — every named route lives in one contiguous era with its
+  own long-run effort policy, so betas encoded "typical effort that year",
+  not terrain (physically identical flat routes south lakefront / north
+  greenway sat 31 s/mi apart; a moderate 2026 effort out-ranked the
+  all-time-best 2023 long run after correction). The first replacement —
+  a route-constant `0.17 · elev_per_mile` slope plus a fitted altitude
+  term inside `long_run_model.py` — has itself been removed. The route
+  conversion now applies the full physical decomposition (grade +
+  off-road footing + altitude) as flat / sea-level-equivalent **time**
+  corrections, subtracted from each run's time in
+  `workouts.project_long_runs` *before* the β_long un-bias and the CP3
+  projection (so the projection treats the flat-equivalent as a race).
+  Grade prices each run's per-run measured gain/loss through the shared
+  `elevation_cost` engine with an effort-aware paved descent refund;
+  footing and altitude are pinned from `recovery_model.physical_route_betas`
+  — the single source of truth shared with the recovery and race-CS
+  models. `long_run_model.py` no longer fits anything physical
+  (`LR_ELEV_SLOPE`/`elev_pm_c` removed); it carries only temp/fatigue. Era
+  effort policy still stays visible in the corrected residuals — the
+  smoother track reading reverts to "fitness/effort vs CS", no longer
+  "within-route trend".
 - **Temperature + race-fatigue covariates in the long-run fit; fatigue
   is one fitted scale with the marathon/short contrast pinned from the
   recovery fit (June 2026).** Stage 5b adds `temp_centered` (fit fresh on
@@ -503,26 +512,41 @@ The Workouts plot annotates every TQ-excluded session in its hover
 (`training_quality_exclusions.csv`): snow flag, `uncertain accuracy`,
 or `residual +X > +thr cutoff` for outliers (track-relative).
 
-### Stage 5b — Long-run model (physical route terms + covariates)
+### Stage 5b — Long-run model (covariates only)
 
 Long runs use an OLS fit on the in-slice set instead of a per-category
 median offset:
 
 ```
-raw_resid ~ elev_pm(pinned) + altitude + temp_centered
+raw_resid ~ temp_centered
             + fat_race  (= fat_race_short + ratio·fat_marathon,
                          ratio pinned from the recovery fit)
 ```
 
 - Distance carries no term (June 2026 sweep — see "Decisions locked in");
   the lr_lo/lr_hi labels are fully retired.
-- Physical route terms (June 2026, replacing per-route dummies — see
-  "Decisions locked in"): `elev_pm_c` is feet of climbing per mile from
-  the locations sheet, centered at the in-slice median (missing →
-  reference, contribution 0), with the slope **pinned** at
-  `LR_ELEV_SLOPE = +0.17` s/mi per ft/mi from the recovery cross-route
-  fit; `altitude_kft` (missing → sea level) is **fitted**. Terrain type
-  is not a term — in-slice long runs are 95% paved.
+- **Physical route terms no longer live here (June 2026, watch-stream
+  enrichment).** `long_run_model.py` carries only temp/fatigue;
+  `LR_ELEV_SLOPE`/`elev_pm_c` and the fitted altitude term have been
+  removed. Grade, off-road footing, and altitude are now applied upstream
+  in `workouts.project_long_runs` as flat / sea-level-equivalent time
+  corrections — subtracted from the run's time *before* the β_long un-bias
+  and the CP3 projection — rather than as residual regressors. Grade is
+  each run's per-run measured gain/loss priced through the shared
+  `elevation_cost` engine with an effort-aware paved descent refund
+  (`paved_refund`; long runs sit near race effort, so paved descents
+  refund ~0.85). Footing (≈ +4.78 s/mi flat off-road penalty) and altitude
+  (≈ +2.28 s/mi per 1000 ft above a ~3000 ft threshold; per-run measured
+  via `per_run_altitude`, not per-city) are pinned from
+  `recovery_model.physical_route_betas` — the single source of truth
+  shared with the recovery and race-CS models. The effort ranges of
+  recovery and long runs coincide (~0.85 frontier-pace fraction), so the
+  transfer is constant-effort (no scaling); channels stay separate
+  (grade / footing / altitude) with no double-count, under the same
+  validity gate and location-terrain bucketing. → see
+  route-normalization-reference.md (elevation engine) for the
+  `elevation_cost` cost formula, the altitude threshold curve, and the
+  `physical_route_betas` internals.
 - Covariates reuse the recovery model's encodings —
   `temp_centered = temp_c − 12`, `fat_<cat> = exp(−days_since/τ)` with
   τ = 6d (marathon) / 5d (short race). Temperature's beta is fit on the
@@ -581,22 +605,24 @@ rc +26, pwr1 +48 at typical paces); fitted trail term **+26.94 s/mi**
 (n_kept=126, resid SD 15.6; persisted to `hill_model.csv`). CF float:hard
 ratio pinned at **1.25**. Scatter weights: reps 0.97, hills pooled 0.54.
 
-Long-run model (Stage 5b), reference: median-elevation (62 ft/mi)
-sea-level route:
+Long-run model (Stage 5b), covariate fit (physical route terms have
+moved upstream to `workouts.project_long_runs` — see Stage 5b above —
+so `elev_pm_c`/`altitude_kft` are no longer coefficients of this fit):
 
 | Term                        | Coef (sec/mi) |
 |-----------------------------|--------------:|
 | Intercept                   |       +33.71  |
-| elev_pm_c (per ft/mi)       | +0.17 pinned  |
-| altitude_kft (per 1000 ft)  |        +1.71  |
 | temp_centered (per °C)      |        +0.28  |
 | fat_marathon (peak)         |       +40.41  |
 | fat_race_short (peak)       |       +22.24  |
 
-Fit on n_kept = 268 (5 pruned): R² = 0.106, resid SD = 19.02 sec/mi.
-The R² drop vs the route-dummy model (0.605) is **intentional**: the
-dummies were explaining era effort policy, which is signal the graph
-should display, not variance the model should remove.
+The pinned physical constants (footing ≈ +4.78 s/mi, altitude ≈ +2.28
+s/mi per 1000 ft above ~3000 ft) come from
+`recovery_model.physical_route_betas`, not this fit; regenerate the
+covariate coefficients above by running `plot_training_quality.py`. The
+R² drop vs the route-dummy model (0.605) is **intentional**: the dummies
+were explaining era effort policy, which is signal the graph should
+display, not variance the model should remove.
 
 Total kept after all filters and prunes: 235 workouts + 268 long runs
 + 126 hills = 629 (June 2026; 37 days carry the uncertain-accuracy flag).
@@ -796,8 +822,21 @@ race residual = −0.16. Three reasons:
 - **Empirically-fit elevation slope in the long-run model (June 2026).**
   Comes out −0.13 s/mi per ft/mi — wrong-signed, because hilly routes
   are concentrated in quality-effort eras; the same confounding that
-  sank route dummies, in continuous form. Pinned to the recovery
+  sank route dummies, in continuous form. Briefly pinned to the recovery
   cross-route value (+0.17) instead.
+- **Route-constant `0.17 · elev_per_mile` slope + fitted altitude in
+  `long_run_model.py` (removed June 2026, watch-stream enrichment).** The
+  pinned-slope/fitted-altitude pair (the first replacement for the route
+  dummies) was itself superseded by the full physical decomposition
+  applied upstream in `workouts.project_long_runs`: grade priced through
+  the shared `elevation_cost` engine off each run's per-run measured
+  gain/loss (with an effort-aware paved descent refund), plus footing and
+  per-run-measured altitude pinned from `recovery_model.physical_route_betas`,
+  all credited as flat / sea-level-equivalent time corrections before the
+  β_long un-bias and the CP3 projection. The route constant priced terrain
+  as a static per-route slope; the physical engine prices each run's
+  measured grade/footing/altitude and shares one constant per channel with
+  the recovery and race-CS models. `LR_ELEV_SLOPE`/`elev_pm_c` removed.
 
 ## Working assumptions
 

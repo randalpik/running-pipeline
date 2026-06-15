@@ -32,7 +32,8 @@ changed:
 | `weather_measured.py` | `weather_measured.csv` | yes (pre-`build_dataset`) | ~5 s (now mtime-guarded) |
 | `long_runs.py` | `long_run_measured.csv`, `recovery_measured.csv`, `long_run_calibration.csv` | yes (post-`build_dataset`) | ~10 s |
 | `reps.py` | `workout_measured.csv` | yes (post-`build_dataset`, gated on CS) | (parse heavy) |
-| `backfill_elevation.py` | `elevation_measured.csv`, `elevation_splits.csv` | **no** — manual backfill, append-mode | — |
+| `backfill_elevation.py` | `elevation_measured.csv` (incl. `dem_*` race cols), `elevation_splits.csv` | **no** — manual backfill, append-mode | — |
+| `dem_elevation.py` | DEM race elevation → `elevation_measured.csv` `dem_*` cols (point cache `dem_cache.json`) | via `backfill_elevation` top-up | network only on cold lookup |
 
 Measured field usage across consumers (verified): every per-second field is
 read by *someone* (`long_runs`: t,dist; `elevation`: t,dist,altitude; `reps`:
@@ -90,6 +91,13 @@ derived_schema_version          # bumps to force a global regen on schema change
   These reference `watch_daily.date`; the scalar roll-ups (`gain_ft`,
   `d_eff_frac`, …) live in `watch_daily` so most consumers never open a
   satellite.
+- **DEM race elevation lives in `elevation_measured.csv`, not `watch_daily`.**
+  The barometric `gain_ft`/`loss_ft` (which long/recovery use, and which average
+  out over thousands of points) roll up to `watch_daily`; the DEM race columns
+  (`dem_gain_ft, dem_loss_ft, dem_net_ft, dem_mean_elev_ft, dem_n_pts`) are a
+  **races-only** top-up that the CS path reads off the elevation satellite. They
+  don't belong in the whole-day scalar row — a day is at most one race, and the
+  consumer (CS) already joins on `date`. See §8 (elevation) for the producer.
 
 ### Watch-less log-days
 A logged run with no watch activity (pre-2021, watch not worn, synth race stub)
@@ -197,6 +205,26 @@ for standalone/back-compat but delegates to the builder.
 - **elevation** — promote `backfill_elevation.py` into the regular flow as a
   `watch_daily` contributor (`gain_ft, loss_ft, corr_miles`) + `elevation_splits`
   satellite. It already appends incrementally; the presence rule generalizes that.
+  - **DEM race top-up.** For RACES the barometric *net* is per-race noise (the
+    same Bolder Boulder course read −19 ft/mi net one year, +5 the next), but the
+    horizontal GPS track is reliable and reproducible (Boston resolves
+    Hopkinton→Boston). So races discard the barometric vertical and resample
+    elevation from a **DEM** along the cached GPS track — `src/coros/dem_elevation.py`
+    (OpenTopoData public API: USGS NED 10 m for CONUS, SRTM 30 m fallback
+    elsewhere; free, no key, deterministic). Point elevations are cached in
+    `data/dem_cache.json` keyed by rounded lat/lon, so repeated courses (Boston
+    ×6, etc.) and re-runs cost no network. `backfill_elevation.augment_race_dem`
+    is a top-up pass over `elevation_measured.csv` race rows: it picks the single
+    race activity (excludes warmup/cooldown), samples the GPS track, and writes
+    `dem_gain_ft, dem_loss_ft, dem_net_ft, dem_mean_elev_ft, dem_n_pts`. It is
+    **idempotent** — only rows missing `dem_gain_ft` are computed — so the
+    presence rule applies as it does to the rest of the table. gain/loss use the
+    same smoothed gridding as the barometric path, so the two sources are
+    directly comparable. The DEM net **subsumes the earlier loop-detection
+    heuristic** (a loop reads net≈0 naturally). Recovery/long stay on
+    **barometric** elevation (they average out, and the route betas are fit on
+    them); DEM is races-only. How the CS correction *uses* these columns →
+    see `route-normalization-reference.md` / `cs-model-reference.md`.
 - **reps** — `build_workout_measured` becomes presence-based + CS-safety-valve;
   `workout_measured.csv` stays the satellite, keyed by `watch_daily.date`.
 
