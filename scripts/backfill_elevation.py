@@ -40,6 +40,7 @@ from src.coros import mappings as M
 from src.coros.build_current_log import Activity, rich_detail
 from src.coros.client import CorosClient
 from src.coros import elevation as E
+from src.coros import dem_elevation as DEM
 from src.shared.effective_mileage import effective_daily_miles
 
 # Elevation is meaningful only on outdoor GPS runs over real terrain: Run (100)
@@ -60,7 +61,9 @@ MEAS_OUT = DATA_DIR / 'elevation_measured.csv'
 SPLITS_OUT = DATA_DIR / 'elevation_splits.csv'
 
 MEAS_COLS = ['date', 'run_type', 'watch_miles', 'corr_miles', 'elev_gain_ft',
-             'elev_loss_ft', 'minetti_factor', 'n_alt_pts']
+             'elev_loss_ft', 'minetti_factor', 'n_alt_pts',
+             'dem_gain_ft', 'dem_loss_ft', 'dem_net_ft', 'dem_mean_elev_ft',
+             'dem_n_pts']
 SPLIT_COLS = ['date', 'mile', 'pace_s', 'gain_ft', 'loss_ft']
 
 
@@ -94,6 +97,44 @@ def _targets(daily, races, types):
                       if pd.notna(r.get('distance_m')) else None)
             targets.setdefault(d, ('race', off_mi))
     return targets
+
+
+def augment_race_dem(meas, races, ids_by_date, sleep_s):
+    """Fill DEM gain/loss/net/mean for race rows from the GPS track (races-only;
+    the watch's barometric net is per-race noise — see dem_elevation.py). Idem-
+    potent: only rows missing dem_gain_ft are computed, so a re-run is a cheap
+    cache-served top-up. Returns the count newly computed."""
+    if 'run_type' not in meas.columns:
+        return 0
+    off_by_date = {r['date'].date().isoformat(): float(r['distance_m'])
+                   for _, r in races.iterrows() if pd.notna(r.get('distance_m'))}
+    need = meas[(meas['run_type'] == 'race') & meas['dem_gain_ft'].isna()]
+    if need.empty:
+        return 0
+    cache = DEM._load_cache()
+    n = 0
+    for i, row in need.iterrows():
+        d = row['date']
+        off_m = off_by_date.get(d)
+        if off_m is None or d not in ids_by_date:
+            continue
+        recs = []
+        for lid in ids_by_date[d]:
+            p = DETAILS / f'{lid}.json'
+            if p.exists():
+                rec = json.loads(p.read_text())
+                if rec.get('rich') == 2:
+                    recs.append(rec)
+        if not recs:
+            continue
+        res = DEM.measure_race_elevation(recs, off_m, cache)
+        if res is None:
+            continue
+        for k, v in res.items():
+            meas.at[i, k] = v
+        n += 1
+    DEM._save_cache(cache)
+    return n
 
 
 def main():
@@ -194,6 +235,10 @@ def main():
 
     meas = pd.DataFrame(meas_keep + meas_rows, columns=MEAS_COLS)
     splits = pd.DataFrame(split_keep + split_rows, columns=SPLIT_COLS)
+    if 'race' in types and len(meas):
+        n_dem = augment_race_dem(meas, races, ids_by_date, args.sleep)
+        print(f"[elevation] DEM race-elevation: {n_dem} newly computed "
+              f"(GPS-track lookup; barometric net is per-race noise)")
     if len(meas):
         meas = meas.sort_values('date').reset_index(drop=True)
         meas.to_csv(MEAS_OUT, index=False)

@@ -504,7 +504,8 @@ def main():
 
     elig = project_races_to_5k_pace(
         elig, daily_summary, beta_long, d_thresh,
-        apply_xc_correction=False)  # ← key difference vs CS plot
+        apply_xc_correction=False,        # ← key difference vs CS plot:
+        apply_physical_correction=False)  #   show ACTUAL race pace, uncorrected
 
     n_proj = elig['pace_norm_min'].notna().sum()
     print(f'Projection succeeded for {n_proj}/{len(elig)} races')
@@ -755,7 +756,8 @@ function buildTooltip(day, isSnap, pointHtml) {
         #    symmetrically). For races already at the anchor, this is identity.
         sub_proj = project_races_to_5k_pace(
             sub, daily_summary, beta_long, d_thresh,
-            apply_xc_correction=False, norm_dist_m=anchor)
+            apply_xc_correction=False, apply_physical_correction=False,
+            norm_dist_m=anchor)
         sub_proj = sub_proj[sub_proj['time_norm_sec'].notna()].copy()
         sub_proj['surface_plot'] = sub_proj['surface'].fillna('Unknown')
         if len(sub_proj) == 0:

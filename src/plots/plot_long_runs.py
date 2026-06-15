@@ -403,10 +403,7 @@ def main():
             widgets.divider()
             + widgets.checkbox_rows([('normalize', 'Normalize')],
                                     data_attr='lrnorm', checked=False)
-            + widgets.subtitle('Subtract physical route (grade, off-road '
-                               'footing, altitude) and training-state '
-                               '(temperature, recent-race) effects → the '
-                               'flat / sea-level race-equivalent pace.')
+            + widgets.subtitle('Subtract route and training effects to show the equivalent flat, paved, non-fatigued pace at sea level in good conditions.')
         )
     overlay_html = widgets.sidebar(
         'lr-gradient',

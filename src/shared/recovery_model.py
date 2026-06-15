@@ -45,7 +45,7 @@ import numpy as np
 import pandas as pd
 
 from src.shared.paths import DATA_DIR
-from src.shared.elevation_cost import elevation_cost
+from src.shared.elevation_cost import elevation_cost, paved_refund, REFUND_RECOVERY
 
 # ---------- conditions / pruning excluded from fit ----------
 # Time-of-day binary indicator. Recovery pace runs ~4.5 sec/mi slower in
@@ -390,6 +390,149 @@ def per_run_altitude(df):
     return (mid.fillna(const).fillna(0.0) / 1000.0)
 
 
+# Altitude (hypoxia) is ~zero below ~914 m (3000 ft), then declines roughly
+# linearly with altitude in endurance athletes (Wehrlin & Hallén 2006; the
+# clinical heuristic is ~8-11% VO2max per 1000 m *above* ~3000 ft). Max's data
+# is bimodal (sea level + Boulder ~5400 ft + 3 Magnolia runs ~8400 ft) so it
+# can't identify a SHAPE — we pin the shape (threshold + linear) from the
+# literature and fit only the SLOPE (physical_route_betas). A line through the
+# origin both invents a phantom effect at low altitude and under-slopes the
+# high end; the threshold fixes both (Boulder, the bulk, barely moves; Magnolia
+# steepens ~+37%; everything < 3000 ft → exactly 0).
+ALTITUDE_THRESHOLD_KFT = 3.0
+
+
+def altitude_regressor(alt_kft):
+    """Science-pinned hypoxia regressor: ``max(0, alt_kft − 3.0)``. The fit
+    estimates the pace slope ON this (so the Boulder data anchors the scale),
+    and every consumer (recovery, long-run, race) must build the altitude term
+    through this same transform so fit and application stay consistent."""
+    return np.maximum(0.0, np.asarray(alt_kft, dtype=float) - ALTITUDE_THRESHOLD_KFT)
+
+
+def _race_dem_elevation(races):
+    """Per-race gain/loss (ft/mi) and mean elevation (kft) from the DEM-along-
+    GPS layer (``elevation_measured.csv`` race rows, columns ``dem_*``; see
+    src/coros/dem_elevation.py). The watch's barometric net is per-race noise;
+    DEM resampled along the reliable GPS track is the race source of truth.
+    Returns (gain_pm, loss_pm, mean_kft, grade_available) Series aligned to
+    ``races.index`` — NaN / False where no DEM row exists (track races, which
+    the elevation backfill skips, and pre-watch races)."""
+    n = races.index
+    gain = pd.Series(np.nan, index=n, dtype=float)
+    loss = pd.Series(np.nan, index=n, dtype=float)
+    mean_kft = pd.Series(np.nan, index=n, dtype=float)
+    if not ELEV_MEASURED_PATH.exists():
+        return gain, loss, mean_kft, pd.Series(False, index=n)
+    try:
+        em = pd.read_csv(ELEV_MEASURED_PATH, parse_dates=['date'])
+    except (pd.errors.EmptyDataError, FileNotFoundError):
+        return gain, loss, mean_kft, pd.Series(False, index=n)
+    if 'dem_gain_ft' not in em.columns:
+        return gain, loss, mean_kft, pd.Series(False, index=n)
+    em = em[(em['run_type'] == 'race') & em['dem_gain_ft'].notna()].copy()
+    em = em.drop_duplicates('date').set_index(em['date'].dt.date)
+    dist_mi = races['distance_m'].astype(float) / 1609.344
+    key = pd.to_datetime(races['date']).dt.date
+    gain = key.map(em['dem_gain_ft']) / dist_mi
+    loss = key.map(em['dem_loss_ft']) / dist_mi
+    mean_kft = key.map(em['dem_mean_elev_ft']) / 1000.0
+    return gain, loss, mean_kft, gain.notna()
+
+
+def race_physical_correction(races, daily=None):
+    """Per-race physical TIME correction — grade + off-road footing + altitude —
+    converting each watch-covered race to its flat / sea-level / smooth-
+    equivalent time BEFORE it informs CS, so the demonstrated-capability
+    frontier measures fitness, not the course (docs/watch-stream-enrichment-
+    plan.md §B). Reuses §A's machinery: the shared ``elevation_cost`` engine,
+    footing/altitude pinned from ``physical_route_betas`` (the SAME constants
+    recovery and long runs use), per-race grade/altitude from the DEM-along-GPS
+    layer (``elevation_measured.csv`` ``dem_*`` — barometric net is per-race
+    noise, so races use DEM, unlike recovery/long which average out on baro).
+
+    Conventions (identical to §A): subtract the cost from the race time. A
+    net-DOWNHILL race (cost<0) gets time ADDED → projects SLOWER → correctly
+    discounts the assisted time (Boston). Net-uphill / altitude races are
+    credited faster. Race effort ≈ 1.0 by construction (a race is run at its
+    own-distance ceiling), so paved descents refund at the race edge
+    (``paved_refund(1.0)`` ≈ 0.85) — grade bites hardest here.
+
+    Gating (the categorical XC ×1.08 / Downhill-exclusion stay as the pre-watch
+    fallback — replaced by the measured correction only WHERE WATCH DATA
+    EXISTS):
+      * ``has_measured`` (full grade+footing applies, and the caller turns OFF
+        the categorical for that race): a watch-covered, non-track race with a
+        DEM row.
+      * Track races: grade gated OFF (flat; the backfill skips them anyway), but
+        altitude hypoxia still applies via the per-run altitude chain.
+      * Altitude applies wherever a per-run altitude is available (DEM mean for
+        DEM races; the watch/location chain for track-at-altitude).
+
+    Returns a DataFrame aligned to ``races.index``:
+        grade_s_per_mi, footing_s_per_mi, alt_s_per_mi, total_s_per_mi
+        dt_sec       : total_s_per_mi × distance_mi (subtract from time_sec)
+        has_measured : bool (see gating above)
+    """
+    df = races.copy()
+    if 'surface' not in df.columns:
+        df['surface'] = ''
+    if daily is None:
+        daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
+    # Join location metadata (terrain/altitude) from the daily race rows —
+    # races.csv carries none. One daily row per race day (race_seq=1 back-prop).
+    meta = (daily[daily['run_type'] == 'race']
+            [['date', 'terrain_type', 'altitude', 'elev_per_mile', 'location']]
+            .drop_duplicates('date')).copy()
+    for c in ('terrain_type', 'altitude', 'elev_per_mile', 'location'):
+        if c in df.columns:
+            df = df.drop(columns=[c])
+    # ``date`` may be datetime64 (races.csv load) or python date (build_eligible
+    # normalizes it); merge on a common date key so either dtype works.
+    df['_dk'] = pd.to_datetime(df['date']).dt.date
+    meta['_dk'] = pd.to_datetime(meta['date']).dt.date
+    df = df.merge(meta.drop(columns=['date']), on='_dk', how='left').drop(columns=['_dk'])
+
+    gain_pm, loss_pm, dem_mean_kft, grade_avail = _race_dem_elevation(df)
+    is_track = df['surface'].fillna('').astype(str).str.lower() == 'track'
+    grade_avail = grade_avail & ~is_track
+
+    terr = (df['terrain_type'].astype(str).str.strip().str.lower())
+    terr = terr.where(terr.isin(('paved', 'mixed', 'trail')), 'paved')
+    # Race effort ≈ 1.0: paved descents refund at the race edge; mixed/trail
+    # keep their (effort-flat) rough-footing refund.
+    refund = terr.map(REFUND_RECOVERY).astype(float).to_numpy(copy=True)
+    refund[(terr == 'paved').to_numpy()] = paved_refund(1.0)
+    grade = elevation_cost(gain_pm.fillna(0.0).to_numpy(),
+                           loss_pm.fillna(0.0).to_numpy(),
+                           terr.to_numpy(), refund=refund)
+    grade = np.where(grade_avail.to_numpy(), grade, 0.0)
+
+    pb = physical_route_betas()
+    is_offroad = terr.isin(('mixed', 'trail')).astype(float).to_numpy()
+    footing = np.where(grade_avail.to_numpy(), pb['is_offroad'] * is_offroad, 0.0)
+    # Altitude: DEM mean where present, else the per-run altitude chain (covers
+    # track-at-altitude, whose grade is off but hypoxia is real — Boulder track).
+    # Through the science-pinned threshold regressor: a sub-3000 ft race (sea
+    # level, Nashville's 400 ft constant) gets no hypoxia term, so it neither
+    # fabricates a phantom correction nor flips has_measured (which had wrongly
+    # admitted the pre-watch Downhill TT). Boulder/Magnolia get the real effect.
+    alt_eff = altitude_regressor(dem_mean_kft.fillna(per_run_altitude(df)))
+    alt_cost = pb['alt_kft'] * alt_eff
+
+    total = grade + footing + alt_cost
+    dist_mi = df['distance_m'].astype(float).to_numpy() / 1609.344
+    out = pd.DataFrame({
+        'grade_s_per_mi': grade,
+        'footing_s_per_mi': footing,
+        'alt_s_per_mi': alt_cost,
+        'total_s_per_mi': total,
+        'dt_sec': total * dist_mi,
+        'has_measured': grade_avail.to_numpy() | (alt_eff > 0),
+    }, index=races.index)
+    return out
+
+
 def days_since(daily, source_dates_sorted):
     if not source_dates_sorted:
         return np.full(len(daily), np.nan)
@@ -536,7 +679,7 @@ def physical_route_betas():
             terr = (lr.get('terrain_type', pd.Series('', index=lr.index))
                     .astype(str).str.strip().str.lower())
             lr['is_offroad'] = terr.isin(('mixed', 'trail')).astype(float)
-            lr['alt_kft'] = per_run_altitude(lr)
+            lr['alt_kft'] = altitude_regressor(per_run_altitude(lr))
             terr_c = terr.where(terr.isin(('paved', 'mixed', 'trail')), 'paved')
             lr['elev_cost'] = elevation_cost(
                 lr['elev_gain_pm'].fillna(0).to_numpy(),
@@ -742,7 +885,7 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True, pin_physical=True
     # era/altitude), so they're isolated via the backfit, not a sequential
     # era-detrend that would absorb them.
     rec['is_offroad'] = terr.isin(('mixed', 'trail')).astype(float)
-    rec['alt_kft'] = per_run_altitude(rec)
+    rec['alt_kft'] = altitude_regressor(per_run_altitude(rec))
     # PINNED grade-aware elevation cost (shared.elevation_cost): climbing
     # costs, descents refund a terrain-dependent fraction (paved ~full at
     # recovery effort, mixed ~1/3 — the downhill-braking asymmetry). It SCALES
@@ -874,8 +1017,11 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True, pin_physical=True
               f's/mi over the fit set (scales with each route\'s gain/loss)')
         print(f'    off-road footing: β = {betas["is_offroad"]:+.1f} s/mi (flat '
               f'surface penalty)')
-        print(f'    altitude: β = {betas["alt_kft"]:+.2f} s/mi per 1000 ft '
-              f'(= {betas["alt_kft"] * 5.4:+.1f} at Boulder)')
+        print(f'    altitude: β = {betas["alt_kft"]:+.2f} s/mi per 1000 ft above '
+              f'{ALTITUDE_THRESHOLD_KFT:.0f}k threshold '
+              f'(= {betas["alt_kft"] * (5.4 - ALTITUDE_THRESHOLD_KFT):+.1f} at '
+              f'Boulder, {betas["alt_kft"] * (8.4 - ALTITUDE_THRESHOLD_KFT):+.1f} '
+              f'at Magnolia)')
 
     # ---------- per-point contributions ----------
     rec['contrib_temp'] = betas['temp_centered'] * rec['temp_centered'].fillna(0)

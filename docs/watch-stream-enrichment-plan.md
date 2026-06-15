@@ -9,7 +9,7 @@ corrections. Three threads from the June 2026 watch-correction work:
 
 | Thread | State |
 |---|---|
-| 1. Elevation enrichment | data layer + **recovery** + **long-run** models SHIPPED; **race NEXT** |
+| 1. Elevation enrichment | data layer + **recovery** + **long-run** + **race CS** models SHIPPED |
 | 2. Corrected mileage | SHIPPED |
 | 3. Terrain backlog | resolved (every route typed; build-join bug fixed) |
 
@@ -164,36 +164,187 @@ Net effect: off-road long runs credited grade(~10)+footing(4.7)+altitude
 (+4.2 s/mi credit); the dashboard long-run prediction moved +16.4→+14.8 s/mi
 vs CS. Frontier (fed by long runs) re-levels accordingly.
 
-### B. Race CS (the prize)
-Watch-covered races → measured grade profile **replaces the XC/Downhill
-categorical surface corrections** where data exists.
-- **Distance stays OFFICIAL** (certified > GPS). Only grade + altitude apply.
-- **Effort ≈ 1.0 → race-effort refund** (paved ~0.85, mixed ~0.34): grade cost
-  is *highest* at race effort, so this is where it bites most.
-- **Circularity is acceptable, per Max: hardcode the refund curve.** Race
-  points sit well above CS; CS only feeds the top end via 5K conversions (a
-  secondary effect). So pin the effort-refund curve, don't re-fit it from the
-  races we're correcting.
-- **Track races: no elevation** (flat; barometric noise) — gated by surface.
-- Validated: **Boston** net −450 ft drop captured → ~3 s/mi net-downhill aid
-  (correctly *discounts* the assisted time for the CS fit); **North Shore HM**
-  (paved, balanced ~500 ft loop) ~0.4%.
-- **Out of scope:** marathon eccentric-quad-damage / hill *placement* fatigue
-  (why Boston "feels hard" despite being fast) — the model prices steady-state
-  grade, not placement; the marathon set is sparse and inconsistent anyway.
-- **Conservatism edges:** `cs_projection`'s race edges are policy, not
-  measurement (same boundary as `WORKOUT_VMAX_MPS`) — apply grade carefully
-  there. Any CS re-fit (PyMC) needs Max's explicit approval.
+### B. Race CS — SHIPPED (June 2026)
+
+**Goal (met).** Correct each watch-covered race's TIME for grade + altitude
+(+ footing on off-road) to its flat/sea-level/smooth-equivalent BEFORE it
+informs CS, so the demonstrated-capability frontier measures fitness, not the
+course. The measured per-run correction **replaces the categorical XC (×1.08)
+and Downhill-exclusion** rules where watch data exists; categorical stays as the
+pre-watch fallback.
+
+**Single source of truth: `recovery_model.race_physical_correction(races)`**,
+applied identically in three places — `cs_projection.project_races_to_5k_pace`
+(the displayed diamonds + the frontier they feed; gated by
+`apply_physical_correction`, OFF for the actual-pace race plots), the CS fit
+(`bayes_cs_fit.main`, subtracted from `race_times` before the β_long un-bias and
+the likelihood; `build_eligible` now admits watch-covered Downhill;
+`derive_exclusions` corrects on the same times). Footing/altitude pinned from
+`physical_route_betas` (same constants recovery/long use); race effort ≈ 1.0 so
+paved descents refund at `paved_refund(1.0)≈0.85`. Refit shipped (5 div, 96.2%
+95%-coverage, residual bands tight); watch-era CS faster 2–4 s/mi.
+
+**THE decisive course-correction (Max) — barometric race net is noise, use a
+DEM.** The watch's per-race barometric *net* is untrustworthy (same Bolder
+Boulder course read −19 ft/mi in 2024 vs +5 in 2025), but its *horizontal GPS
+track* is reliable and reproducible (start/end agree within metres year-over-
+year; Boston resolves Hopkinton→Boston). So races throw away the barometric
+vertical and resample elevation from a DEM along the GPS path —
+`src/coros/dem_elevation.py` (OpenTopoData NED 10 m / SRTM 30 m fallback, point
+cache `data/dem_cache.json`), backfilled into `elevation_measured.csv` race rows
+as `dem_gain_ft`/`dem_loss_ft`/`dem_net_ft`/`dem_mean_elev_ft` (top-up pass in
+`backfill_elevation.augment_race_dem`; picks the single race activity, excludes
+warmup/cooldown). This **subsumes the loop rule** (loops read net≈0 naturally:
+Honeywagon +0.2 ft/mi) AND deflates inflated barometric climb totals (Run for
+the Pies 37→23 ft/mi), which **organically shrank the off-road grade
+over-credit** without any footing band-aid. Recovery/long stay on barometric
+(they average out; the betas are fit on them). Validated: Bolder Boulder now a
+consistent +10.5 ft/mi (genuinely net *uphill*); Boston DEM −17.2 agrees with
+baro (real net downhill, unaffected).
+
+**Footing stays +4.78 (Max's "too generous?" — answered: no).** Mixed/trail
+split on the recovery+long corpus (664 mixed / 16 trail rows) gives **mixed-only
++4.92**, *higher* than the pooled +4.78 (pooled is dragged down by the tiny
+trail set); and the XC race-effort anchor (≈24 s/mi terrain on a 5K) is 5×
+higher — so +4.78 is already conservative for race effort, not generous. The DEM
+grade-deflation was the real fix. Kept the pinned pooled constant.
+
+**Known one-pass lag (accepted, as in §A):** `physical_route_betas` depends on
+CS; each refit nudges them, so the displayed diamonds use post-fit betas while
+the fit used pre-fit ones — a sub-1-s/mi Boulder lag. Verified to converge
+geometrically (footing contraction ~0.05, altitude ~0.19; a second refit moved
+the CS line <0.32 s/mi/yr, ratio ~0.07-0.12 of the first). Max chose to let the
+betas evolve naturally (a new race perturbs them trivially) rather than pin.
+
+**Altitude curve — threshold + linear (June 2026, science-pinned shape, data-fit
+slope).** The linear-from-origin altitude term was wrong both ways: it invented a
+phantom hypoxia effect at low elevation (a 0.42 s/mi / 11 s "correction" on the
+pre-watch Nashville 400 ft marathon, from the per-city base-elevation constant —
+which ALSO flipped `has_measured` True and wrongly ADMITTED the pre-watch
+Downhill TT to CS) and under-sloped the high end (Magnolia 8-9k ft). Physiology:
+VO2max is ~flat below ~914 m (3000 ft) then declines ~linearly (Wehrlin & Hallén
+2006, linear to 2800 m — covers Max's 2569 m max; the ~8-11%/1000 m-above-3000 ft
+clinical heuristic). Max's altitude data is bimodal (1800 sea-level + ~515
+Boulder + only **3** Magnolia runs) so it can't identify a SHAPE — pin the shape
+(threshold 3000 ft, linear above) from the literature, fit only the SLOPE.
+`recovery_model.altitude_regressor(alt_kft) = max(0, alt_kft − 3.0)`, applied at
+every regressor site (the pooled `physical_route_betas` fit → recovery, long-run,
+race all consistent). Result: slope **2.28 s/mi per kft above 3 kft** (Boulder
+≈5.5, ~unchanged since it anchors the fit; **Magnolia +37%, ≈12.3**; everything
+< 3000 ft → exactly 0, killing the phantoms and the Downhill mis-admission).
+Recovery R² unchanged (0.298 detrended). Refit shipped (12 div/4000, 96.2%
+95%-coverage); the dominant CS change is 2020 +5.5 s/mi (the wrongly-admitted
+downhill-assisted mile correctly removed). Tooltip: event / dist in time(pace) /
+Course correction: corrected time(pace) at race distance / 5K-equiv. The Fitness
+graph also draws faint before→after connectors (corrected-then-converted) for
+the 62 races a correction moved >1 s/mi (44 XC categorical + 18 watch-physical).
+
+**Result (frontier).** Off-road 5Ks bind on DEM-grounded credit (The Enforcer
+2022 → 4:44/mi, verified: 193 ft real climb, course not short); Boulder-altitude
+races credited (Boulderthon, Bolder Boulder consistent, Frank Shorter track =
+altitude-only); Boston discounted (+1.4 s/mi) so it informs CS as fitness not as
+a fast course. Auto-exclusions stable (12→11; no XC/Downhill watch coverage
+exists today, so those paths are armed for the future, no-op now).
+
+#### Original handoff (kept for context)
+
+**Reuse everything from §A — same single source of truth, same conventions.**
+- Grade: `elevation_cost(gain_pm, loss_pm, terrain, refund)` with
+  **`paved_refund(effort≈1.0) → ~0.85`** (race effort; grade cost bites HARDEST
+  here). Per-run measured gain/loss via the same `per_run_elevation` path.
+- Footing + altitude: **pinned from `physical_route_betas()`** (footing +4.78,
+  altitude +0.86/kft) — the SAME constants recovery and long-runs use. Altitude
+  is **per-run measured** (`per_run_altitude`, `altitude_daily.csv`), NOT
+  per-city. Do NOT add races to the pool (few races, circular with CS, race
+  effort un-identifiable — see §A finding 2).
+- Sign/credit convention identical: subtract the cost from the race time. A
+  **net-downhill** race (cost<0) gets time ADDED → projects SLOWER → correctly
+  **discounts** the assisted time for CS (Boston). A net-uphill/altitude race
+  gets credited faster.
+
+**Where it plugs in — TWO points that MUST stay consistent** (a shared
+`race_physical_correction(races)` helper feeding both is the clean structure):
+1. **The CS fit** — `src/models/bayes_cs_fit.py`. Apply the time correction
+   right where the XC pre-correction lives (`main`, ~L362-383: `time_sec *=
+   1/(1+xc_correction)`), i.e. on `race_times` before `log_race_times`
+   (~L423-425) enters the PyMC likelihood (~L533). This is a **PyMC model-input
+   change → needs Max's explicit approval before any run** ([[feedback-no-unapproved-fits]]).
+2. **The projection/display** — `cs_projection.project_races_to_5k_pace`
+   (~L287-367): apply the SAME correction to `t_race` *before* the β_long
+   un-bias (L357) and the CP3 solve. If the fit and the projection disagree, the
+   plotted race position won't match what fed CS.
+
+**Race-specific rules.**
+- **Distance stays OFFICIAL** (certified > GPS) — do NOT apply the §A
+  distance/`D_eff` correction. Grade/altitude/footing are TIME-only corrections;
+  `backfill_elevation.py` already uses `distance_m` for race rows (L82-96).
+- **Track races: grade gated OFF** (flat; barometric noise; Coros `slope=0` on
+  rolling) — but **altitude hypoxia still applies** (a Boulder track 5K is
+  altitude-suppressed). Gate grade on surface, not altitude.
+- **β_long is orthogonal** to terrain (it's race-execution/glycogen pacing
+  fade) — correct the race time for grade FIRST, then β_long un-bias. Don't
+  conflate.
+
+---
+
+#### GOTCHAS (the ones that will bite — read before touching code)
+
+1. **PyMC = approval gate.** `bayes_cs_fit.py` is the Bayesian CS fit. Changing
+   the race times it observes changes the foundational artifact every plot
+   depends on. Present the diff + a dry-run comparison; **never run-and-keep**.
+2. **Per-RACE, not per-day, elevation.** `elevation_measured.csv` /
+   `altitude_daily.csv` key on `date`; multi-race days exist (`race_seq`: a
+   track meet logs 800 m + 3000 m). Attribute the right activity to the right
+   race, or the join smears one race's profile onto another. (Moot for track —
+   grade off — but altitude and any road double-header are not.)
+3. **Don't double-count the categorical.** Where measured grade/footing apply,
+   the ×1.08 XC factor and the Downhill exclusion must be TURNED OFF for that
+   race — apply measured-where-available, categorical-only-as-fallback, never
+   both. Calibrate so a watch-covered XC race lands near its old ×1.08 (the 8%
+   was a blend of grade+footing+terrain; the measured channels should
+   reconstruct it, not stack on it).
+4. **Admitting Downhill races is a behavior change.** Downhill is currently
+   HARD-EXCLUDED (`build_eligible`, ~L87). The point of measured grade is to
+   ADMIT them with a grade-discounted time (Boston). That changes the eligible
+   set fed to CS — flag it explicitly and verify the discount is right before
+   admitting.
+5. **Circularity is accepted — but pin the curve, don't refit it.** Races feed
+   CS and we correct races against CS-derived effort. Per Max: **hardcode the
+   refund curve**; race points sit well above CS, which only feeds the top end
+   via 5K conversions (secondary). Do NOT fit the refund from the races being
+   corrected.
+6. **v_max edges are POLICY, not measurement.** `cs_projection`'s race edges
+   (`vmax_evidence`, the conservative-high read) are the same boundary as
+   `WORKOUT_VMAX_MPS`. A grade correction shifts implied CS, which interacts
+   with the v_max interval — apply carefully there, don't let a downhill
+   discount push a point through the policy edge unnoticed.
+7. **Effort-dependence is still un-regressable** (§A finding 2: effort ≈ the
+   residual, corr −0.99). Use the pinned `paved_refund` curve at race effort;
+   do NOT try to fit a race-effort footing/altitude term.
+
+(GHA/production parity is deliberately NOT in scope here — local correctness is
+the goal; matching CI is a deploy-time step, see Open items.)
+
+**Validation targets (regression checks):** **Boston** net −450 ft → ~3 s/mi
+net-downhill discount (slower flat-equivalent, correctly lowering its CS pull);
+**North Shore HM** (paved, balanced ~500 ft loop) ~0.4%. Track-at-altitude
+(Manhattan Track, Boulder 5400 ft) → altitude credit only, no grade.
+
+**Out of scope:** marathon eccentric-quad-damage / hill *placement* fatigue
+(why Boston "feels hard" despite being fast) — the model prices steady-state
+grade, not placement; the marathon set is sparse and inconsistent anyway.
 
 ---
 
 ## Open items
-- **GHA divergence (accepted):** Max's `details` cache isn't on CI, so the
-  deployed build computes only route-rule corrections (no watch elevation).
-  Public mileage ≈ logged-minus-rules (~29,030) vs local ~28,860. To make
-  them match, commit the small `*_measured.csv` + `elevation_measured.csv`
-  artifacts, or cache Max's details. Same caveat will apply to any deployed
-  long-run/race elevation correction.
+- **GHA/production parity — NOT a concern for this work (Max).** Local builds
+  use the watch elevation; CI currently doesn't (no `details` cache), so the
+  deployed numbers differ from local. This is BY DESIGN for now — local
+  correctness is the goal. When production goes live, GHA will be set up to
+  fetch the same watch data and run the pipeline identically; the fix lives
+  there (commit the `*_measured.csv` / `altitude_daily.csv` artifacts, or cache
+  the details), not in the modeling work. Do not treat it as a blocker or
+  re-flag it on every elevation feature.
 - **Footing-binary vs grade-engine double-count:** keep the flat-footing term
   and the grade cost as separate channels in the long-run/race models too.
 - **Trail terrain unidentified:** 1 location / ~29 mi — trail-specific refund

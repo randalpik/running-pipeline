@@ -39,7 +39,7 @@ from src.shared.elevation_cost import (elevation_cost, paved_refund,
                                        REFUND_RECOVERY)
 from src.shared.recovery_model import (ADMITTED_PARTNERS, MISLOGGED_ROUTES,
                                        per_run_elevation, per_run_altitude,
-                                       physical_route_betas)
+                                       physical_route_betas, altitude_regressor)
 from src.parsers.snapshot import find_snapshot, read_snapshot
 
 
@@ -649,10 +649,13 @@ def project_long_runs(cs, epoch):
     # runs to sea level so the frontier measures fitness, not where Max ran.
     pb = physical_route_betas()
     is_offroad = terr.isin(('mixed', 'trail')).astype(float).to_numpy()
-    alt_kft = per_run_altitude(lr).to_numpy()
+    # Altitude through the science-pinned threshold regressor (0 below 3000 ft,
+    # linear above) — same transform the betas were fit on, so fit/application
+    # stay consistent.
+    alt_eff = altitude_regressor(per_run_altitude(lr))
     lr['grade_cost_s_per_mi'] = cost
     lr['footing_cost_s_per_mi'] = pb['is_offroad'] * is_offroad
-    lr['alt_cost_s_per_mi'] = pb['alt_kft'] * alt_kft
+    lr['alt_cost_s_per_mi'] = pb['alt_kft'] * alt_eff
     phys_credit = (cost + lr['footing_cost_s_per_mi'].to_numpy()
                    + lr['alt_cost_s_per_mi'].to_numpy())
     t_run_flat = lr['t_run'] - phys_credit * (lr['d_m'] / 1609.344)

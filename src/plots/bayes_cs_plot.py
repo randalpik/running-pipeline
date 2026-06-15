@@ -141,10 +141,26 @@ def main():
     x_lo = window_start
     _, x_hi = data_span()
 
-    elig_plot = project_races_to_5k_pace(
+    # Project twice from the SAME race rows so each race shows the physical
+    # route correction at its OWN distance, THEN converted to 5K (Max, June
+    # 2026 — corrected-then-converted is the informative order, not convert-
+    # then-adjust). `pace_norm_min` is the corrected diamond; `pace_norm_min_unc`
+    # is the same race with the grade/footing/altitude correction OFF — the
+    # "before correction" reference. The XC pre-correction stays on in both so
+    # the only difference between them is the §B physical route correction.
+    elig_proj = project_races_to_5k_pace(
         elig_plot, summary_plot, beta_long_med, d_thresh_long,
         apply_xc_correction=True, xc_correction=xc_correction)
-    elig_plot = elig_plot[elig_plot['pace_norm_min'].notna()].copy()
+    # "Before correction" baseline: BOTH corrections off (physical route AND the
+    # categorical XC ×1.08) so the connector shows the TOTAL correction applied —
+    # the §B physical correction on watch races AND the XC terrain factor on
+    # pre-watch XC races (which have no watch data, so the categorical is what
+    # corrects them).
+    elig_unc = project_races_to_5k_pace(
+        elig_plot, summary_plot, beta_long_med, d_thresh_long,
+        apply_xc_correction=False, apply_physical_correction=False)
+    elig_proj['pace_norm_min_unc'] = elig_unc['pace_norm_min'].to_numpy()
+    elig_plot = elig_proj[elig_proj['pace_norm_min'].notna()].copy()
     print(f'Hyperbolic projection (5K-equiv): {len(elig_plot)} race diamonds')
 
     # ---------- performance frontier (red line) ----------
@@ -219,34 +235,75 @@ def main():
     def _race_inner(row):
         ev = row.get('event') or '(no event)'
         if pd.isna(ev): ev = '(no event)'
-        t_orig = row.get('time_sec_original', row['time_sec'])
+        dist = float(row['distance_m'])
+        dist_mi = dist / 1609.344
+        t_orig = float(row.get('time_sec_original', row['time_sec']))
         p_orig = row.get('pace_sec_per_mi_original',
                          row.get('pace_sec_per_mi'))
         pace_raw = (sec_to_mss(p_orig)
                     if p_orig is not None and not pd.isna(p_orig) else '')
         is_xc = str(row.get('surface', '')).upper() == 'XC'
-        is_5k = abs(float(row['distance_m']) - 5000.0) < 1.0
+        is_5k = abs(dist - 5000.0) < 1.0
 
+        # Course correction (§B): the race's time/pace at its OWN distance after
+        # the physical route correction (+ XC categorical, whatever applied) —
+        # i.e. corrected, NOT yet converted to 5K. row['time_sec'] is exactly
+        # that (project mutates it; time_sec_original is the raw race time).
+        # Shown only when a correction actually moved the time.
+        t_corr = float(row['time_sec'])
+        has_corr = abs(t_corr - t_orig) >= 1.0
+        corr_line = ''
+        if has_corr:
+            corr_line = (f"<div>Course correction: <b>{sec_to_mss_full(t_corr)}</b> "
+                         f"<span class='tt-mute'>"
+                         f"({sec_to_mss(t_corr / dist_mi)}/mi)</span></div>")
+
+        # 5K-equiv (the diamond's y). Suppressed only when it would just echo
+        # the actual time (a flat, uncorrected 5K — no XC, no route correction).
         equiv_pace_sec = float(row['pace_norm_min']) * 60
         equiv_time_sec = equiv_pace_sec * 5000.0 / 1609.344
-        if is_5k and not is_xc:
-            equiv_line = ''
-        else:
-            xc_color = SURFACES['XC']
-            if is_xc and is_5k:
-                label = f'<span style="color:{xc_color}">XC-corrected</span>'
-            elif is_xc:
-                label = f'5K-equiv <span style="color:{xc_color}">(XC-corrected)</span>'
-            else:
-                label = '5K-equiv'
-            equiv_line = (f"<div>{label}: <b>{sec_to_mss(equiv_time_sec)}</b> "
+        equiv_line = ''
+        if (not is_5k) or is_xc or has_corr:
+            equiv_line = (f"<div>5K-equiv: <b>{sec_to_mss(equiv_time_sec)}</b> "
                           f"<span class='tt-mute'>"
                           f"({sec_to_mss(equiv_pace_sec)}/mi)</span></div>")
         return (f"<div>{ev} <span class='tt-mute'>({row['surface']})</span></div>"
-                f"<div>{int(row['distance_m'])}m in "
+                f"<div>{int(dist)}m in "
                 f"<b>{sec_to_mss_full(t_orig)}</b> "
                 f"<span class='tt-mute'>({pace_raw}/mi)</span></div>"
-                f"{equiv_line}")
+                f"{corr_line}{equiv_line}")
+
+    # "Before correction" reference: for races a correction moved materially
+    # (>1 s/mi at 5K-equiv), show an open diamond at the UNCORRECTED 5K-equiv
+    # plus a connector to the corrected diamond — so the per-race effect (actual
+    # time corrected at its own distance, then converted) is visible. Covers BOTH
+    # the §B physical route correction (watch races) and the categorical XC
+    # ×1.08 (pre-watch XC races). Toggleable via its own legend entry; default-on.
+    # Added BEFORE the race diamonds so the solid diamonds draw ON TOP of these
+    # connectors/ghosts (Plotly draws later traces above earlier ones).
+    moved = elig_plot[(elig_plot['pace_norm_min_unc'].notna()) &
+                      ((elig_plot['pace_norm_min_unc'] - elig_plot['pace_norm_min']).abs()
+                       * 60 > 1.0)].copy()
+    if len(moved):
+        cx, cy = [], []
+        for _, r in moved.iterrows():
+            cx += [r['date'], r['date'], None]
+            cy += [r['pace_norm_min_unc'], r['pace_norm_min'], None]
+        fig.add_trace(go.Scatter(
+            x=cx, y=cy, mode='lines', name='Before correction',
+            line=dict(color='rgba(180,180,180,0.65)', width=1.2),
+            legendgroup='precorr', legendgrouptitle_text='Correction',
+            hoverinfo='skip'))
+        fig.add_trace(go.Scatter(
+            x=moved['date'], y=moved['pace_norm_min_unc'],
+            mode='markers', name='Before correction', showlegend=False,
+            marker=dict(color='rgba(185,185,185,0.0)', size=8, symbol='diamond-open',
+                        line=dict(width=1.2, color='rgba(185,185,185,0.83)')),
+            legendgroup='precorr', hoverinfo='skip',
+            meta={'snap_eligible': False}))
+        n_xc_moved = int((moved['surface'].astype(str).str.upper() == 'XC').sum())
+        print(f'Before-correction reference: {len(moved)} races moved >1 s/mi '
+              f'({n_xc_moved} XC)')
 
     for surf, col in surf_colors.items():
         sub = elig_plot[elig_plot['surface'] == surf]

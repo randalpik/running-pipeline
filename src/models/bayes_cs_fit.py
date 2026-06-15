@@ -49,6 +49,7 @@ import arviz as az
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, DEBUG_DIR
 from src.shared.plot_window import pad_range
+from src.shared.recovery_model import race_physical_correction
 
 
 DEFAULT_RACES   = str(DATA_DIR / 'races.csv')
@@ -82,9 +83,16 @@ def build_eligible(races_path):
     if 'event' not in races.columns:
         races['event'] = ''
 
+    # Downhill is CS-ineligible by default — but a watch-covered Downhill race
+    # is ADMITTED, because the measured grade correction (§B) discounts its
+    # downhill-assisted time to a flat-equivalent that IS CS-comparable. The
+    # categorical hard-exclusion remains the pre-watch fallback. (No current
+    # Downhill race has watch coverage, so this is a no-op today; it arms the
+    # behavior for any future watch-covered downhill course.)
+    has_measured = race_physical_correction(races)['has_measured'].to_numpy()
     elig = races[
         (~races['fatigued'].astype(bool)) &
-        (races['surface'] != 'Downhill') &
+        ((races['surface'] != 'Downhill') | has_measured) &
         (races['time_sec'] >= 120)
     ].copy().sort_values('date').reset_index(drop=True)
     return elig
@@ -148,9 +156,15 @@ def derive_exclusions(elig, xc_correction=0.06,
     df = elig.copy().reset_index(drop=True)
     df['date'] = pd.to_datetime(df['date'])
 
-    # XC pre-correction (matches main fit's pre-correction)
+    # Race-time pre-correction (matches the main fit). Physical route
+    # correction first (grade + footing + altitude → flat/sea-level-equivalent),
+    # then the categorical XC factor ONLY where there's no measured correction
+    # — so the exclusion residuals are computed on the same times the fit sees.
     df['time_sec_corr'] = df['time_sec'].astype(float)
-    xc_mask = df['surface'].fillna('').astype(str).str.upper() == 'XC'
+    corr = race_physical_correction(df)
+    df['time_sec_corr'] = df['time_sec_corr'] - corr['dt_sec'].to_numpy()
+    has_measured = corr['has_measured'].to_numpy()
+    xc_mask = (df['surface'].fillna('').astype(str).str.upper() == 'XC') & ~has_measured
     df.loc[xc_mask, 'time_sec_corr'] = df.loc[xc_mask, 'time_sec_corr'] / (1.0 + xc_correction)
 
     # Distance bands
@@ -370,7 +384,28 @@ def main():
     elig['time_sec_original'] = elig['time_sec'].copy()
     if 'pace_sec_per_mi' in elig.columns:
         elig['pace_sec_per_mi_original'] = elig['pace_sec_per_mi'].copy()
-    is_xc_mask = elig['surface'].fillna('').astype(str).str.upper() == 'XC'
+
+    # ---------- physical route correction (grade + footing + altitude) ----------
+    # Convert each watch-covered race to its flat / sea-level / smooth-equivalent
+    # TIME before it enters the likelihood, so CS measures fitness not the
+    # course (docs/watch-stream-enrichment-plan.md §B). MUST match the same
+    # helper in cs_projection (the displayed diamonds) and derive_exclusions.
+    # Net-downhill races get time ADDED (Boston discounted); net-uphill /
+    # altitude races credited faster. Subtracted BEFORE the β_long un-bias.
+    phys = race_physical_correction(elig)
+    elig['phys_dt_sec'] = phys['dt_sec'].to_numpy()
+    elig['time_sec'] = elig['time_sec'].astype(float) - elig['phys_dt_sec']
+    has_measured = phys['has_measured'].to_numpy()
+    n_meas = int(has_measured.sum())
+    if n_meas:
+        moved = elig['phys_dt_sec'][has_measured]
+        print(f"Physical route correction: {n_meas} watch-covered races "
+              f"(dt {moved.min():+.0f}..{moved.max():+.0f}s, "
+              f"median {moved.median():+.1f}s)")
+
+    # The categorical XC factor applies ONLY where there's no measured
+    # correction (pre-watch fallback; measured grade+footing supersedes it).
+    is_xc_mask = (elig['surface'].fillna('').astype(str).str.upper() == 'XC') & ~has_measured
     n_xc = int(is_xc_mask.sum())
     if args.xc_correction > 0 and n_xc > 0:
         factor = 1.0 / (1.0 + args.xc_correction)

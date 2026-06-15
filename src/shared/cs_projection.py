@@ -286,6 +286,7 @@ def _beta_long_factor(d, beta_long, d_thresh_long):
 
 def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
                               *, apply_xc_correction=True, xc_correction=0.0,
+                              apply_physical_correction=True, daily=None,
                               norm_dist_m=5000.0):
     """Project each race row to a target ANCHOR distance via the CP3 model.
 
@@ -330,8 +331,27 @@ def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
     if 'pace_sec_per_mi' in df.columns:
         df['pace_sec_per_mi_original'] = df['pace_sec_per_mi'].astype(float)
 
+    # Physical route correction (grade + off-road footing + altitude) — convert
+    # each watch-covered race to its flat / sea-level / smooth-equivalent time
+    # so the projection (and the frontier it feeds) matches what informs the CS
+    # fit (docs/watch-stream-enrichment-plan.md §B). MUST stay consistent with
+    # the same helper applied in bayes_cs_fit. Where a race has a measured
+    # correction the categorical XC factor is turned OFF for it (measured wins;
+    # categorical is the pre-watch fallback). dt_sec is 0 on unmeasured races,
+    # so this is a no-op there.
+    has_measured = pd.Series(False, index=df.index)
+    if apply_physical_correction:
+        from src.shared.recovery_model import race_physical_correction
+        corr = race_physical_correction(df, daily)
+        has_measured = corr['has_measured']
+        df['phys_dt_sec'] = corr['dt_sec'].to_numpy()
+        df['time_sec'] = df['time_sec'].astype(float) - df['phys_dt_sec']
+        if 'pace_sec_per_mi' in df.columns:
+            df['pace_sec_per_mi'] = (df['pace_sec_per_mi'].astype(float)
+                                     - corr['total_s_per_mi'].to_numpy())
+
     if apply_xc_correction and xc_correction > 0 and 'surface' in df.columns:
-        is_xc = df['surface'].fillna('').astype(str).str.upper() == 'XC'
+        is_xc = (df['surface'].fillna('').astype(str).str.upper() == 'XC') & ~has_measured
         if is_xc.any():
             factor = 1.0 / (1.0 + xc_correction)
             df.loc[is_xc, 'time_sec'] = df.loc[is_xc, 'time_sec'].astype(float) * factor
