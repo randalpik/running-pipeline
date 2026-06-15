@@ -540,10 +540,15 @@ def race_physical_correction(races, daily=None):
         daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
     # Join location metadata (terrain/altitude) from the daily race rows —
     # races.csv carries none. One daily row per race day (race_seq=1 back-prop).
+    # A watch-only profile (Coros) has no location-metadata join, so daily
+    # carries none of these columns; select only what's present and let the
+    # downstream defaults (terrain -> 'paved', altitude -> per-run/0) apply.
+    meta_cols = [c for c in ('terrain_type', 'altitude', 'elev_per_mile', 'location')
+                 if c in daily.columns]
     meta = (daily[daily['run_type'] == 'race']
-            [['date', 'terrain_type', 'altitude', 'elev_per_mile', 'location']]
+            [['date'] + meta_cols]
             .drop_duplicates('date')).copy()
-    for c in ('terrain_type', 'altitude', 'elev_per_mile', 'location'):
+    for c in meta_cols:
         if c in df.columns:
             df = df.drop(columns=[c])
     # ``date`` may be datetime64 (races.csv load) or python date (build_eligible
@@ -551,6 +556,10 @@ def race_physical_correction(races, daily=None):
     df['_dk'] = pd.to_datetime(df['date']).dt.date
     meta['_dk'] = pd.to_datetime(meta['date']).dt.date
     df = df.merge(meta.drop(columns=['date']), on='_dk', how='left').drop(columns=['_dk'])
+    # terrain_type is accessed directly below; materialize it as blank when the
+    # profile has no terrain metadata so it maps to the 'paved' (flat) default.
+    if 'terrain_type' not in df.columns:
+        df['terrain_type'] = np.nan
 
     gain_pm, loss_pm, dem_mean_kft, grade_avail = _race_dem_elevation(df)
     is_track = df['surface'].fillna('').astype(str).str.lower() == 'track'
