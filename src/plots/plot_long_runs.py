@@ -196,26 +196,34 @@ def main():
     corr_miles    = lr['corr_miles'].astype(float).fillna(miles)
     has_corr      = corr_pace_min.notna().any()
 
-    # ---------- normalization (long-run-sourced covariates) ----------
-    # Betas come from the TQ long-run model (same fit plot_training_quality
-    # renders): temperature fit on the in-slice long runs, race fatigue as
-    # one fitted scale with the marathon/short contrast pinned from the
-    # recovery fit (see long_run_model docstring). Recovery-sourced
-    # amplitudes were tried and rejected (June 2026) — long runs are hit
-    # ~2.3× harder than recovery runs — and recovery's time-of-day effect
-    # is dead on long runs (see docs/training-quality-reference.md).
-    # Adjustments apply to every plotted run, including out-of-slice ones
-    # the fit itself excludes.
+    # ---------- normalization (full physical + training-state) ----------
+    # Normalize subtracts EVERYTHING project_long_runs / the TQ long-run model
+    # apply to reach a run's flat / sea-level race-equivalent pace, so the
+    # toggle on the Long Runs graph matches the Training page's decomposition
+    # exactly (synced — same physical_route_betas + same long-run fit):
+    #   PHYSICAL ROUTE (per-run, s/mi, computed in project_long_runs):
+    #     grade (measured gain/loss through the elevation engine) +
+    #     off-road footing + altitude — all pinned, the SAME constants the
+    #     recovery model and the Training adjustments box show.
+    #   TRAINING STATE (long-run-fit betas, transferable_contributions):
+    #     temperature + recent-race fatigue (TOD is dead on long runs).
+    # Default is OFF → raw logged pace; the effort-level intercept is NEVER
+    # applied. Adjustments cover every plotted run, including out-of-slice
+    # ones the fit itself excludes.
     norm_adj = None
     lr_in = lr[lr['excluded_reason'].isna()]
+    phys_adj = (lr['grade_cost_s_per_mi'].fillna(0).to_numpy()
+                + lr['footing_cost_s_per_mi'].fillna(0).to_numpy()
+                + lr['alt_cost_s_per_mi'].fillna(0).to_numpy())
     if len(lr_in) >= MIN_COV_N:
         quality_dates = load_quality_dates()
         _, lr_fit, _ = fit_long_run_model(lr_in.copy(), quality_dates)
-        if lr_fit.cov_coefs:
-            adj = transferable_contributions(lr, lr_fit.cov_coefs, quality_dates)
-            # Omit a dead checkbox (profile where every adjustment is ~0).
-            if np.abs(adj).max() > 0.05:
-                norm_adj = adj
+        state_adj = (transferable_contributions(lr, lr_fit.cov_coefs, quality_dates)
+                     if lr_fit.cov_coefs else np.zeros(len(lr)))
+        adj = phys_adj + state_adj
+        # Omit a dead checkbox (profile where every adjustment is ~0).
+        if np.abs(adj).max() > 0.05:
+            norm_adj = adj
 
     # Training's actual exclusions for the amber ring — the shared
     # track-relative prune (written by plot_training_quality, which runs
@@ -395,8 +403,10 @@ def main():
             widgets.divider()
             + widgets.checkbox_rows([('normalize', 'Normalize')],
                                     data_attr='lrnorm', checked=False)
-            + widgets.subtitle('Subtract modeled temperature and '
-                               'recent-race effects (long-run-fit betas).')
+            + widgets.subtitle('Subtract physical route (grade, off-road '
+                               'footing, altitude) and training-state '
+                               '(temperature, recent-race) effects → the '
+                               'flat / sea-level race-equivalent pace.')
         )
     overlay_html = widgets.sidebar(
         'lr-gradient',

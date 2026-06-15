@@ -6,9 +6,11 @@
 // raw_color / corr_color — built in plot_long_runs.py). Points without a
 // correction keep their logged values in the corr arrays' fallbacks.
 //
-// Normalize subtracts the TQ long-run model's covariate contributions
-// (temperature, race fatigue) via window.__PLOT_LR_NORM_ADJ (sec/mi). It
-// stacks on top of whichever base the Watch toggle selects.
+// Normalize subtracts the full flat / sea-level race-equivalent adjustment
+// via window.__PLOT_LR_NORM_ADJ (sec/mi): physical route (grade, off-road
+// footing, altitude) + training-state (temperature, race fatigue), the same
+// decomposition the Training page applies. It stacks on top of whichever base
+// the Watch toggle selects.
 //
 // The condition-tag halo rings are separate traces whose meta.idx maps
 // each ring point to its marker-trace position; their y is recomputed from
