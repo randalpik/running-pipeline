@@ -6,8 +6,11 @@
 All eight panels live in ONE 4-row figure (render_plot's single-figure
 contract). Every trace is tagged ``meta.page`` ('weather' | 'other'); the
 sibling ``plot_qualitative_trends.js`` flips trace visibility by page and
-relayouts the four shared y-axes, the eight inset-title annotations, and the
-Time solar raster's visibility. Default page is Weather.
+relayouts the four shared y-axes plus each panel's image/shape visibility.
+Inset titles are HTML overlay divs (``.rp-inset``) positioned per subplot by
+that same JS; each carries a ↗ link opening the panel as its own standalone
+full page (``--panel <key>`` -> ``qualitative_trends_<key>.html``, built by
+``build_single``). Default page is Weather.
 
 Panel render paths:
   - strip envelope + white trend line (the classic look): Temperature, Humidity,
@@ -33,7 +36,8 @@ import argparse
 import json
 import os
 import sys
-from datetime import timezone, timedelta
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
@@ -168,17 +172,93 @@ def load_series(daily_path, alt_path, time_path, start_date):
     full['weight_interp'] = interpolate_short_gaps(
         full['weight_lbs'], WEIGHT_INTERP_MAX_GAP)
 
-    # Extend the Time panel into the pre-watch era from the hand-logged
-    # time-of-day bin + run length + the logged location's solar times.
+    # Canonical city table: {city_state: (lat, lon, tz_iana)}. Drives the Time
+    # panel's location + timezone for BOTH eras (see reproject_watch_to_canonical
+    # and estimate_binned_time), so the watch's reported GPS/offset is never
+    # trusted for the gradient.
     cc_path = os.path.join(os.path.dirname(daily_path), 'city_coords.csv')
     coords = {}
     if os.path.exists(cc_path):
         cc = pd.read_csv(cc_path)
-        coords = {r['city_state']: (r['latitude'], r['longitude'])
+        has_tz = 'tz' in cc.columns
+        coords = {r['city_state']: (r['latitude'], r['longitude'],
+                                    r['tz'] if has_tz and pd.notna(r['tz']) else None)
                   for _, r in cc.iterrows()
                   if pd.notna(r['latitude']) and pd.notna(r['longitude'])}
+
+    # Watch era: reproject each run's stored (local-clock, watch-tz) time onto
+    # the canonical city's tz + coordinates. Pre-watch era: estimate from the
+    # time-of-day bin against the canonical city's solar times.
+    reproject_watch_to_canonical(full, coords)
     full['time_est'] = estimate_binned_time(full, coords)
     return full
+
+
+# ---------- canonical-location timezone helpers ----------
+
+def _zone(tz_name):
+    """ZoneInfo for an IANA name, or None (missing/unknown)."""
+    if not tz_name or (isinstance(tz_name, float) and np.isnan(tz_name)):
+        return None
+    try:
+        return ZoneInfo(str(tz_name))
+    except Exception:
+        return None
+
+
+def _offset_min_at(zone, d):
+    """DST-correct UTC offset (minutes) of ``zone`` at local noon on date ``d``."""
+    return int(round(zone.utcoffset(
+        datetime(d.year, d.month, d.day, 12)).total_seconds() / 60.0))
+
+
+def reproject_watch_to_canonical(full, coords):
+    """Rewrite the Time band + solar inputs of every watch-era day from the
+    CANONICAL city rather than the watch's reported GPS/offset.
+
+    The watch's absolute moment is reliable; its ``tz_min`` (and a failed-GPS
+    home-default lat/lon) are not. So we recover each run's UTC instant from its
+    stored local-clock minutes + the watch offset it was written with, then
+    project that instant into the canonical city's IANA timezone (DST-correct)
+    and coordinates. ``start_min``/``end_min`` become canonical local minutes,
+    ``lat``/``lon`` the canonical city, ``tz_min`` the canonical offset (which
+    the solar gradient consumes). Days whose canonical city has no cached
+    coords/tz keep the watch values (graceful fallback)."""
+    if 'city_state' not in full:
+        return
+    have = full['start_min'].notna() & full['tz_min'].notna()
+    for ts in full.index[have]:
+        cs = full.at[ts, 'city_state']
+        info = coords.get(cs) if isinstance(cs, str) else None
+        if not info:
+            continue
+        lat, lon, tzname = info
+        zone = _zone(tzname)
+        if zone is None or pd.isna(lat) or pd.isna(lon):
+            continue
+        day = ts.date()
+        watch_zone = timezone(timedelta(minutes=float(full.at[ts, 'tz_min'])))
+        base = datetime(day.year, day.month, day.day, tzinfo=watch_zone)
+
+        def to_canon(minutes, _b=base, _z=zone, _day=day):
+            utc = (_b + timedelta(minutes=float(minutes))).astimezone(timezone.utc)
+            loc = utc.astimezone(_z)
+            cm = loc.hour * 60 + loc.minute + loc.second / 60.0
+            if loc.date() < _day:        # offset pushed it onto an adjacent day
+                cm = 0.0
+            elif loc.date() > _day:
+                cm = 1439.0
+            return cm, loc.utcoffset().total_seconds() / 60.0
+
+        s_min, off = to_canon(full.at[ts, 'start_min'])
+        e_min, _ = to_canon(full.at[ts, 'end_min'])
+        if e_min <= s_min:               # crossed midnight in canonical tz
+            e_min = 1439.0
+        full.at[ts, 'start_min'] = round(s_min, 1)
+        full.at[ts, 'end_min'] = round(e_min, 1)
+        full.at[ts, 'lat'] = round(float(lat), 4)
+        full.at[ts, 'lon'] = round(float(lon), 4)
+        full.at[ts, 'tz_min'] = round(off)
 
 
 # ---------- pre-watch time-of-day estimate ----------
@@ -220,8 +300,11 @@ def estimate_binned_time(full, coords):
         ll = coords.get(full.at[ts, 'city_state'])
         if ll is None:
             continue
-        lat, lon = ll
-        tz = _tz_min_from_lon(lon, ts)
+        lat, lon, tzname = ll
+        # Canonical IANA tz (DST-correct) when cached; longitude+US-DST only as
+        # a last-resort fallback for a city without a resolved zone.
+        zone = _zone(tzname)
+        tz = _offset_min_at(zone, ts.date()) if zone else _tz_min_from_lon(lon, ts)
         a = solar_anchors_local(ts.date(), lat, lon, tz)
         sr, noon, ss = a['sunrise'], a['solar_noon'], a['sunset']
         if sr is None or noon is None or ss is None:
@@ -401,41 +484,21 @@ def _str_arr(s):
             else str(v) for v in s.values]
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--daily', default=DEFAULT_DAILY)
-    ap.add_argument('--altitude', default=DEFAULT_ALT)
-    ap.add_argument('--time', default=DEFAULT_TIME)
-    ap.add_argument('--cf', default=DEFAULT_CF)
-    ap.add_argument('--out-dir', default=DEFAULT_OUT)
-    ap.add_argument('--start', default=None)
-    args = ap.parse_args()
-    os.makedirs(args.out_dir, exist_ok=True)
+# Per-page y-axis key/suffix for subplot row ``r`` (row 1 has no numeric
+# suffix in Plotly's axis naming).
+def _axkey(r):
+    return 'yaxis' if r == 1 else f'yaxis{r}'
 
-    start = args.start or str(daily_floor().date())
-    full = load_series(args.daily, args.altitude, args.time, start)
-    dates = full.index
-    n_days = len(dates)
-    with open(args.cf) as f:
-        cf = json.load(f)
-    weather_cf = cf['rules']['weather']
-    cond_cf = cf['rules']['conditions']
-    # Older / variant log vocabulary that predates the CF palette keys (esp.
-    # 2016, which logged 'clouds'/'drizzle'/'showers') -> nearest CF bin, so
-    # those days color correctly instead of falling to the gray fallback.
-    weather_syn = {'clouds': 'cloudy', 'drizzle': 'light rain',
-                   'showers': 'light rain', 'fog': 'foggy', 'indoors': 'inside'}
-    # The CF pastels for clear/cloudy/overcast/foggy are light-cell tints that
-    # wash into indistinguishable near-grays on the dark plot bg. Remap just
-    # those to dark-legible tones — clear stays a recognizable light blue, the
-    # cloud family stays neutral grays at distinct lightness; every other
-    # weather keeps its CF hex (already saturated enough).
-    weather_dark = {'clear': '#9FC5E8', 'cloudy': '#B0B0B0',
-                    'overcast': '#7F7F7F', 'foggy': '#D9D9D9'}
 
-    def wcolor(w):
-        return weather_dark.get(w) or weather_cf.get(w, '#888888')
+TIME_TICKVALS = [0, 240, 480, 720, 960, 1200, 1440]
+TIME_TICKTEXT = ['0:00', '4:00', '8:00', '12:00', '16:00', '20:00', '']
 
+
+def build_panels(full):
+    """The eight panel specs (4 Weather + 4 Other), with y-ranges derived from
+    ``full``. ``type`` is 'scatter' (Conditions) or 'envelope'; an envelope is
+    single-value (``series`` -> one MA trend) or range (``lo``/``hi`` -> two
+    edges), coloured by anchors or the per-day ``solar`` ramp (Time)."""
     miles_max = float(full['miles'].max())
 
     def pad_range(series, frac=0.04, floor0=False):
@@ -463,14 +526,7 @@ def main():
         alt_range = [0.0, 1.0]
     weight_range = pad_range(full['weight_interp'])
 
-    # ---- panel specs ----
-    # type: 'scatter' (Conditions) or 'envelope'. Every envelope renders the
-    # same way — a gradient RASTER fill (layer above) + white vector trend path
-    # shape(s) (layer above) — so there is one code path and no strip/banding.
-    # An envelope is single-value (``series`` -> one MA trend) or range
-    # (``lo``/``hi`` -> two edge trends); colour is anchor-based (``anchors``)
-    # or the per-day ``solar`` ramp (Time).
-    panels = [
+    return [
         # Weather page
         dict(page='weather', row=1, key='conditions', label='Conditions',
              unit='°C', type='scatter', y_range=temp_range),
@@ -512,6 +568,323 @@ def main():
              y_range=weight_range),
     ]
 
+
+def _prepare(args):
+    """Shared load/setup for both the multi-panel and single-panel builds:
+    returns ``(start, full, panels, cond_cf, weather_syn, wcolor)``."""
+    os.makedirs(args.out_dir, exist_ok=True)
+    start = args.start or str(daily_floor().date())
+    full = load_series(args.daily, args.altitude, args.time, start)
+    with open(args.cf) as f:
+        cf = json.load(f)
+    weather_cf = cf['rules']['weather']
+    cond_cf = cf['rules']['conditions']
+    # Older / variant log vocabulary that predates the CF palette keys (esp.
+    # 2016, which logged 'clouds'/'drizzle'/'showers') -> nearest CF bin, so
+    # those days color correctly instead of falling to the gray fallback.
+    weather_syn = {'clouds': 'cloudy', 'drizzle': 'light rain',
+                   'showers': 'light rain', 'fog': 'foggy', 'indoors': 'inside'}
+    # The CF pastels for clear/cloudy/overcast/foggy are light-cell tints that
+    # wash into indistinguishable near-grays on the dark plot bg. Remap just
+    # those to dark-legible tones — clear stays a recognizable light blue, the
+    # cloud family stays neutral grays at distinct lightness; every other
+    # weather keeps its CF hex (already saturated enough).
+    weather_dark = {'clear': '#9FC5E8', 'cloudy': '#B0B0B0',
+                    'overcast': '#7F7F7F', 'foggy': '#D9D9D9'}
+
+    def wcolor(w):
+        return weather_dark.get(w) or weather_cf.get(w, '#888888')
+
+    panels = build_panels(full)
+    return start, full, panels, cond_cf, weather_syn, wcolor
+
+
+def render_panel(fig, pn, row, full, dates, *, cond_cf, weather_syn, wcolor,
+                 visible):
+    """Build one panel (scatter or gradient envelope) into ``row`` of ``fig``.
+
+    Drives both the multi-panel figure (``row = pn['row']``) and a single-panel
+    standalone figure (``row = 1``) — same traces/images/shapes/payload either
+    way. Returns ``(image_idx, shape_idx, tab, data_range)`` where ``image_idx``
+    / ``shape_idx`` are the indices of the layout images / shapes this panel
+    added (for the page-visibility relayout), ``tab`` is a tooltip-payload
+    fragment (``{'avg':…, 'lo':…, 'hi':…, 'day':…}``) to merge into the page's
+    tab, and ``data_range`` is this panel's ``(first_date, last_date)`` data
+    extent (``None`` if empty) — the standalone single-panel build tightens its
+    x-axis to exactly that, since it shares no axis with the other panels.
+    ``visible`` is the initial visibility of the raster + trend shapes (the
+    multi-panel page toggle flips it; single-panel passes ``True``)."""
+    page = pn['page']
+    y0, y1 = pn['y_range']
+    image_idx, shape_idx = [], []
+    tab = {'avg': {}, 'lo': {}, 'hi': {}, 'day': {}}
+
+    if pn['type'] == 'scatter':
+        # Conditions: dot per logged day at y=temp; fill=weather, ring=conditions.
+        sub = full[full['weather'].notna() & full['temp_c'].notna()]
+        fill, ring, ringw = [], [], []
+        for w, c in zip(sub['weather'], sub['conditions']):
+            ws = str(w).strip().lower()
+            fill.append(wcolor(weather_syn.get(ws, ws)))
+            # NaN conditions (the new pandas `str` dtype yields pd.NA, which
+            # never equals the literal 'nan') and 'dry' mean no ring.
+            cs = str(c).strip().lower() if pd.notna(c) else ''
+            if cs in ('', 'dry', 'none', 'nan'):
+                ring.append('rgba(0,0,0,0)')
+                ringw.append(0.0)
+            else:
+                ring.append(cond_cf.get(cs, '#cccccc'))
+                ringw.append(1.4)
+        fig.add_trace(go.Scatter(
+            x=sub.index, y=sub['temp_c'], mode='markers',
+            marker=dict(size=6, color=fill, opacity=1.0,
+                        line=dict(color=ring, width=ringw)),
+            hoverinfo='skip', showlegend=False, meta={'page': page},
+        ), row=row, col=1)
+        tab['day']['weather'] = _str_arr(full['weather'])
+        tab['day']['conditions'] = _str_arr(full['conditions'])
+        tab['day']['cond_temp'] = _round_arr(full['temp_c'], 1)
+        drange = (sub.index.min(), sub.index.max()) if len(sub.index) else None
+        return image_idx, shape_idx, tab, drange
+
+    # ---- envelope panel: gradient raster fill + vector trend shape(s) ----
+    key = pn['key']
+
+    if 'series' in pn:                          # single-value envelope
+        s = pn['series']
+        lo_s, hi_s = env_edges(s, s, PEAK_DISTANCE_DAYS)
+        if key == 'weight':                     # don't bridge >7d gaps
+            lo_s, hi_s = lo_s.where(s.notna()), hi_s.where(s.notna())
+        # The envelope is the single source of truth for gaps; force the
+        # trend (and tooltip range) onto exactly its valid days so the white
+        # line starts/stops/breaks WITH the band. min_periods=1 keeps the MA
+        # finite to the band edges; masking trims it to no further.
+        env_valid = lo_s.notna() & hi_s.notna()
+        ma = rolling_ma(s, MA_WINDOW[key], min_periods=1).where(env_valid)
+        lo_raw, hi_raw = rolling_minmax_raw(s, RANGE_WINDOW)
+        lo_raw, hi_raw = lo_raw.where(env_valid), hi_raw.where(env_valid)
+        trends = [ma]                           # one white MA trend line
+        tab['avg'][key] = _round_arr(ma)
+        tab['lo'][key] = _round_arr(lo_raw)
+        tab['hi'][key] = _round_arr(hi_raw)
+        tab['day'][key] = _round_arr(s, 1)
+    else:                                       # range (two-edge) envelope
+        lo_in = pd.Series(pn['lo'], index=dates)
+        hi_in = pd.Series(pn['hi'], index=dates)
+        lo_s, hi_s = env_edges(lo_in, hi_in, PEAK_DISTANCE_DAYS)
+        trends = []                             # range panels draw no lines
+        # Tooltip avg row (unified format): avg = smoothed band midpoint;
+        # (min to max) = the rolling envelope. Masked to the band's valid
+        # days so the tooltip only reports where the band is drawn.
+        env_valid = lo_s.notna() & hi_s.notna()
+        avg = rolling_ma((lo_in + hi_in) / 2.0,
+                         MA_WINDOW[key], min_periods=1).where(env_valid)
+        lo_raw = lo_in.rolling(RANGE_WINDOW, min_periods=1,
+                               center=True).min().where(env_valid)
+        hi_raw = hi_in.rolling(RANGE_WINDOW, min_periods=1,
+                               center=True).max().where(env_valid)
+        d = 0 if key == 'altitude' else 1
+        tab['avg'][key] = _round_arr(avg, d)
+        tab['lo'][key] = _round_arr(lo_raw, d)
+        tab['hi'][key] = _round_arr(hi_raw, d)
+        tab['day'][key + '_lo'] = _round_arr(lo_in, 1)
+        tab['day'][key + '_hi'] = _round_arr(hi_in, 1)
+        if key == 'time' and 'time_est' in full:
+            tab['day']['time_est'] = [bool(v) for v in full['time_est'].values]
+
+    # Per-day colour ramp: the per-day solar gradient (Time) or a constant
+    # anchor-based vertical ramp (every other panel).
+    if pn.get('solar'):
+        y_p = y1 - (np.arange(RASTER_H) + 0.5) / RASTER_H * (y1 - y0)
+        date_py = [d.date() for d in dates]
+        # The rolling envelope can reach a few days past the last GPS fix;
+        # fill coords forward/back so every rendered column has a location.
+        lat_arr = full['lat'].ffill().bfill().fillna(40.015).values
+        lon_arr = full['lon'].ffill().bfill().fillna(-105.27).values
+        tz_arr = full['tz_min'].ffill().bfill().fillna(-420).values
+
+        def column_colors(d, _yp=y_p, _dp=date_py,
+                          _lat=lat_arr, _lon=lon_arr, _tz=tz_arr):
+            return solar_column_colors(
+                _dp[d], float(_lat[d]), float(_lon[d]), int(_tz[d]), _yp)
+    else:
+        ramp = gradient_ramp(pn['anchors'], y0, y1, RASTER_H)
+
+        def column_colors(d, _r=ramp):
+            return _r
+
+    # Gradient raster, drawn ABOVE gridlines (covers them like the old fill).
+    idx = render_gradient_raster(
+        fig, row, dates, lo_s, hi_s, column_colors,
+        y_range=(y0, y1), h_px=RASTER_H, layer='above', visible=visible)
+    image_idx.append(idx)
+
+    # White trend(s) as crisp vector path shapes ABOVE the raster (a trace
+    # would be hidden under the above-layer image; a baked line blurs under
+    # the stretch-resize). Per-page visibility set in the page relayout.
+    if trends:
+        axn_r = '' if row == 1 else str(row)
+        for tr in trends:
+            pth = _date_path(dates, tr.values)
+            if not pth:
+                continue
+            fig.add_shape(dict(
+                type='path', path=pth,
+                xref=f'x{axn_r}', yref=f'y{axn_r}',
+                line=dict(color='#ffffff', width=2.0),
+                layer='above', visible=visible))
+            shape_idx.append(len(fig.layout.shapes) - 1)
+    vd = env_valid.index[env_valid.to_numpy()]
+    drange = (vd.min(), vd.max()) if len(vd) else None
+    return image_idx, shape_idx, tab, drange
+
+
+def _inset_html(panels, single_key=None):
+    """The per-subplot inset label overlay(s) (replaces Plotly annotations).
+
+    Multi-panel: eight divs (one per panel), each tagged with its row/page/key,
+    carrying the label + a ↗ link to that panel's standalone full-page HTML.
+    Other-page insets start hidden; the page toggle swaps them. Single-panel
+    (``single_key`` set): one label-only div for that panel (no ↗, no toggle).
+    Positioned per subplot at runtime by ``plot_qualitative_trends.js``."""
+    parts = []
+    for pn in panels:
+        key = pn['key']
+        if single_key is not None:
+            if key != single_key:
+                continue
+            parts.append(
+                f'<div class="rp-inset rp-inset-single" data-rp-row="1" '
+                f'data-rp-page="{pn["page"]}">'
+                f'<span class="rp-inset-label">{pn["label"]}</span></div>')
+            continue
+        href = f'qualitative_trends_{key}.html'
+        hidden = '' if pn['page'] == 'weather' else ' style="display:none"'
+        parts.append(
+            f'<div class="rp-inset" data-rp-row="{pn["row"]}" '
+            f'data-rp-page="{pn["page"]}" data-rp-key="{key}"{hidden}>'
+            f'<span class="rp-inset-label">{pn["label"]}</span>'
+            f'<a class="rp-inset-open" target="_blank" href="{href}" '
+            f'title="Open as full page" aria-label="Open as full page">↗</a>'
+            f'</div>')
+    return '\n'.join(parts)
+
+
+def build_single(args, key, start, full, panels, cond_cf, weather_syn, wcolor):
+    """Render one panel as its own full-height, chrome-free standalone page
+    (``qualitative_trends_<key>.html``) — the target of an inset ↗ link."""
+    pn = next((p for p in panels if p['key'] == key), None)
+    if pn is None:
+        valid = ', '.join(p['key'] for p in panels)
+        raise SystemExit(f"unknown --panel {key!r}; choose one of: {valid}")
+    page = pn['page']
+    dates = full.index
+    n_days = len(dates)
+
+    fig: go.Figure = make_subplots(rows=1, cols=1)
+    # Anchor trace keeps the cartesian subplot (and cursor-tooltip axis lookups)
+    # alive for the image/shape-only envelope panels.
+    fig.add_trace(go.Scatter(
+        x=[dates[0], dates[-1]], y=[0.0, 0.0], mode='markers',
+        marker=dict(opacity=0), hoverinfo='skip', showlegend=False),
+        row=1, col=1)
+
+    _, _, tab, drange = render_panel(fig, pn, 1, full, dates, cond_cf=cond_cf,
+                                     weather_syn=weather_syn, wcolor=wcolor,
+                                     visible=True)
+
+    # Standalone page: x-axis is exactly this panel's data extent (no shared
+    # axis to line up with). Falls back to the full window if the panel is empty.
+    x0, x1 = drange if drange is not None else (dates[0], dates[-1])
+
+    kw = dict(title=dict(text=pn['unit'], font=dict(color=FG_DIM, size=11)),
+              gridcolor=GRID, zerolinecolor=GRID, range=pn['y_range'])
+    if pn['key'] == 'time':
+        kw['tickmode'] = 'array'
+        kw['tickvals'] = TIME_TICKVALS
+        kw['ticktext'] = TIME_TICKTEXT
+    fig.update_yaxes(row=1, col=1, **kw)
+    fig.update_xaxes(**yearly_x_axis_kwargs(str(x0.date()), str(x1.date())))
+    apply_default_layout(
+        fig, font=dict(color=FG, size=12),
+        margin=dict(t=20, l=70, r=40, b=56),
+        showlegend=False, hovermode=False)
+
+    epoch = pd.Timestamp('1970-01-01')
+    # Payload arrays are indexed from the calendar start (full `dates`); the
+    # tooltip hover clamp is tightened to the visible data window.
+    first_day = int((pd.Timestamp(start) - epoch).days)
+    vis_first = int((pd.Timestamp(x0) - epoch).days)
+    vis_last = int((pd.Timestamp(x1) - epoch).days)
+
+    # Same payload shape as the multi-panel build, populated for this one panel
+    # only. buildTooltip reads window.__rpActiveTab (= this panel's page) and
+    # window.__rpSingle (= this key) to render just the one metric's rows.
+    pay = {'weather': {'avg': {}, 'lo': {}, 'hi': {}, 'day': {}},
+           'other': {'avg': {}, 'lo': {}, 'hi': {}, 'day': {}}}
+    for grp in ('avg', 'lo', 'hi', 'day'):
+        pay[page][grp].update(tab[grp])
+    payload = {
+        'first_day': first_day,
+        'n_days': n_days,
+        'range_window': RANGE_WINDOW,
+        'ma_window': MA_WINDOW,
+        'city': _str_arr(full['city_state']) if 'city_state' in full else None,
+        'tabs': pay,
+    }
+
+    sib = Path(__file__).with_suffix('.js')
+    insets = _inset_html(panels, single_key=key)
+    single_js = (f'<script>\nwindow.__rpActiveTab = {json.dumps(page)};\n'
+                 f'window.__rpSingle = {json.dumps(key)};\n</script>')
+
+    out_path = os.path.join(args.out_dir, f'qualitative_trends_{key}.html')
+    render_plot(
+        fig, out_path,
+        title_slug=f'qualitative_trends_{key}',
+        page_title=f'Misc. Trends — {pn["label"]}',
+        # No title bar: "just that trend graph, no top bar." The inset label is
+        # the only chrome; --rp-title-h:0 lets the plot fill the iframe.
+        title=None,
+        overlay_html=insets + '\n' + single_js,
+        overlay_js_files=[str(sib)],
+        extra_head_css=':root{--rp-title-h:0px;}\n'
+                       '.rp-tooltip .tt-sep{height:1px;margin:6px 0;'
+                       'background:#444;}',
+        cursor_tooltip=CursorTooltip(
+            payload=payload,
+            build_js=_BUILD_JS,
+            first_day=vis_first,
+            last_day=vis_last,
+        ),
+        plotly_config={'staticPlot': True},
+    )
+    print(f'wrote {out_path}')
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--daily', default=DEFAULT_DAILY)
+    ap.add_argument('--altitude', default=DEFAULT_ALT)
+    ap.add_argument('--time', default=DEFAULT_TIME)
+    ap.add_argument('--cf', default=DEFAULT_CF)
+    ap.add_argument('--out-dir', default=DEFAULT_OUT)
+    ap.add_argument('--start', default=None)
+    ap.add_argument('--panel', default=None,
+                    help='Build a single-panel standalone page for this panel '
+                         'key (conditions/temp/humidity/wind/volume/altitude/'
+                         'time/weight) instead of the full 8-panel figure.')
+    args = ap.parse_args()
+
+    start, full, panels, cond_cf, weather_syn, wcolor = _prepare(args)
+    if args.panel:
+        build_single(args, args.panel, start, full, panels,
+                     cond_cf, weather_syn, wcolor)
+        return
+
+    dates = full.index
+    n_days = len(dates)
+
     fig: go.Figure = make_subplots(
         rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.025)
 
@@ -532,169 +905,37 @@ def main():
     shapes_list = []   # (shape_index, page)
 
     for pn in panels:
-        row = pn['row']
         page = pn['page']
-        tab = pay[page]
-        y0, y1 = pn['y_range']
-
-        if pn['type'] == 'scatter':
-            # Conditions: dot per logged day at y=temp; fill=weather, ring=conditions.
-            sub = full[full['weather'].notna() & full['temp_c'].notna()]
-            fill, ring, ringw = [], [], []
-            for w, c in zip(sub['weather'], sub['conditions']):
-                ws = str(w).strip().lower()
-                fill.append(wcolor(weather_syn.get(ws, ws)))
-                # NaN conditions (the new pandas `str` dtype yields pd.NA, which
-                # never equals the literal 'nan') and 'dry' mean no ring.
-                cs = str(c).strip().lower() if pd.notna(c) else ''
-                if cs in ('', 'dry', 'none', 'nan'):
-                    ring.append('rgba(0,0,0,0)')
-                    ringw.append(0.0)
-                else:
-                    ring.append(cond_cf.get(cs, '#cccccc'))
-                    ringw.append(1.4)
-            fig.add_trace(go.Scatter(
-                x=sub.index, y=sub['temp_c'], mode='markers',
-                marker=dict(size=6, color=fill, opacity=1.0,
-                            line=dict(color=ring, width=ringw)),
-                hoverinfo='skip', showlegend=False, meta={'page': page},
-            ), row=row, col=1)
-            tab['day']['weather'] = _str_arr(full['weather'])
-            tab['day']['conditions'] = _str_arr(full['conditions'])
-            tab['day']['cond_temp'] = _round_arr(full['temp_c'], 1)
-            continue
-
-        # ---- envelope panel: gradient raster fill + vector trend shape(s) ----
-        key = pn['key']
-
-        if 'series' in pn:                          # single-value envelope
-            s = pn['series']
-            lo_s, hi_s = env_edges(s, s, PEAK_DISTANCE_DAYS)
-            if key == 'weight':                     # don't bridge >7d gaps
-                lo_s, hi_s = lo_s.where(s.notna()), hi_s.where(s.notna())
-            # The envelope is the single source of truth for gaps; force the
-            # trend (and tooltip range) onto exactly its valid days so the white
-            # line starts/stops/breaks WITH the band. min_periods=1 keeps the MA
-            # finite to the band edges; masking trims it to no further.
-            env_valid = lo_s.notna() & hi_s.notna()
-            ma = rolling_ma(s, MA_WINDOW[key], min_periods=1).where(env_valid)
-            lo_raw, hi_raw = rolling_minmax_raw(s, RANGE_WINDOW)
-            lo_raw, hi_raw = lo_raw.where(env_valid), hi_raw.where(env_valid)
-            trends = [ma]                           # one white MA trend line
-            tab['avg'][key] = _round_arr(ma)
-            tab['lo'][key] = _round_arr(lo_raw)
-            tab['hi'][key] = _round_arr(hi_raw)
-            tab['day'][key] = _round_arr(s, 1)
-        else:                                       # range (two-edge) envelope
-            lo_in = pd.Series(pn['lo'], index=dates)
-            hi_in = pd.Series(pn['hi'], index=dates)
-            lo_s, hi_s = env_edges(lo_in, hi_in, PEAK_DISTANCE_DAYS)
-            trends = []                             # range panels draw no lines
-            # Tooltip avg row (unified format): avg = smoothed band midpoint;
-            # (min to max) = the rolling envelope. Masked to the band's valid
-            # days so the tooltip only reports where the band is drawn.
-            env_valid = lo_s.notna() & hi_s.notna()
-            avg = rolling_ma((lo_in + hi_in) / 2.0,
-                             MA_WINDOW[key], min_periods=1).where(env_valid)
-            lo_raw = lo_in.rolling(RANGE_WINDOW, min_periods=1,
-                                   center=True).min().where(env_valid)
-            hi_raw = hi_in.rolling(RANGE_WINDOW, min_periods=1,
-                                   center=True).max().where(env_valid)
-            d = 0 if key == 'altitude' else 1
-            tab['avg'][key] = _round_arr(avg, d)
-            tab['lo'][key] = _round_arr(lo_raw, d)
-            tab['hi'][key] = _round_arr(hi_raw, d)
-            tab['day'][key + '_lo'] = _round_arr(lo_in, 1)
-            tab['day'][key + '_hi'] = _round_arr(hi_in, 1)
-            if key == 'time' and 'time_est' in full:
-                tab['day']['time_est'] = [bool(v) for v in full['time_est'].values]
-
-        # Per-day colour ramp: the per-day solar gradient (Time) or a constant
-        # anchor-based vertical ramp (every other panel).
-        if pn.get('solar'):
-            y_p = y1 - (np.arange(RASTER_H) + 0.5) / RASTER_H * (y1 - y0)
-            date_py = [d.date() for d in dates]
-            # The rolling envelope can reach a few days past the last GPS fix;
-            # fill coords forward/back so every rendered column has a location.
-            lat_arr = full['lat'].ffill().bfill().fillna(40.015).values
-            lon_arr = full['lon'].ffill().bfill().fillna(-105.27).values
-            tz_arr = full['tz_min'].ffill().bfill().fillna(-420).values
-
-            def column_colors(d, _yp=y_p, _dp=date_py,
-                              _lat=lat_arr, _lon=lon_arr, _tz=tz_arr):
-                return solar_column_colors(
-                    _dp[d], float(_lat[d]), float(_lon[d]), int(_tz[d]), _yp)
-        else:
-            ramp = gradient_ramp(pn['anchors'], y0, y1, RASTER_H)
-
-            def column_colors(d, _r=ramp):
-                return _r
-
-        # Gradient raster, drawn ABOVE gridlines (covers them like the old fill).
-        idx = render_gradient_raster(
-            fig, row, dates, lo_s, hi_s, column_colors,
-            y_range=(y0, y1), h_px=RASTER_H, layer='above',
+        img_idx, shp_idx, tab, _ = render_panel(
+            fig, pn, pn['row'], full, dates,
+            cond_cf=cond_cf, weather_syn=weather_syn, wcolor=wcolor,
             visible=(page == 'weather'))
-        images.append((idx, page))
+        for grp in ('avg', 'lo', 'hi', 'day'):
+            pay[page][grp].update(tab[grp])
+        for idx in img_idx:
+            images.append((idx, page))
+        for idx in shp_idx:
+            shapes_list.append((idx, page))
 
-        # White trend(s) as crisp vector path shapes ABOVE the raster (a trace
-        # would be hidden under the above-layer image; a baked line blurs under
-        # the stretch-resize). Per-page visibility set in the page relayout.
-        if trends:
-            axn_r = '' if row == 1 else str(row)
-            for tr in trends:
-                pth = _date_path(dates, tr.values)
-                if not pth:
-                    continue
-                fig.add_shape(dict(
-                    type='path', path=pth,
-                    xref=f'x{axn_r}', yref=f'y{axn_r}',
-                    line=dict(color='#ffffff', width=2.0),
-                    layer='above', visible=(page == 'weather')))
-                shapes_list.append((len(fig.layout.shapes) - 1, page))
-        continue
-
-    # ---- per-page axis configs + inset-title annotations ----
-    def axkey(r):
-        return 'yaxis' if r == 1 else f'yaxis{r}'
-
-    def axn(r):
-        return '' if r == 1 else str(r)
-
-    TIME_TICKVALS = [0, 240, 480, 720, 960, 1200, 1440]
-    TIME_TICKTEXT = ['0:00', '4:00', '8:00', '12:00', '16:00', '20:00', '']
-
+    # ---- per-page axis configs ----
     pages = {'weather': {'relayout': {}}, 'other': {'relayout': {}}}
-    annotations = []
     for pn in panels:
         r = pn['row']
         page = pn['page']
         rel = pages[page]['relayout']
-        rel[f'{axkey(r)}.range'] = pn['y_range']
-        rel[f'{axkey(r)}.title.text'] = pn['unit']
+        rel[f'{_axkey(r)}.range'] = pn['y_range']
+        rel[f'{_axkey(r)}.title.text'] = pn['unit']
         if pn['key'] == 'time':
-            rel[f'{axkey(r)}.tickmode'] = 'array'
-            rel[f'{axkey(r)}.tickvals'] = TIME_TICKVALS
-            rel[f'{axkey(r)}.ticktext'] = TIME_TICKTEXT
+            rel[f'{_axkey(r)}.tickmode'] = 'array'
+            rel[f'{_axkey(r)}.tickvals'] = TIME_TICKVALS
+            rel[f'{_axkey(r)}.ticktext'] = TIME_TICKTEXT
         else:
-            rel[f'{axkey(r)}.tickmode'] = 'auto'
-            rel[f'{axkey(r)}.tickvals'] = None
-            rel[f'{axkey(r)}.ticktext'] = None
-        # inset title (top-left of subplot)
-        annotations.append(dict(
-            xref=f'x{axn(r)} domain', yref=f'y{axn(r)} domain',
-            x=0.008, y=0.97, xanchor='left', yanchor='top',
-            text=pn['label'], showarrow=False,
-            font=dict(color=FG, size=12.5),
-            bgcolor='rgba(26,26,26,0.55)', borderpad=2,
-            visible=(page == 'weather'),
-        ))
+            rel[f'{_axkey(r)}.tickmode'] = 'auto'
+            rel[f'{_axkey(r)}.tickvals'] = None
+            rel[f'{_axkey(r)}.ticktext'] = None
 
-    # Record per-page annotation + image visibility into the relayout dicts.
-    for i, pn in enumerate(panels):
-        for page in ('weather', 'other'):
-            pages[page]['relayout'][f'annotations[{i}].visible'] = (
-                pn['page'] == page)
+    # Per-page image + shape visibility into the relayout dicts. (Inset labels
+    # are HTML overlays toggled in JS, not Plotly annotations.)
     for idx, pg in images:
         pages['weather']['relayout'][f'images[{idx}].visible'] = (pg == 'weather')
         pages['other']['relayout'][f'images[{idx}].visible'] = (pg == 'other')
@@ -702,10 +943,8 @@ def main():
         pages['weather']['relayout'][f'shapes[{idx}].visible'] = (pg == 'weather')
         pages['other']['relayout'][f'shapes[{idx}].visible'] = (pg == 'other')
 
-    fig.update_layout(annotations=annotations)
-
     # Initial state = weather page: apply weather axis config, hide other-page
-    # traces. (Annotations/image already initialized to weather above.)
+    # traces. (Images/shapes already initialized visible only on weather.)
     for pn in panels:
         r = pn['row']
         kw = dict(title=dict(text=pn['unit'],
@@ -718,9 +957,8 @@ def main():
                 kw['tickvals'] = TIME_TICKVALS
                 kw['ticktext'] = TIME_TICKTEXT
             fig.update_yaxes(row=r, col=1, **kw)
-    # Also set ranges for 'other'-page rows so the hidden axes are sane until
-    # first toggle is unnecessary — weather config already covers every row
-    # (each row has exactly one weather panel).
+    # Each row has exactly one weather panel, so the weather config above
+    # already covers every row's axis until the first toggle.
 
     for tr in fig.data:
         if (tr.meta or {}).get('page') == 'other':
@@ -754,6 +992,7 @@ def main():
         [('weather', 'Weather'), ('other', 'Other')],
         default_id='weather')
     globals_html = widgets.js_globals({'TRENDS_PAGES': pages})
+    insets = _inset_html(panels)
 
     out_path = os.path.join(args.out_dir, 'qualitative_trends.html')
     render_plot(
@@ -763,7 +1002,7 @@ def main():
         title='Miscellaneous Trends',
         subtitle='Weather &amp; training conditions — moving-average trends '
                  'with rolling min-max envelopes',
-        overlay_html=toggle + '\n' + globals_html,
+        overlay_html=toggle + '\n' + globals_html + '\n' + insets,
         overlay_js_files=[str(sib)],
         extra_head_css='.rp-tooltip .tt-sep{height:1px;margin:6px 0;'
                        'background:#444;}',
@@ -838,6 +1077,10 @@ function buildTooltip(day) {
     ]
   };
   var metrics = META[tab];
+  // Single-panel standalone page: render only that one metric's rows.
+  if (window.__rpSingle) {
+    metrics = metrics.filter(function (m) { return m.k === window.__rpSingle; });
+  }
   function dec(m) { return (m.dec == null) ? 1 : m.dec; }
 
   function dayValue(m) {

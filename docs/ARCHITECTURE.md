@@ -39,7 +39,7 @@ The repo's truth sources are checked-in CSVs in `data/` (flat — no raw/process
 | `additions` | races not in the daily log (mostly pre-2016) — `date | distance_m | time_sec | surface | location | event`. Also produces stub daily rows for race dates not already in daily |
 | `locations` | `log_location → city_state / display_name / elev_per_mile / altitude / terrain_type` lookup |
 | `hills` | hill-loop metadata used by parser and TQ — `abbrev | location | type | distance_m | elev_gain_up | elev_gain_down | elev_net | elev_per_min` |
-| `coordinates` | `city_state → (latitude, longitude)` overrides on top of the Nominatim cache for the world map |
+| `coordinates` | `city_state → (latitude, longitude)` overrides on top of the Nominatim cache for the world map. The cache (`data/city_coords.csv`) also stores an IANA `tz` per city — auto-resolved from lat/lon via Open-Meteo at geocode time — which drives the Misc. Trends Time panel's canonical-timezone solar gradient (see `qualitative-trends-reference.md`) |
 | `historical` | `city_state | min_hist | max_hist | log_location` — surfaces remembered-but-unlogged cities on the world map AND date-range-overrides non-race daily rows. Replaces the legacy 2016-17 `infer_2016_2017_location` date branches |
 
 2018+ is converged: across eight years there's only one location change and four surface changes. New work focuses on pre-2018 rough edges and on 2026+ ongoing data.

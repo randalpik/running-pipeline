@@ -147,8 +147,13 @@ def write_index(output_dir: Path = DEFAULT_OUTPUT_DIR,
     output_dir.mkdir(parents=True, exist_ok=True)
     index_path = output_dir / "index.html"
     existing = {p.stem for p in output_dir.glob("*.html") if p.name != "index.html"}
+    tab_slugs = {slug for slug, _ in TABS}
     tabs = [(slug, label) for slug, label in TABS if slug in existing]
-    extras = sorted(existing - {slug for slug, _ in TABS})
+    # Auto-promote any *other* HTML to a tab — EXCEPT a known plot's child pages
+    # (``<parent_slug>_<child>``, e.g. qualitative_trends_time), which are
+    # link targets opened in their own tab, not shell tabs of their own.
+    extras = sorted(s for s in (existing - tab_slugs)
+                    if not any(s.startswith(t + "_") for t in tab_slugs))
     for slug in extras:
         tabs.append((slug, slug.replace('_', ' ')))
     new_html = render_shell(tabs, include_admin=include_admin,

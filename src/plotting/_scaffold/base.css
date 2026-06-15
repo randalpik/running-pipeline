@@ -279,6 +279,38 @@ input[type="checkbox"]:checked {
   margin-left: 4px;
 }
 
+/* ----- Per-subplot inset label + full-page-open affordance -----
+   Used by qualitative_trends: a small muted label pinned to each subplot's
+   top-left (positioned in JS from the live Plotly layout), with a ↗ link that
+   opens that panel as its own standalone full page. The container is
+   pointer-events:none so the cursor passes through to the plot (tooltip/spike
+   keep working under the label); only the ↗ link re-enables pointer events. */
+.rp-inset {
+  position: fixed;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(26,26,26,0.55);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12.5px;
+  color: #eee;
+  z-index: 50;
+  user-select: none;
+  pointer-events: none;
+}
+.rp-inset .rp-inset-label { line-height: 1.4; }
+.rp-inset-open {
+  pointer-events: auto;
+  color: #999;
+  text-decoration: none;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 1px;
+  transition: color 0.12s;
+}
+.rp-inset-open:hover { color: #fff; }
+
 /* ----- Compact coefficient / route table ----- */
 .rp-table {
   width: 100%;
