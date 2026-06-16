@@ -146,17 +146,6 @@ def workout_hover(r, single_type=False):
         body = f"{rep_count} × {rep_dist}m @ {sec_to_mss(pace)}/mi"
     if pd.notna(r['rest_per_mile']) and r['rest_per_mile'] > 0:
         body += f", rest {sec_to_mss(r['rest_per_mile'])}/mi"
-    # Watch-measured rep decomposition (parity with the Workouts plot): the
-    # per-rep "Watch:" line — the actual extracted reps for watch-only days,
-    # where the structure headline above is only the synthesized summary.
-    measured = r.get('measured_line')
-    if isinstance(measured, str) and measured:
-        body += f"<br>{measured}"
-        wpr, qp = r.get('watch_pace_raw'), r.get('pace_per_mile')
-        if pd.notna(wpr) and pd.notna(qp) and wpr > 0:
-            pct = (qp / wpr - 1.0) * 100.0
-            if abs(pct) >= 0.05:
-                body += f"<br><b>Watch adj:</b> {pct:+.1f}%"
     parts = [
         f"<b>{title}</b>{xc_note}",
         body,
@@ -246,15 +235,6 @@ def main():
     workouts  = workouts[workouts['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
     long_runs = long_runs[long_runs['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
     hills     = hills[hills['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
-
-    # Watch-measured rep decomposition for the workout hover (parity with the
-    # Workouts plot). measured_lines() already skips mismatch-demoted dates, and
-    # we attach AFTER the exclusion drop, so no rejected day gets a Watch line.
-    from src.plots.plot_workouts import measured_lines
-    _mlines = measured_lines()
-    if _mlines:
-        workouts['measured_line'] = (
-            workouts['date'].dt.date.astype(str).map(_mlines))
 
     # Long-run model, WITHOUT its intercept (Max, June 2026): the projection
     # itself is race-equivalent (β_long un-bias + watch/rule corrections in
@@ -520,11 +500,22 @@ def main():
         if pd.isna(name) or not str(name).strip():
             name = r.get('location', '')
         return f"{r['miles']:.1f}mi {name}"
+
+    def _wk_detail(r):
+        # The Fitness tab shows this as the workout's only descriptor, so use
+        # the rep DECOMPOSITION (the same `structure` the Workouts tab renders,
+        # e.g. "2400 + 3×1200 + …"), NOT the raw coded workout string. Falls
+        # back to the rep count × distance when no structure was decomposed.
+        s = r.get('structure')
+        if isinstance(s, str) and s.strip():
+            return s
+        rc, rd = int(r['rep_count']), int(r['rep_dist'])
+        return f"{rd}m" if rc == 1 else f"{rc} × {rd}m"
     corpus = pd.concat([
         pd.DataFrame({'date': workouts['date'], 'src': 'workout',
                       'category': workouts['category'],
                       'p5k_corr_min': workouts['pos_min'],
-                      'detail': workouts['workout_raw'].astype(str)}),
+                      'detail': [_wk_detail(r) for _, r in workouts.iterrows()]}),
         pd.DataFrame({'date': long_runs['date'], 'src': 'long_run',
                       'category': 'long',
                       'p5k_corr_min': long_runs['pos_min'],

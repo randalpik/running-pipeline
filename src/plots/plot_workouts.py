@@ -10,8 +10,10 @@ what the Races plot is to the Fitness (CS-timeline) plot.
 
 Hill repeats lack quality data needed for a CS+D' projection, so they're
 positioned at the persisted TQ smoother track on each session date
-(data/training_quality_track.csv). Their elevation gained per session is
-shown in hover: rep_time × rep_count × elev_per_min from the hills snapshot.
+(data/training_quality_track.csv). Watch-era sessions show real per-rep
+distance + elevation and an average grade in hover (workout_measured.csv,
+hillrep-exact); pre-watch sessions fall back to the parser estimate
+(rep_time × rep_count × elev_per_min from the hills snapshot).
 
 Repetitions are projected via the same hyperbolic CS+D' formula as
 intervals.
@@ -215,7 +217,7 @@ def hill_cont_hover(r):
     return "<br>".join(parts)
 
 
-def hill_rep_hover(r):
+def hill_rep_hover(r, measured=None):
     title = (f"<b>{CAT_LABEL['hill_rep']}</b>"
              f"{route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}")
     rep_count = int(r['rep_count'])
@@ -228,12 +230,20 @@ def hill_rep_hover(r):
         ss = int(round((rt - mm) * 60))
         rt_str = f"{mm}:{ss:02d}"
     body = f"{rep_count} {reps_word} × {rt_str}"
+    # Watch-measured days carry a real total elevation; only fall back to the
+    # parser estimate (rep_time × rep_count × elev_per_min) when unmeasured.
+    md = measured.get(str(r['date'].date())) if measured else None
     elev = r.get('total_elev_ft')
-    if pd.notna(elev):
+    if md:
+        body += f", {int(round(md['total_gain_ft']))} ft gained"
+    elif pd.notna(elev):
         body += f", {int(round(float(elev)))} ft gained"
     temp_line = (f"<b>Temp:</b> {r['temp_c']:.0f}°C"
                  if pd.notna(r.get('temp_c')) else '')
     parts = [p for p in [title, body, temp_line] if p]
+    if md:
+        parts.append(f"<b>Avg grade:</b> {md['avg_grade']:.1f}%")
+        parts.append(md['reps_html'])
     # Hill reps never feed Training (no CS projection), so the snow tag is a
     # plain condition note rather than an exclusion line.
     if r.get('excluded_reason') == 'snow':
@@ -286,6 +296,34 @@ def hill_measured_lines():
             splits = ' · '.join(sec_to_mss(t) for t in day['time_s'])
             lines[date] = (f'<b>Watch:</b> <span class="tt-wrap">'
                            f'loops {splits}</span>')
+    return lines
+
+
+def hill_rep_measured_lines():
+    """Per-date watch-measured hill-rep detail (workout_measured.csv,
+    hillrep-exact only). The watch gives what the log never held: per-rep
+    distance + elevation, and a true average grade (total vertical / total
+    horizontal). Returns {date: {total_gain_ft, avg_grade, reps_html}};
+    mismatch / no-block days are absent and fall back to the parser estimate."""
+    path = DATA_DIR / 'workout_measured.csv'
+    if not path.exists():
+        return {}
+    m = pd.read_csv(path, dtype={'date': str})
+    m = m[(m['rep_idx'] > 0) & (m['status'] == 'hillrep-exact')]
+    lines = {}
+    for date, day in m.groupby('date'):
+        total_gain = float(day['gain_ft'].sum())
+        total_dist = float(day['dist_m'].sum())
+        # average grade over the whole block = total rise / total run; gain is
+        # feet, distance metres, so rise back to metres via FT_PER_M (0.3048).
+        avg_grade = (total_gain * 0.3048 / total_dist * 100) if total_dist else 0.0
+        parts = [f"{int(round(r['dist_m']))}m/+{int(round(r['gain_ft']))}ft"
+                 for _, r in day.iterrows()]
+        lines[date] = {
+            'total_gain_ft': total_gain, 'avg_grade': avg_grade,
+            'reps_html': ('<b>Watch:</b> <span class="tt-wrap">'
+                          + ' · '.join(parts) + '</span>'),
+        }
     return lines
 
 
@@ -344,6 +382,14 @@ def main():
             hills_c['date'].dt.date.astype(str).map(hlines))
         print(f'Watch hill block on {hills_c["hill_measured_line"].notna().sum()} '
               f'hill hovers')
+
+    hr_measured = hill_rep_measured_lines()
+    if hr_measured and not hills_r.empty:
+        # Mark enriched hill-rep sessions so they get the white watch-enriched
+        # ring (session_tag -> 'enriched'), same as enriched workout markers.
+        hills_r['watch_measured'] = (
+            hills_r['date'].dt.date.astype(str).isin(hr_measured))
+        print(f'Watch hill-rep detail on {len(hr_measured)} hill-rep hovers')
 
     excl = tq_exclusion_lines()
     if excl:
@@ -499,7 +545,7 @@ def main():
     if not hills_r.empty:
         plottable = hills_r.dropna(subset=['p5k_track_min'])
         if len(plottable):
-            cd = [hill_rep_hover(r) for _, r in plottable.iterrows()]
+            cd = [hill_rep_hover(r, hr_measured) for _, r in plottable.iterrows()]
             collect_ring_points(ring_pts, plottable, 'p5k_track_min')
             fig.add_trace(go.Scatter(
                 x=plottable['date'], y=_y_safe(plottable['p5k_track_min'].values),
@@ -585,7 +631,7 @@ def main():
     if not hills_r.empty:
         for _, r in hills_r.dropna(subset=['p5k_track_min']).iterrows():
             sessions.append({'day': int((r['date'] - js_epoch).days),
-                             'html': hill_rep_hover(r)})
+                             'html': hill_rep_hover(r, hr_measured)})
     sessions.sort(key=lambda s: s['day'])
 
     first_day = int((all_days[0]  - js_epoch).days)

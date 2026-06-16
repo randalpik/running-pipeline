@@ -1,18 +1,28 @@
 // Misc. Trends page toggle (Weather / Other) + per-subplot inset labels.
 //
-// All eight panels live in one figure; each trace carries meta.page. Switching
-// pages flips trace visibility by page and applies the page's precomputed
-// relayout (y-axis ranges/titles/ticks + per-page image/shape visibility).
-// window.__rpActiveTab tells the cursor tooltip which tab's rows to render.
+// Each page is its OWN complete figure (a clean make_subplots with exactly its
+// panel count), serialized into window.__PLOT_TRENDS_FIGS. Switching pages
+// Plotly.newPlot's the target figure into the single plot div — a fresh render,
+// so the swapped-in page's gridlines lay down exactly like a normal page load.
+// We do NOT resize axes / toggle domains at runtime: plotly.js does not redraw
+// a y-axis's gridlines when its domain changes, which blanked the grid in every
+// shared-figure approach. window.__rpActiveTab tells the cursor tooltip which
+// tab's rows to render.
 //
-// Inset labels are HTML overlay divs (.rp-inset) — each tagged data-rp-row /
-// data-rp-page / data-rp-key — positioned at their subplot's top-left from the
-// live Plotly layout (and repositioned on relayout / resize). The page toggle
-// shows the active page's insets and hides the other's. The standalone
-// single-panel pages load this same file: there is no #trends-toggle there, so
-// only the positioning runs (and the lone inset always shows).
+// The cursor-tooltip scaffold binds mousemove/mouseleave to the plot DIV (not
+// via gd.on), so those listeners survive newPlot and keep working against the
+// new figure's live state. Only the inset re-positioning uses gd.on, which
+// newPlot clears — so we re-bind it after each swap.
+//
+// Inset labels are HTML overlay divs (.rp-inset), each tagged data-rp-row /
+// data-rp-page / data-rp-key, positioned at their subplot's top-left from the
+// live Plotly layout. The standalone single-panel pages load this same file:
+// there is no #trends-toggle and no __PLOT_TRENDS_FIGS there, so only the inset
+// positioning runs (and the lone inset always shows).
 (function () {
-  var PAGES = window.__PLOT_TRENDS_PAGES || {};
+  var FIGS = window.__PLOT_TRENDS_FIGS || {};
+  var CONFIG = window.__PLOT_TRENDS_CONFIG ||
+               { responsive: true, displayModeBar: false, staticPlot: true };
   var page = window.__rpActiveTab || 'weather';
   window.__rpActiveTab = page;
 
@@ -20,14 +30,15 @@
 
   function pdiv() { return document.querySelector('.plotly-graph-div'); }
 
-  // Place each inset at the top-left of its subplot row, read from the live
-  // _fullLayout axis offsets (same technique as _scaffold/overlay_anchor.js).
+  // Place each visible inset at the top-left of its subplot row, read from the
+  // live _fullLayout axis offsets.
   function positionInsets() {
     var gd = pdiv();
     if (!gd || !gd._fullLayout) return;
     var fl = gd._fullLayout;
     var rect = gd.getBoundingClientRect();
     document.querySelectorAll('.rp-inset').forEach(function (el) {
+      if (el.style.display === 'none') return;
       var row = el.getAttribute('data-rp-row') || '1';
       var n = (row === '1') ? '' : row;
       var xa = fl['xaxis' + n];
@@ -45,19 +56,30 @@
     });
   }
 
-  function applyPage(gd) {
-    if (!gd || !gd.data) return;
-    // Trace visibility by meta.page.
-    var vis = [];
-    for (var i = 0; i < gd.data.length; i++) {
-      var mp = (gd.data[i].meta || {}).page;
-      vis.push(mp ? (mp === page) : true);
+  // newPlot clears gd.on handlers, so (re-)bind the inset re-positioning after
+  // every render. The cursor-tooltip listeners are on the div element and
+  // survive newPlot, so they need no re-bind.
+  function bindRedraw(gd) {
+    if (gd && typeof gd.on === 'function') {
+      gd.on('plotly_afterplot', positionInsets);
     }
-    Plotly.restyle(gd, { visible: vis });
-    var rel = (PAGES[page] || {}).relayout;
-    if (rel) Plotly.relayout(gd, rel);
-    showInsetsForPage();
-    positionInsets();
+  }
+
+  function switchTo(next, btn) {
+    if (next === page) return;
+    var gd = pdiv();
+    var f = FIGS[next];
+    document.querySelectorAll('#trends-toggle .rp-btn-pill').forEach(function (b) {
+      b.classList.toggle('is-active', b === btn);
+    });
+    if (!gd || !f) return;
+    page = next;
+    window.__rpActiveTab = page;
+    Plotly.newPlot(gd, f.data, f.layout, CONFIG).then(function () {
+      bindRedraw(gd);
+      showInsetsForPage();
+      positionInsets();
+    });
   }
 
   function bind() {
@@ -65,22 +87,12 @@
     if (!gd || !gd._fullLayout) { setTimeout(bind, 100); return; }
     document.querySelectorAll('#trends-toggle .rp-btn-pill').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        var next = btn.getAttribute('data-value');
-        if (next === page) return;
-        page = next;
-        window.__rpActiveTab = page;
-        document.querySelectorAll('#trends-toggle .rp-btn-pill').forEach(function (b) {
-          b.classList.toggle('is-active', b === btn);
-        });
-        applyPage(pdiv());
+        switchTo(btn.getAttribute('data-value'), btn);
       });
     });
-    // Keep insets pinned to their subplots through every layout change.
-    if (typeof gd.on === 'function') {
-      gd.on('plotly_afterplot', positionInsets);
-      gd.on('plotly_relayout', positionInsets);
-    }
+    bindRedraw(gd);
     window.addEventListener('resize', positionInsets);
+    showInsetsForPage();
     positionInsets();
   }
 

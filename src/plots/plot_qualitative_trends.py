@@ -919,6 +919,52 @@ def build_single(args, key, start, full, panels, cond_cf, weather_syn, wcolor):
     print(f'wrote {out_path}')
 
 
+def _build_page_fig(page_panels, full, dates, start, *, cond_cf, weather_syn,
+                    wcolor):
+    """A complete, self-contained figure for ONE page (Weather or Other).
+
+    Each page is a clean ``make_subplots(rows=len(panels))`` — the exact shape
+    the single-page version used and the only one that reliably renders
+    gridlines. The toggle swaps whole figures (Plotly.newPlot), so axes are
+    never resized at runtime (which never redraws gridlines). Returns
+    ``(fig, tab)`` where ``tab`` is this page's cursor-tooltip payload fragment.
+    """
+    k = max(len(page_panels), 1)
+    for i, pn in enumerate(page_panels, start=1):
+        pn['row'] = i
+    fig = make_subplots(rows=k, cols=1, shared_xaxes=True,
+                        vertical_spacing=VERTICAL_SPACING)
+    # One invisible anchor trace per row keeps each image/shape-only subplot
+    # (and the cursor-tooltip axis lookups) alive.
+    for r in range(1, k + 1):
+        fig.add_trace(go.Scatter(
+            x=[dates[0], dates[-1]], y=[0.0, 0.0], mode='markers',
+            marker=dict(opacity=0), hoverinfo='skip', showlegend=False),
+            row=r, col=1)
+    tab = {'avg': {}, 'lo': {}, 'hi': {}, 'day': {}}
+    for pn in page_panels:
+        _, _, ptab, _ = render_panel(
+            fig, pn, pn['row'], full, dates,
+            cond_cf=cond_cf, weather_syn=weather_syn, wcolor=wcolor, visible=True)
+        for grp in ('avg', 'lo', 'hi', 'day'):
+            tab[grp].update(ptab[grp])
+    # The make_subplots default domains already fill the height in k equal bands
+    # — no override. Bake range/ticks/grid; only the bottom row keeps x labels.
+    for pn in page_panels:
+        ykw = dict(range=pn['y_range'],
+                   title=dict(text=pn['unit'], font=dict(color=FG_DIM, size=11)),
+                   gridcolor=GRID, zerolinecolor=GRID)
+        if pn['key'] == 'time':
+            ykw.update(tickmode='array', tickvals=TIME_TICKVALS,
+                       ticktext=TIME_TICKTEXT)
+        fig.update_yaxes(row=pn['row'], col=1, **ykw)
+    fig.update_xaxes(**yearly_x_axis_kwargs(start, str(dates.max().date())))
+    apply_default_layout(
+        fig, font=dict(color=FG, size=12),
+        margin=dict(t=20, l=70, r=40, b=56), showlegend=False, hovermode=False)
+    return fig, tab
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--daily', default=DEFAULT_DAILY)
@@ -943,138 +989,27 @@ def main():
     n_days = len(dates)
 
     # Drop panels with no data for this profile (e.g. a watch-only profile logs
-    # no body weight) and reflow each page's survivors into contiguous rows, so
-    # an empty panel disappears and the rest fill the freed height instead of
-    # leaving a hole. (Regression: this filter + dynamic row count was lost in
-    # the two-page rewrite.) The two pages share the figure's physical rows and
-    # toggle by visibility, so each page resizes its rows independently below.
+    # no body weight), then build each page as its OWN complete figure. A page
+    # with 3 panels is a clean 3-row figure that fills the height; 4 panels, a
+    # 4-row figure. The toggle swaps whole figures (Plotly.newPlot), so neither
+    # page ever resizes axes at runtime — the thing that blanked the gridlines
+    # in every shared-figure attempt.
     panels = [pn for pn in panels if _panel_has_data(pn, full)]
-    for pg in ('weather', 'other'):
-        for i, pn in enumerate([p for p in panels if p['page'] == pg], start=1):
-            pn['row'] = i
-    page_rows = {pg: max((p['row'] for p in panels if p['page'] == pg), default=0)
-                 for pg in ('weather', 'other')}
-    n_rows = max(max(page_rows.values(), default=0), 1)
-    panel_by_pr = {(p['page'], p['row']): p for p in panels}
+    weather_panels = [p for p in panels if p['page'] == 'weather']
+    other_panels = [p for p in panels if p['page'] == 'other']
 
-    fig: go.Figure = make_subplots(
-        rows=n_rows, cols=1, shared_xaxes=True, vertical_spacing=VERTICAL_SPACING)
-
-    # Invisible per-row anchor traces: with every envelope now a layout image +
-    # shapes (not traces), these are the only traces on most rows, so they keep
-    # the cartesian subplots (and the cursor-tooltip axis lookups) alive.
-    # No meta.page -> the toggle leaves them visible on both pages.
-    for r in range(1, n_rows + 1):
-        fig.add_trace(go.Scatter(
-            x=[dates[0], dates[-1]], y=[0.0, 0.0], mode='markers',
-            marker=dict(opacity=0), hoverinfo='skip', showlegend=False),
-            row=r, col=1)
-
-    # tooltip payload, per tab
+    figs = {}
     pay = {'weather': {'avg': {}, 'lo': {}, 'hi': {}, 'day': {}},
            'other': {'avg': {}, 'lo': {}, 'hi': {}, 'day': {}}}
-    images = []        # (image_index, page)
-    shapes_list = []   # (shape_index, page)
-
-    for pn in panels:
-        page = pn['page']
-        img_idx, shp_idx, tab, _ = render_panel(
-            fig, pn, pn['row'], full, dates,
-            cond_cf=cond_cf, weather_syn=weather_syn, wcolor=wcolor,
-            visible=(page == 'weather'))
-        for grp in ('avg', 'lo', 'hi', 'day'):
-            pay[page][grp].update(tab[grp])
-        for idx in img_idx:
-            images.append((idx, page))
-        for idx in shp_idx:
-            shapes_list.append((idx, page))
-
-    # ---- per-page axis configs ----
-    # Each page sizes its OWN rows: surviving panels reflow to fill the height
-    # (so a dropped panel on one page doesn't leave that page short), while the
-    # other page keeps its own count. Every row is configured in BOTH pages'
-    # relayout dicts (a row used by one page is collapsed + hidden on the other)
-    # so toggling always lands in a fully-specified state — Plotly.relayout only
-    # changes keys it's given. Rasters/trend shapes are in data coords on the
-    # row's axis, so resizing the y-domain carries them automatically.
-    pages = {'weather': {'relayout': {}}, 'other': {'relayout': {}}}
-    for page in ('weather', 'other'):
-        rel = pages[page]['relayout']
-        k = page_rows[page]
-        doms = _row_domains(k)
-        for r in range(1, n_rows + 1):
-            yk, xk = _axkey(r), _xaxkey(r)
-            pn = panel_by_pr.get((page, r))
-            if pn is not None:
-                rel[f'{yk}.domain'] = doms[r - 1]
-                rel[f'{yk}.visible'] = True
-                rel[f'{yk}.range'] = pn['y_range']
-                rel[f'{yk}.title.text'] = pn['unit']
-                if pn['key'] == 'time':
-                    rel[f'{yk}.tickmode'] = 'array'
-                    rel[f'{yk}.tickvals'] = TIME_TICKVALS
-                    rel[f'{yk}.ticktext'] = TIME_TICKTEXT
-                else:
-                    rel[f'{yk}.tickmode'] = 'auto'
-                    rel[f'{yk}.tickvals'] = None
-                    rel[f'{yk}.ticktext'] = None
-                # Only the page's bottom row carries the year tick labels.
-                rel[f'{xk}.visible'] = True
-                rel[f'{xk}.showticklabels'] = (r == k)
-            else:
-                # Row unused on this page: collapse the axis out of the way and
-                # hide it (its always-visible anchor trace goes invisible too).
-                rel[f'{yk}.visible'] = False
-                rel[f'{yk}.domain'] = [0.0, 0.0001]
-                rel[f'{xk}.visible'] = False
-                rel[f'{xk}.showticklabels'] = False
-
-    # Per-page image + shape visibility into the relayout dicts. (Inset labels
-    # are HTML overlays toggled in JS, not Plotly annotations.)
-    for idx, pg in images:
-        pages['weather']['relayout'][f'images[{idx}].visible'] = (pg == 'weather')
-        pages['other']['relayout'][f'images[{idx}].visible'] = (pg == 'other')
-    for idx, pg in shapes_list:
-        pages['weather']['relayout'][f'shapes[{idx}].visible'] = (pg == 'weather')
-        pages['other']['relayout'][f'shapes[{idx}].visible'] = (pg == 'other')
-
-    # Initial state = weather page: bake its row domains / ranges / tick config
-    # straight onto the figure (a row the weather page doesn't use is collapsed
-    # + hidden), and hide other-page traces. Images/shapes already initialized
-    # visible only on weather.
-    k_init = page_rows['weather']
-    doms_init = _row_domains(k_init)
-    for r in range(1, n_rows + 1):
-        yk = _axkey(r)
-        pn = panel_by_pr.get(('weather', r))
-        if pn is not None:
-            kw = dict(domain=doms_init[r - 1], range=pn['y_range'], visible=True,
-                      title=dict(text=pn['unit'],
-                                 font=dict(color=FG_DIM, size=11)),
-                      gridcolor=GRID, zerolinecolor=GRID)
-            if pn['key'] == 'time':
-                kw['tickmode'] = 'array'
-                kw['tickvals'] = TIME_TICKVALS
-                kw['ticktext'] = TIME_TICKTEXT
-            fig.update_yaxes(row=r, col=1, **kw)
-            fig.update_xaxes(row=r, col=1, visible=True,
-                             showticklabels=(r == k_init))
-        else:
-            fig.update_yaxes(row=r, col=1, visible=False, domain=[0.0, 0.0001])
-            fig.update_xaxes(row=r, col=1, visible=False, showticklabels=False)
-
-    for tr in fig.data:
-        if (tr.meta or {}).get('page') == 'other':
-            tr.visible = False
-
-    fig.update_xaxes(**yearly_x_axis_kwargs(start, str(dates.max().date())))
-    apply_default_layout(
-        fig,
-        font=dict(color=FG, size=12),
-        margin=dict(t=20, l=70, r=40, b=56),
-        showlegend=False,
-        hovermode=False,
-    )
+    for page, page_panels in (('weather', weather_panels),
+                              ('other', other_panels)):
+        if not page_panels:
+            continue
+        pfig, ptab = _build_page_fig(page_panels, full, dates, start,
+                                     cond_cf=cond_cf, weather_syn=weather_syn,
+                                     wcolor=wcolor)
+        figs[page] = pfig
+        pay[page] = ptab
 
     epoch = pd.Timestamp('1970-01-01')
     first_day = int((pd.Timestamp(start) - epoch).days)
@@ -1093,17 +1028,28 @@ def main():
                     for pg in ('weather', 'other')},
     }
 
+    # Serialize EVERY page's figure into a JS global so the toggle can swap it
+    # into the one plot div via Plotly.newPlot (a fresh render — gridlines lay
+    # down exactly like a normal page load). The Weather figure is also the
+    # primary one render_plot embeds; the others are newPlot targets.
+    import plotly.io as pio
+    figs_json = {pg: json.loads(pio.to_json(f)) for pg, f in figs.items()}
+    plot_config = {'responsive': True, 'displayModeBar': False,
+                   'staticPlot': True}
+
     sib = Path(__file__).with_suffix('.js')
     toggle = widgets.toggle_bar(
         'trends-toggle',
         [('weather', 'Weather'), ('other', 'Other')],
         default_id='weather')
-    globals_html = widgets.js_globals({'TRENDS_PAGES': pages})
+    globals_html = widgets.js_globals({'TRENDS_FIGS': figs_json,
+                                       'TRENDS_CONFIG': plot_config})
     insets = _inset_html(panels)
 
+    primary = figs.get('weather') or next(iter(figs.values()))
     out_path = os.path.join(args.out_dir, 'qualitative_trends.html')
     render_plot(
-        fig, out_path,
+        primary, out_path,
         title_slug='qualitative_trends',
         page_title='Misc. Trends',
         title='Miscellaneous Trends',
@@ -1120,16 +1066,14 @@ def main():
             last_day=last_day,
             spike_full_plot=True,
         ),
-        # Fully non-interactive: no native zoom/pan/double-click (which fought
-        # the per-page fixed axis ranges and could wedge the plot). The toggle,
-        # cursor tooltip, and spike are all custom DOM/Plotly.relayout — none
+        # Fully non-interactive: no native zoom/pan/double-click. The toggle
+        # (Plotly.newPlot swap), cursor tooltip, and spike are all custom — none
         # rely on Plotly's drag interactions.
         plotly_config={'staticPlot': True},
     )
     print(f'wrote {out_path}')
-    print(f'  panels={len(panels)} traces={len(tuple(fig.data))} '
-          f'images={len(fig.layout.images)} shapes={len(fig.layout.shapes)} '
-          f'days={n_days}')
+    print(f'  panels={len(panels)} '
+          f'figs={ {pg: len(f.data) for pg, f in figs.items()} } days={n_days}')
 
 
 _BUILD_JS = r"""
