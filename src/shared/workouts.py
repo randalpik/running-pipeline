@@ -28,6 +28,7 @@ on top). Workouts plot keeps all rows.
 from __future__ import annotations
 
 import functools
+import math
 import os
 import re
 
@@ -35,7 +36,7 @@ import numpy as np
 import pandas as pd
 
 from src.shared.paths import DATA_DIR
-from src.shared.hill_model import minetti_net_factor
+from src.shared.hill_model import minetti_net_factor, minetti_cost, FT_PER_M
 from src.shared.cs_projection import cp3_dprime, cp3_implied_cs, cp3_time
 from src.shared.elevation_cost import (elevation_cost, paved_refund,
                                        REFUND_RECOVERY)
@@ -139,6 +140,74 @@ def workout_vmax():
         return WORKOUT_VMAX_MAX
     ref = _profile_ref_cs()
     return WORKOUT_VMAX_CS_RATIO * ref if ref is not None else WORKOUT_VMAX_MAX
+
+
+def _connected_core(dists, times, rests, dp3=None):
+    """Connected-fatigue (D_eff, t_eff) from per-rep arrays, with the
+    effort-aware anaerobic deflation applied per rep (CP3 unification,
+    June 2026 — replaces the distance-only g(d) pace add).
+
+    Each rep extends a running "connected" effort by its distance; the rest
+    AFTER it dissipates the accumulated connection by exp(-rest_s/RECON_TAU_S).
+    Rest is ACTUAL seconds — reconstitution is a wall-clock process, NOT
+    per-mile-normalized (per-mile would misweight ladders). D_eff is the
+    deepest connected distance reached, bounded in [longest rep, total] with
+    no floor (no rest -> total; full recovery -> longest rep).
+
+    Anaerobic deflation: a rep's supra-CS speed is anaerobically assisted,
+    and the CP3 model prices anaerobic availability over a duration t as
+    D′·t/(t+τ) with τ = D′₃/(v_max − CS) — so each rep's speed above CS is
+    scaled by t/(t+τ) before the mean rep speed is taken. Two structural
+    rules: (1) the FIRST rep is exempt — its anaerobic deployment is the
+    one D′ the downstream CP3 projection already prices, which is exactly
+    what makes a single max rep analyze identically to a race of the same
+    distance/speed (the race/rep invariant); reps 2+ redeploy W′ that
+    reconstituted during rests, which the projection can't see. (2) CS here
+    is the workout's OWN implied CS, solved as a fixed point of
+    deflate → accumulate → project — the CS fit never enters, so the
+    implied CS the projection reads off stays an independent fitness
+    signal — see [[project-workout-enrichment]]. At rep paces this
+    reproduces the retired g(d) (≈+12 s/mi at 400m rep pace vs fitted
+    +14.3); at race paces it scales ~4×, as the invariant demands.
+
+    ``dists``/``times``: per-rep arrays. ``rests``: rest-after seconds per rep
+    (the final entry, if present, is unused — nothing accumulates after it).
+    ``dp3``: the date's CP3 anaerobic reservoir (metres); None (no CS fit
+    artifact) skips the deflation.
+    """
+    dists = np.asarray(dists, float)
+    times = np.asarray(times, float)
+    rests = np.asarray(rests, float)
+    conn = d_eff = 0.0
+    for i in range(len(dists)):
+        conn += dists[i]
+        if conn > d_eff:
+            d_eff = conn
+        if i < len(rests):
+            conn *= math.exp(-rests[i] / RECON_TAU_S)
+
+    t_total = float(times.sum())
+    if dp3 is None or len(dists) < 2:
+        return d_eff, d_eff * t_total / dists.sum()
+
+    vmax = workout_vmax()
+    v = dists / times                                    # per-rep speeds
+    t_corr = times.copy()
+    for _ in range(20):
+        t_eff = d_eff * t_corr.sum() / dists.sum()       # D_eff / mean speed
+        cs = float(cp3_implied_cs(d_eff, t_eff, dp3, vmax))
+        if not np.isfinite(cs):
+            return d_eff, d_eff * t_total / dists.sum()  # off-model: no deflation
+        tau = dp3 / (vmax - cs)
+        # Deflate supra-CS speed only; sub-CS reps carry no anaerobic assist.
+        v_corr = np.where(v > cs, cs + (v - cs) * times / (times + tau), v)
+        t_new = dists / v_corr
+        t_new[0] = times[0]                              # first rep exempt
+        if np.allclose(t_new, t_corr, rtol=1e-6):
+            t_corr = t_new
+            break
+        t_corr = t_new
+    return d_eff, d_eff * t_corr.sum() / dists.sum()
 
 
 # Short-effort anaerobic handling (June 2026, CP3 unification): the former
@@ -266,17 +335,25 @@ def _lr_watch_corrections(lr):
         c, m = cal
         meas = pd.read_csv(LR_MEASURED_PATH, parse_dates=['date'])
         meas = meas[meas['complete']].set_index('date')
-        # Paved-route gate (Max, June 2026): the calibration curve is fit on
-        # paved-outdoor days, and on trail/mixed terrain GPS corner-cutting
-        # under tree cover is a route property the curve can't speak for —
-        # the watch track isn't trustworthy enough to overrule the log
-        # there. Missing terrain_type fails the gate too (conservative:
-        # un-typed routes stay logged-as-is until the locations sheet types
-        # them). Same .get() guard as elev: watch profiles' daily.csv may
-        # lack the column entirely.
-        paved = (lr.get('terrain_type', pd.Series(np.nan, index=lr.index))
-                 .astype(str).str.strip().str.lower() == 'paved')
-        hit = lr['date'].isin(meas.index) & paved
+        # Surface gate (Max, June 2026): terrain_type is purely a SURFACE
+        # label (paved / mixed / trail). The calibration curve is fit on
+        # paved-outdoor days; the gate's job is to keep possibly-forested
+        # routes — where GPS corner-cutting under tree cover is a route
+        # property the curve can't speak for — from being "corrected" against
+        # a trustworthy hand log. TRAIL is the forested case and stays gated
+        # out. MIXED is admitted for long runs: there are few of them (5 in
+        # Max's watch era — magnolia / banff / pipeline, all open routes) and
+        # they track the log as tightly as paved (logged/watch 1.01–1.07 vs
+        # the curve's ~1.05), so the forest-underread rationale doesn't apply;
+        # the min(cal_mi, logged) clamp below is a second backstop against bad
+        # deflation. The much larger recovery corpus keeps the stricter
+        # paved-only gate in recovery_model — not worth combing by hand there.
+        # Missing terrain_type still fails (conservative: un-typed routes stay
+        # logged-as-is). Same .get() guard as elev: watch profiles' daily.csv
+        # may lack the column entirely.
+        terr = (lr.get('terrain_type', pd.Series(np.nan, index=lr.index))
+                .astype(str).str.strip().str.lower())
+        hit = lr['date'].isin(meas.index) & terr.isin(['paved', 'mixed'])
         if hit.any():
             sub = meas.loc[lr.loc[hit, 'date']]
             cal_mi = (sub['watch_miles'] * (1 + m) + c).to_numpy()
@@ -828,6 +905,30 @@ def _load_hill_measured_t():
     return m.groupby('date')['time_s'].sum().to_dict()
 
 
+def _load_hillrep_measured():
+    """date -> per-rep measured hill-rep arrays from workout_measured.csv
+    (hillrep-exact only): dist_m, climb_ft, time_s, rest_s (standing+jog),
+    rep-ordered. Empty dict when nothing is measured. Drives the watch-era
+    5K-equivalent projection in project_hill_reps."""
+    path = DATA_DIR / 'workout_measured.csv'
+    if not path.exists():
+        return {}
+    m = pd.read_csv(path, dtype={'date': str})
+    m = m[(m['rep_idx'] > 0) & (m['status'] == 'hillrep-exact')]
+    if m.empty:
+        return {}
+    out = {}
+    for date, g in m.sort_values('rep_idx').groupby('date'):
+        out[date] = {
+            'dist_m': g['dist_m'].to_numpy(float),
+            'climb_ft': g['gain_ft'].to_numpy(float),
+            'time_s': g['time_s'].to_numpy(float),
+            'rest_s': (g['rest_stand_s'].fillna(0)
+                       + g['rest_jog_s'].fillna(0)).to_numpy(float),
+        }
+    return out
+
+
 def hc_loop_distance(loop):
     """Surveyed meters for a hill-loop abbrev (HC_LOOPS first, snapshot
     fallback). None when the loop has no measured distance."""
@@ -997,16 +1098,23 @@ def _parse_hr(row):
     return (rep_time_min, int(n_str), loop)
 
 
-def project_hill_reps():
+def project_hill_reps(cs=None, epoch=None):
     """Return all hill_rep sessions with rep_time/rep_count/loop parsed and
-    elevation joined. Hill reps lack quality data needed for a CS+D'
-    projection (no per-rep distance), so this returns no `p5k_min` — the
-    Workouts plot positions hill_rep markers at the persisted TQ smoother
-    track instead.
+    elevation joined.
 
-    Columns: date, loop, rep_time_min, rep_count, total_elev_ft (ft),
-             workout_raw, display_name, city_state, conditions, location,
-             excluded_reason.
+    Watch-era sessions (measured per-rep structure in workout_measured.csv,
+    hillrep-exact) get a real 5K-equivalent `p5k_min`/`raw_resid`, projected
+    the same way every other quality workout is: the uphill effort is grade-
+    adjusted to flat (GAP-style — Minetti one-way energy factor expands the
+    DISTANCE at fixed time, i.e. the faster flat pace the same effort would
+    hold), the reps are connected by the standard rest decay into a D_eff, and
+    that runs through the CP3 hyperbola. `cs`/`epoch` are required for this; the
+    Workouts/Training plots pass them. Pre-watch sessions (estimate only) keep
+    `p5k_min` NaN and stay positioned at the persisted TQ smoother track.
+
+    Columns: date, loop, rep_time_min, rep_count, total_elev_ft (estimate, ft),
+             p5k_min, p5k_cs_min, raw_resid, watch_measured, workout_raw,
+             display_name, city_state, conditions, location, excluded_reason.
     """
     d = pd.read_csv(DAILY_PATH, parse_dates=['date'])
     h = d[d['run_type'] == 'hill_rep'].copy()
@@ -1032,4 +1140,37 @@ def project_hill_reps():
     snow_c = h['conditions'].astype(str).str.contains('snow', case=False, na=False)
     h['excluded_reason'] = None
     h.loc[snow_w | snow_c, 'excluded_reason'] = 'snow'
+
+    # Watch-era 5K-equivalent projection (see docstring). Defaults for the
+    # display-only / pre-watch path.
+    h['p5k_min'] = np.nan
+    h['p5k_cs_min'] = np.nan
+    h['raw_resid'] = np.nan
+    h['watch_measured'] = False
+    meas = _load_hillrep_measured() if (cs is not None and epoch is not None) else {}
+    if meas:
+        h = add_cs(h, cs, epoch)
+        vmax = workout_vmax()
+        key = h['date'].dt.strftime('%Y-%m-%d')
+        for idx, dk in key.items():
+            m = meas.get(dk)
+            if m is None or (m['dist_m'] <= 0).any():
+                continue
+            # Grade-adjust each rep to flat (GAP): the Minetti one-way energy
+            # factor expands the climbed DISTANCE at fixed time (the faster flat
+            # pace the same effort would hold). The flat-equivalent reps then go
+            # through the SAME connected-fatigue accumulator + CP3 projection as
+            # every other watch-enriched workout.
+            grade = (m['climb_ft'] * FT_PER_M) / m['dist_m']
+            factor = minetti_cost(grade) / minetti_cost(0.0)
+            flat_d = m['dist_m'] * factor
+            d_eff, t_eff = _connected_core(flat_d, m['time_s'], m['rest_s'],
+                                           dp3=h.at[idx, 'dp3_t'])
+            dp3 = float(h.at[idx, 'dp3_t'])
+            cs_imp = float(cp3_implied_cs(d_eff, t_eff, dp3, vmax))
+            t5k = float(cp3_time(5000.0, cs_imp, dp3, vmax))
+            p5k = t5k * 1609.344 / 5000.0 / 60.0
+            h.at[idx, 'p5k_min'] = p5k
+            h.at[idx, 'raw_resid'] = (p5k - h.at[idx, 'p5k_cs_min']) * 60.0
+            h.at[idx, 'watch_measured'] = True
     return h

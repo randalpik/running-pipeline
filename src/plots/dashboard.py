@@ -129,6 +129,36 @@ def fmt_cri_halfwidth(half_sec):
     return f'±{sec_to_mss(half)}'
 
 
+# PR values are tinted gold, shaded by recency (most recent PR = brightest,
+# oldest = darkest/muted) so the freshest demonstrated capability reads loudest.
+_PR_GOLD_BRIGHT = (0xFF, 0xD7, 0x4A)   # bright gold — most recent
+_PR_GOLD_DARK   = (0x8A, 0x66, 0x12)   # muted dark gold — oldest
+# Recency is log-warped before shading: PRs typically bunch up in the recent
+# few years with one or two old outliers, so a linear date scale leaves the
+# cluster nearly the same shade. The log curve fixes both endpoints (most- and
+# least-recent PR still hit the bright/dark extremes) but expands the recent
+# cluster across more of the gold range. Larger k = more spread near recent.
+_PR_RECENCY_LOG_K = 9.0
+
+
+def _recency_brightness(frac):
+    """Log-warp a linear recency fraction (1 = most recent) into a brightness in
+    [0,1] with the endpoints pinned. age = 1−frac; brightness =
+    1 − ln(1+k·age)/ln(1+k), so recent (small-age) PRs spread out while old
+    outliers compress toward the dark end."""
+    age = 1.0 - max(0.0, min(1.0, float(frac)))
+    return 1.0 - math.log1p(_PR_RECENCY_LOG_K * age) / math.log1p(_PR_RECENCY_LOG_K)
+
+
+def _pr_gold(frac):
+    """Hex gold for a recency fraction in [0,1] (1 = most recent = brightest),
+    log-warped so clustered recent PRs stay visually distinct."""
+    b = _recency_brightness(frac)
+    rgb = tuple(round(d + (br - d) * b)
+                for d, br in zip(_PR_GOLD_DARK, _PR_GOLD_BRIGHT))
+    return '#{:02x}{:02x}{:02x}'.format(*rgb)
+
+
 def fmt_friendly_date(d):
     """e.g. '17 Apr 2023'."""
     if d is None or pd.isna(d):
@@ -497,6 +527,11 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
     )
 
     # PRs table — Distance left, PR/Date right-aligned numeric cells, Event/Location left.
+    # PR times are gold, shaded by recency across the set of dated PRs.
+    pr_dates = [pd.Timestamp(r['date']) for r in prs
+                if r['time_sec'] is not None and r['date'] is not None]
+    d_lo = min(pr_dates).value if pr_dates else 0
+    d_span = (max(pr_dates).value - d_lo) if pr_dates else 0
     pr_rows = []
     for r in prs:
         if r['time_sec'] is None:
@@ -507,10 +542,13 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
             continue
         loc = escape(r['location']) if r['location'] else ''
         evt = escape(r['event']) if r['event'] else ''
+        frac = ((pd.Timestamp(r['date']).value - d_lo) / d_span
+                if r['date'] is not None and d_span else 1.0)
+        gold = _pr_gold(frac)
         pr_rows.append(
             f'<tr>'
             f'<td>{escape(r["distance"])}</td>'
-            f'<td class="num"><b>{fmt_race_time(r["time_sec"])}</b></td>'
+            f'<td class="num"><b style="color:{gold}">{fmt_race_time(r["time_sec"])}</b></td>'
             f'<td class="num">{fmt_friendly_date(r["date"])}</td>'
             f'<td>{evt}</td>'
             f'<td>{loc}</td>'
@@ -530,7 +568,7 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
         rp_rows.append(
             f'<tr>'
             f'<td>{escape(r["distance"])}</td>'
-            f'<td class="num"><b>{fmt_race_time(r["time_sec"])}</b></td>'
+            f'<td class="num"><b class="pred-value">{fmt_race_time(r["time_sec"])}</b></td>'
             f'<td class="num">{fmt_cri_halfwidth(r["half_sec"])}</td>'
             f'</tr>'
         )
@@ -563,17 +601,19 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
   <div class="dash-main">
 
     <section class="dash-section" id="sec-stats">
-      <h2>Stats</h2>
+      <h2 title="Training streak and lifetime / projected mileage totals.">Stats</h2>
       <div class="kv">
 {stats_html}
       </div>
     </section>
 
     <section class="dash-section" id="sec-prs">
-      <h2>Personal Records</h2>
+      <h2 title="Fastest verified time at each distance (best per-mile pace).">Personal Records</h2>
       <table class="dash">
         <thead><tr>
-          <th>Distance</th><th class="num">PR</th><th class="num">Date</th>
+          <th>Distance</th>
+          <th class="num" title="Personal record — fastest verified time at this distance.">PR</th>
+          <th class="num" title="Date the PR was set.">Date</th>
           <th>Event</th><th>Location</th>
         </tr></thead>
         <tbody>
@@ -583,12 +623,12 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
     </section>
 
     <section class="dash-section" id="sec-predictions">
-      <h2>Race Predictions</h2>
+      <h2 title="Predicted race time at each distance from today's performance frontier (demonstrated capability).">Race Predictions</h2>
       <table class="dash">
         <thead><tr>
           <th>Distance</th>
-          <th class="num">Prediction</th>
-          <th class="num">95% CrI</th>
+          <th class="num" title="Predicted time, read directly off the current performance frontier.">Prediction</th>
+          <th class="num" title="95% credible interval (±), the frontier swept across the CS uncertainty band.">95% CrI</th>
         </tr></thead>
         <tbody>
 {race_pred_html}
@@ -597,7 +637,7 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
     </section>
 
     <section class="dash-section" id="sec-workouts">
-      <h2>Workout Pace Predictions</h2>
+      <h2 title="Predicted paces for representative workouts at current fitness.">Workout Pace Predictions</h2>
       <div class="kv">
 {workout_html}
       </div>

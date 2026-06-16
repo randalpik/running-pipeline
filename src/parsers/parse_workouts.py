@@ -13,7 +13,6 @@ workout_pruned.csv into output/debug/.
 Reads daily.csv from data/.
 """
 import argparse
-import math
 import sys
 import numpy as np
 import pandas as pd
@@ -23,9 +22,8 @@ from datetime import date
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, DEBUG_DIR
-from src.shared.cs_projection import cp3_implied_cs
-from src.shared.workouts import (RECON_TAU_S, dp3_at_date, watch_log_demotions,
-                                 workout_vmax)
+from src.shared.workouts import (_connected_core, dp3_at_date,
+                                 watch_log_demotions)
 
 MILE_M = 1609.344
 
@@ -130,74 +128,6 @@ def _structure_label(dists):
         d, n = groups[0]
         return f'{d}m' if n == 1 else f'{n} × {d}m'
     return ' + '.join(f'{n}×{d}' if n > 1 else f'{d}' for d, n in groups) + 'm'
-
-
-def _connected_core(dists, times, rests, dp3=None):
-    """Connected-fatigue (D_eff, t_eff) from per-rep arrays, with the
-    effort-aware anaerobic deflation applied per rep (CP3 unification,
-    June 2026 — replaces the distance-only g(d) pace add).
-
-    Each rep extends a running "connected" effort by its distance; the rest
-    AFTER it dissipates the accumulated connection by exp(-rest_s/RECON_TAU_S).
-    Rest is ACTUAL seconds — reconstitution is a wall-clock process, NOT
-    per-mile-normalized (per-mile would misweight ladders). D_eff is the
-    deepest connected distance reached, bounded in [longest rep, total] with
-    no floor (no rest -> total; full recovery -> longest rep).
-
-    Anaerobic deflation: a rep's supra-CS speed is anaerobically assisted,
-    and the CP3 model prices anaerobic availability over a duration t as
-    D′·t/(t+τ) with τ = D′₃/(v_max − CS) — so each rep's speed above CS is
-    scaled by t/(t+τ) before the mean rep speed is taken. Two structural
-    rules: (1) the FIRST rep is exempt — its anaerobic deployment is the
-    one D′ the downstream CP3 projection already prices, which is exactly
-    what makes a single max rep analyze identically to a race of the same
-    distance/speed (the race/rep invariant); reps 2+ redeploy W′ that
-    reconstituted during rests, which the projection can't see. (2) CS here
-    is the workout's OWN implied CS, solved as a fixed point of
-    deflate → accumulate → project — the CS fit never enters, so the
-    implied CS the projection reads off stays an independent fitness
-    signal — see [[project-workout-enrichment]]. At rep paces this
-    reproduces the retired g(d) (≈+12 s/mi at 400m rep pace vs fitted
-    +14.3); at race paces it scales ~4×, as the invariant demands.
-
-    ``dists``/``times``: per-rep arrays. ``rests``: rest-after seconds per rep
-    (the final entry, if present, is unused — nothing accumulates after it).
-    ``dp3``: the date's CP3 anaerobic reservoir (metres); None (no CS fit
-    artifact) skips the deflation.
-    """
-    dists = np.asarray(dists, float)
-    times = np.asarray(times, float)
-    rests = np.asarray(rests, float)
-    conn = d_eff = 0.0
-    for i in range(len(dists)):
-        conn += dists[i]
-        if conn > d_eff:
-            d_eff = conn
-        if i < len(rests):
-            conn *= math.exp(-rests[i] / RECON_TAU_S)
-
-    t_total = float(times.sum())
-    if dp3 is None or len(dists) < 2:
-        return d_eff, d_eff * t_total / dists.sum()
-
-    vmax = workout_vmax()
-    v = dists / times                                    # per-rep speeds
-    t_corr = times.copy()
-    for _ in range(20):
-        t_eff = d_eff * t_corr.sum() / dists.sum()       # D_eff / mean speed
-        cs = float(cp3_implied_cs(d_eff, t_eff, dp3, vmax))
-        if not np.isfinite(cs):
-            return d_eff, d_eff * t_total / dists.sum()  # off-model: no deflation
-        tau = dp3 / (vmax - cs)
-        # Deflate supra-CS speed only; sub-CS reps carry no anaerobic assist.
-        v_corr = np.where(v > cs, cs + (v - cs) * times / (times + tau), v)
-        t_new = dists / v_corr
-        t_new[0] = times[0]                              # first rep exempt
-        if np.allclose(t_new, t_corr, rtol=1e-6):
-            t_corr = t_new
-            break
-        t_corr = t_new
-    return d_eff, d_eff * t_corr.sum() / dists.sum()
 
 
 def _measured_d_eff(day, dp3=None):

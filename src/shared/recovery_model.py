@@ -95,9 +95,10 @@ OUTLIER_MIN_NEIGHBORS      = 5
 
 # ---------- model parameters ----------
 TEMP_REFERENCE_C       = 12.0
-# Wind enters as a pooled, pinned per-mph cost (wind_beta) applied where a
-# watch wind reading exists; calm (0 mph) is the zero-contribution baseline.
-WIND_REFERENCE_MPH     = 0.0
+# Wind enters as a pooled, pinned per-mph cost (wind_beta) applied symmetrically
+# around the MEDIAN observed recovery wind (wind_reference_mph): unlogged days
+# are filled with that median (a neutral, zero-offset assumption — not dead
+# calm), below-median wind is a small credit and above-median a small cost.
 # Recent-race fatigue uses exponential decay: contribution = exp(−t/τ) at
 # day t post-race, fitted via OLS for amplitude. Per-category τ in days,
 # from empirical curve fits on days-since-last-race vs marathon-revealed
@@ -401,8 +402,19 @@ def per_run_elevation(rec):
             em = None
         if em is not None and not em.empty and 'elev_gain_ft' in em.columns:
             em = em.merge(rec[['date', 'location']], on='date', how='left')
-            em['gpm'] = em['elev_gain_ft'] / em['corr_miles']
-            em['lpm'] = em['elev_loss_ft'] / em['corr_miles']
+            # Prefer DEM-along-GPS gain/loss where present (long-run + race rows;
+            # see dem_elevation.py). Long runs are loops, so the barometric net
+            # is a phantom morning-drift descent — DEM removes it. Recovery rows
+            # carry no dem_* and fall through to barometric, so this is scoped to
+            # whatever the backfill DEM-filled without a run_type branch here.
+            gain_src = (em['dem_gain_ft'].where(em['dem_gain_ft'].notna(),
+                                                em['elev_gain_ft'])
+                        if 'dem_gain_ft' in em.columns else em['elev_gain_ft'])
+            loss_src = (em['dem_loss_ft'].where(em['dem_loss_ft'].notna(),
+                                                em['elev_loss_ft'])
+                        if 'dem_loss_ft' in em.columns else em['elev_loss_ft'])
+            em['gpm'] = gain_src / em['corr_miles']
+            em['lpm'] = loss_src / em['corr_miles']
             rmed = em.groupby('location')['gpm'].median()
             lmed = em.groupby('location')['lpm'].median()
             bad = (em['gpm'] > ELEV_GUARD_FT_PER_MI) & (
@@ -842,13 +854,43 @@ def wind_beta():
             X = np.column_stack(
                 [np.ones(len(s))]
                 + [s[c].to_numpy(float) for c in base]
-                + [s['wind_mph'].to_numpy(float) - WIND_REFERENCE_MPH])
+                + [s['wind_mph'].to_numpy(float) - wind_reference_mph()])
             coef, *_ = np.linalg.lstsq(X, s['target'].to_numpy(float),
                                        rcond=None)
             out = float(coef[-1])
     except Exception:
         pass
     _WIND_BETA_CACHE[key] = out
+    return out
+
+
+_WIND_REF_CACHE: dict = {}
+
+
+def wind_reference_mph():
+    """Median observed recovery-run wind (mph) — the symmetric center of the
+    pinned wind term. The applied offset is ``wind_b·(wind_mph − ref)`` with
+    unlogged days filled with this ``ref``, so a missing reading is neutral
+    (zero offset), calmer-than-typical days get a small credit, and windier
+    days a small cost. Centering is reference-invariant for the fitted slope
+    (a constant shift of the regressor is absorbed by the intercept); it only
+    sets the fill value and the sign convention of the applied correction.
+
+    Cached per data dir; degrades to 0.0 (the old calm baseline, a harmless
+    no-op center) when there's no watch wind data — e.g. CI without a details
+    cache."""
+    key = str(DATA_DIR)
+    if key in _WIND_REF_CACHE:
+        return _WIND_REF_CACHE[key]
+    out = 0.0
+    try:
+        daily = pd.read_csv(DATA_DIR / 'daily.csv')
+        w = daily.loc[daily['run_type'] == 'recovery', 'wind_mph'].dropna()
+        if len(w):
+            out = float(w.median())
+    except Exception:
+        pass
+    _WIND_REF_CACHE[key] = out
     return out
 
 
@@ -1071,14 +1113,18 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
         physical_features = ['is_offroad', 'alt_kft']
     feature_cols = base_features + physical_features
 
-    # Wind: pooled, pinned per-mph cost applied as a fixed offset where a watch
-    # wind reading exists (0 elsewhere — calm baseline), so the full corpus
-    # stays in the fit. apply_wind is False only on the bootstrap calls
-    # (wind_beta / physical_route_betas) that build the pools — breaks recursion.
+    # Wind: pooled, pinned per-mph cost applied symmetrically around the median
+    # observed recovery wind (wind_reference_mph). Unlogged days are filled with
+    # that median, so they're neutral (zero offset) rather than assumed calm;
+    # calmer-than-median days get a small credit and windier days a small cost.
+    # The full corpus stays in the fit. apply_wind is False only on the
+    # bootstrap calls (wind_beta / physical_route_betas) that build the
+    # pools — breaks recursion.
     if apply_wind:
         wind_b = wind_beta()
-        wind_off = (wind_b * (rec['wind_mph'].fillna(WIND_REFERENCE_MPH)
-                              - WIND_REFERENCE_MPH)).to_numpy(float)
+        wind_ref = wind_reference_mph()
+        wind_off = (wind_b * (rec['wind_mph'].fillna(wind_ref)
+                              - wind_ref)).to_numpy(float)
     else:
         wind_b = 0.0
         wind_off = np.zeros(len(rec))

@@ -100,6 +100,19 @@ table.dash td.dim,
 table.dash .dim {
   color: #777;
 }
+/* Race-prediction times in flat purple (frontier accent), to keep focus on the
+   race table; workout pace predictions stay white. Selector out-specifies the
+   white `td b` default above. A lightened shade of the frontier purple
+   (#9933ff) — small bold text needs more luminance than a 2.5px line to clear
+   contrast standards against the dark background. */
+table.dash td b.pred-value {
+  color: #AB57FF;
+}
+/* Headers with an explanatory title get the help cursor as an affordance. */
+.dash-section h2[title],
+table.dash th[title] {
+  cursor: help;
+}
 .dash-footer {
   flex: 0 0 auto;
   text-align: center;

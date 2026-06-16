@@ -56,6 +56,8 @@ from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import daily_floor
 from src.shared.effective_mileage import effective_daily_miles
 from src.coros.solar import solar_anchors_local
+from src.parsers.snapshot import (find_snapshot, read_snapshot,
+                                  coord_overrides_from_sections)
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             FG, FG_DIM, GRID, widgets,
                             yearly_x_axis_kwargs)
@@ -189,6 +191,20 @@ def load_series(daily_path, alt_path, time_path, start_date):
                                     r['tz'] if has_tz and pd.notna(r['tz']) else None)
                   for _, r in cc.iterrows()
                   if pd.notna(r['latitude']) and pd.notna(r['longitude'])}
+
+    # Apply snapshot coordinate overrides on top of the Nominatim cache (same
+    # corrections the world map uses via ensure_coords), so a geocoding fix
+    # reaches the Time panel too. Read-time only — city_coords.csv is left
+    # regenerable from source. Keep each city's cached tz (a coordinate fix
+    # almost never crosses a timezone); no-op when the snapshot or its
+    # coordinates section is absent (e.g. a watch-import profile).
+    snap_path = find_snapshot([os.path.join(os.path.dirname(daily_path),
+                                            'drive_snapshot.csv')])
+    if snap_path:
+        sections, _ = read_snapshot(snap_path)
+        for cs, (lat, lon) in coord_overrides_from_sections(sections).items():
+            tz = coords[cs][2] if cs in coords else None
+            coords[cs] = (lat, lon, tz)
 
     # Watch era: reproject each run's stored (local-clock, watch-tz) time onto
     # the canonical city's tz + coordinates. Pre-watch era: estimate from the
@@ -864,7 +880,7 @@ def build_single(args, key, start, full, panels, cond_cf, weather_syn, wcolor):
     fig.update_xaxes(**yearly_x_axis_kwargs(str(x0.date()), str(x1.date())))
     apply_default_layout(
         fig, font=dict(color=FG, size=12),
-        margin=dict(t=20, l=70, r=40, b=56),
+        margin=dict(t=20, l=70, r=40, b=28),
         showlegend=False, hovermode=False)
 
     epoch = pd.Timestamp('1970-01-01')
@@ -961,7 +977,7 @@ def _build_page_fig(page_panels, full, dates, start, *, cond_cf, weather_syn,
     fig.update_xaxes(**yearly_x_axis_kwargs(start, str(dates.max().date())))
     apply_default_layout(
         fig, font=dict(color=FG, size=12),
-        margin=dict(t=20, l=70, r=40, b=56), showlegend=False, hovermode=False)
+        margin=dict(t=20, l=70, r=40, b=28), showlegend=False, hovermode=False)
     return fig, tab
 
 

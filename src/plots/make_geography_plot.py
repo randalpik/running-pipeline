@@ -714,7 +714,7 @@ def main():
         fig,
         barmode='stack',
         bargap=0,
-        margin=dict(t=20, l=70, r=340, b=60),
+        margin=dict(t=20, l=70, r=340, b=28),
         showlegend=False,
         hovermode=False,
         xaxis=dict(

@@ -171,6 +171,30 @@ def find_snapshot(candidate_paths):
     return None
 
 
+def coord_overrides_from_sections(sections: dict) -> dict[str, tuple[float, float]]:
+    """Extract a ``{city_state: (lat, lon)}`` override map from the snapshot
+    ``coordinates`` section. Empty dict when the section is absent/empty.
+
+    These corrections are applied on top of the Nominatim cache by every
+    consumer (the world map via ``ensure_coords(overrides=...)``, and the
+    Misc-Trends Time panel at read time) so a geocoding fix is reproducible
+    from source without hand-editing ``data/city_coords.csv``."""
+    coords_df = sections.get('coordinates')
+    if coords_df is None or coords_df.empty:
+        return {}
+    out = {}
+    for _, row in coords_df.iterrows():
+        cs = row.get('city_state')
+        try:
+            lat = float(row['latitude'])
+            lon = float(row['longitude'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if isinstance(cs, str) and cs.strip():
+            out[cs.strip()] = (lat, lon)
+    return out
+
+
 # ---------- snapshot write ----------
 
 def _write_section(buf, name, header, rows, meta=""):

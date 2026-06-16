@@ -136,6 +136,10 @@ def workout_hover(r, single_type=False):
         body = f"{rep_count} × {rep_dist}m @ {sec_to_mss(pace)}/mi"
     if pd.notna(r.get('rest_per_mile')) and r['rest_per_mile'] > 0:
         body += f", rest {sec_to_mss(r['rest_per_mile'])}/mi"
+    # Wrap the decomposition so a long measured-rep `structure` string wraps at
+    # the tooltip width instead of being clipped by the nowrap/overflow:hidden
+    # tooltip (the appended Watch / Watch-adj sub-lines carry their own wrap).
+    body = f'<span class="tt-wrap">{body}</span>'
     measured = r.get('measured_line')
     if isinstance(measured, str) and measured:
         body += f"<br>{measured}"
@@ -367,7 +371,7 @@ def main():
 
     workouts = project_workouts(cs, epoch)
     hills_c  = project_hill_continuous(cs, epoch)
-    hills_r  = project_hill_reps()
+    hills_r  = project_hill_reps(cs, epoch)
 
     lines = measured_lines()
     if lines:
@@ -458,6 +462,11 @@ def main():
                 hr_track[i] = np.nan
         hills_r = hills_r.copy()
         hills_r['p5k_track_min'] = hr_track
+        # Watch-era reps sit at their real projected p5k (project_hill_reps);
+        # pre-watch reps stay at the TQ smoother track (display-only).
+        wm = hills_r.get('watch_measured', pd.Series(False, index=hills_r.index)).fillna(False)
+        hills_r['p5k_plot'] = np.where(wm & hills_r['p5k_min'].notna(),
+                                       hills_r['p5k_min'], hills_r['p5k_track_min'])
 
     # ---------- figure ----------
     fig = go.Figure()
@@ -500,7 +509,7 @@ def main():
     n_legend = (len(present_cats)
                 + (1 if len(hills_c) else 0)
                 + (1 if (not hills_r.empty
-                         and len(hills_r.dropna(subset=['p5k_track_min']))) else 0))
+                         and len(hills_r.dropna(subset=['p5k_plot']))) else 0))
     single_type = n_legend == 1
     ring_pts = {tag: ([], []) for tag in TAG_LEGEND}
     for cat in ['interval', 'tempo', 'rep', 'continuous_fartlek']:
@@ -541,14 +550,15 @@ def main():
             meta={'snap_eligible': True},
         ))
 
-    # Hill repeats: positioned at TQ smoother track on each session date.
+    # Hill repeats: watch-era reps at their real projected p5k, pre-watch reps
+    # at the TQ smoother track (display-only).
     if not hills_r.empty:
-        plottable = hills_r.dropna(subset=['p5k_track_min'])
+        plottable = hills_r.dropna(subset=['p5k_plot'])
         if len(plottable):
             cd = [hill_rep_hover(r, hr_measured) for _, r in plottable.iterrows()]
-            collect_ring_points(ring_pts, plottable, 'p5k_track_min')
+            collect_ring_points(ring_pts, plottable, 'p5k_plot')
             fig.add_trace(go.Scatter(
-                x=plottable['date'], y=_y_safe(plottable['p5k_track_min'].values),
+                x=plottable['date'], y=_y_safe(plottable['p5k_plot'].values),
                 mode='markers',
                 name=f"{CAT_LABEL['hill_rep']} (n={len(plottable)})",
                 marker=dict(color=HILL_REP_COLOR, size=7,
@@ -588,7 +598,7 @@ def main():
     if len(hills_c):
         y_candidates.extend(hills_c['p5k_display_min'].dropna().tolist())
     if not hills_r.empty:
-        y_candidates.extend(hills_r['p5k_track_min'].dropna().tolist())
+        y_candidates.extend(hills_r['p5k_plot'].dropna().tolist())
     _ticks_sec, ticktext = nice_time_ticks(
         min(y_candidates) * 60, max(y_candidates) * 60, target=14)
     tickvals = [t / 60.0 for t in _ticks_sec]
@@ -596,14 +606,13 @@ def main():
 
     apply_default_layout(
         fig,
-        margin=dict(t=20, l=70, r=200, b=60),
+        margin=dict(t=20, l=70, r=200, b=28),
         hovermode=False,
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     groupclick='toggleitem', font=dict(size=11)),
         xaxis=yearly_x_axis_kwargs(
             daily_floor(),
             pd.Timestamp(workouts['date'].max()) + pd.Timedelta(days=30),
-            title='Date',
         ),
         yaxis=dict(title='5K-equivalent pace (min/mi)',
                    range=[y_max, y_min],

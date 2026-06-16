@@ -118,8 +118,11 @@
 }
 #geo-tooltip .hov-item {
   display: flex; align-items: center; gap: 6px;
-  white-space: nowrap; padding: 1px 0 1px 41px;
+  white-space: nowrap; padding: 1px 0;
 }
+/* Only grouped children (under a state title) indent past the state prefix;
+   the top-level global "Other" rows stay flush-left like the legend. */
+#geo-tooltip .hov-item.grouped { padding-left: 41px; }
 #geo-tooltip .hov-singleton {
   display: flex; align-items: center; gap: 6px;
   white-space: nowrap; padding: 1px 0;

@@ -137,6 +137,43 @@ def augment_race_dem(meas, races, ids_by_date, sleep_s):
     return n
 
 
+def augment_long_dem(meas, ids_by_date):
+    """Fill DEM gain/loss/net/mean for long-run rows from the day's pooled GPS
+    track (see dem_elevation.measure_run_elevation). Long runs are loops, so the
+    barometric net carries a phantom morning-drift descent that DEM removes —
+    same fix as races, applied to the whole-day run rather than a single
+    race activity. Idempotent: only rows missing dem_gain_ft are computed, so a
+    re-run is a cheap cache-served top-up. Returns the count newly computed."""
+    if 'run_type' not in meas.columns:
+        return 0
+    need = meas[(meas['run_type'] == 'long') & meas['dem_gain_ft'].isna()]
+    if need.empty:
+        return 0
+    cache = DEM._load_cache()
+    n = 0
+    for i, row in need.iterrows():
+        d = row['date']
+        if d not in ids_by_date:
+            continue
+        recs = []
+        for lid in ids_by_date[d]:
+            p = DETAILS / f'{lid}.json'
+            if p.exists():
+                rec = json.loads(p.read_text())
+                if rec.get('rich') == 2:
+                    recs.append(rec)
+        if not recs:
+            continue
+        res = DEM.measure_run_elevation(recs, cache)
+        if res is None:
+            continue
+        for k, v in res.items():
+            meas.at[i, k] = v
+        n += 1
+    DEM._save_cache(cache)
+    return n
+
+
 def main():
     load_env_file()
     p = argparse.ArgumentParser()
@@ -239,6 +276,10 @@ def main():
         n_dem = augment_race_dem(meas, races, ids_by_date, args.sleep)
         print(f"[elevation] DEM race-elevation: {n_dem} newly computed "
               f"(GPS-track lookup; barometric net is per-race noise)")
+    if 'long' in types and len(meas):
+        n_dem = augment_long_dem(meas, ids_by_date)
+        print(f"[elevation] DEM long-run elevation: {n_dem} newly computed "
+              f"(GPS-track lookup; barometric net is morning-drift phantom)")
     if len(meas):
         meas = meas.sort_values('date').reset_index(drop=True)
         meas.to_csv(MEAS_OUT, index=False)

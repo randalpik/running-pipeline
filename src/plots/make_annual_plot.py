@@ -212,7 +212,7 @@ def main():
 
     apply_default_layout(
         fig,
-        margin=dict(t=20, l=70, r=LEGEND_WIDTH_PX + 40, b=56),
+        margin=dict(t=20, l=70, r=LEGEND_WIDTH_PX + 40, b=28),
         hovermode=False,
         showlegend=False,
         xaxis=dict(

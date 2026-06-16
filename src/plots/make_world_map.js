@@ -136,6 +136,11 @@
     return (r.width > 0 && r.height > 0) ? r.width / r.height : 1;
   }
 
+  function hasRealSize(gd) {
+    var r = gd.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+
   function buildLayoutFor(scopeId, gd) {
     var geo = JSON.parse(JSON.stringify(SCOPE_LAYOUTS[scopeId]));
     var bbox = SCOPE_BBOXES[scopeId];
@@ -171,6 +176,10 @@
   function refit() {
     var gd = pdiv();
     if (!gd || !SCOPE_BBOXES[currentScope]) return;
+    // Don't fit against a div that isn't laid out yet (0×0 — e.g. the map is
+    // on a hidden tab); a square fallback aspect would seed wrong ranges. The
+    // ResizeObserver re-fires refit once the box gains a real size.
+    if (!hasRealSize(gd)) return;
     var ranges = aspectFitRanges(SCOPE_BBOXES[currentScope], divAspect(gd),
                                  LAT_CLAMPS[currentScope]);
     var lonC = (ranges.lon[0] + ranges.lon[1]) / 2;
@@ -190,14 +199,22 @@
       });
     });
     var resizeTimer = null;
-    window.addEventListener('resize', function () {
+    function scheduleRefit() {
       if (resizeTimer) clearTimeout(resizeTimer);
       resizeTimer = setTimeout(refit, 100);
-    });
-    // First-paint refit: the figure shipped with the default scope's
-    // static range (world). If default were ever a non-world scope this
-    // would seed the aspect-fit; harmless no-op for world.
-    if (SCOPE_BBOXES[currentScope]) refit();
+    }
+    window.addEventListener('resize', scheduleRefit);
+    // First-paint refit: the div may not be laid out yet on init, and when the
+    // map starts on a hidden tab getBoundingClientRect() is 0×0. A
+    // ResizeObserver re-fits once the box first gains (or later changes) a real
+    // size — covering both the deferred initial layout and the tab being shown
+    // later. The rAF pass handles the already-sized active-tab case directly.
+    if (SCOPE_BBOXES[currentScope]) {
+      if (typeof ResizeObserver !== 'undefined') {
+        new ResizeObserver(scheduleRefit).observe(gd);
+      }
+      requestAnimationFrame(function () { requestAnimationFrame(refit); });
+    }
   }
 
   if (document.readyState === 'loading') {

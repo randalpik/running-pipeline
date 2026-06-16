@@ -390,9 +390,9 @@ def main():
 
     apply_default_layout(
         fig,
-        margin=dict(t=20, l=70, r=200, b=60),
+        margin=dict(t=20, l=70, r=200, b=28),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02, groupclick='toggleitem'),
-        xaxis=yearly_x_axis_kwargs(x_lo, x_hi, title='Date'),
+        xaxis=yearly_x_axis_kwargs(x_lo, x_hi),
         yaxis=dict(title='Pace (min/mi)', range=[y_max, y_min],
                    tickmode='array', tickvals=ytick_vals, ticktext=ytick_txt,
                    showgrid=True, gridcolor=GRID))

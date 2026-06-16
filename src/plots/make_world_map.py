@@ -32,7 +32,8 @@ from src.shared.effective_mileage import effective_daily_miles
 from src.plotting import render_plot, apply_default_layout
 from src.plotting import widgets
 from src.plots.make_geography_plot import build_categories
-from snapshot import find_snapshot, read_snapshot  # type: ignore
+from snapshot import (find_snapshot, read_snapshot,  # type: ignore
+                      coord_overrides_from_sections)
 
 _PLOTS_DIR = Path(__file__).resolve().parent
 _WORLD_MAP_JS = _PLOTS_DIR / 'make_world_map.js'
@@ -182,24 +183,6 @@ def _load_snapshot_sections() -> dict:
         return {}
     sections, _ = read_snapshot(snapshot_path)
     return sections
-
-
-def _coord_overrides_from_sections(sections: dict) -> dict[str, tuple[float, float]]:
-    """Extract a ``{city_state: (lat, lon)}`` override map from snapshot sections."""
-    coords_df = sections.get('coordinates')
-    if coords_df is None or coords_df.empty:
-        return {}
-    out = {}
-    for _, row in coords_df.iterrows():
-        cs = row.get('city_state')
-        try:
-            lat = float(row['latitude'])
-            lon = float(row['longitude'])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if isinstance(cs, str) and cs.strip():
-            out[cs.strip()] = (lat, lon)
-    return out
 
 
 def _historical_bounds_from_sections(sections: dict) -> list[dict]:
@@ -441,7 +424,7 @@ def main():
     # section is a city_state -> (lat, lon) override applied on top of the
     # Nominatim cache; lets us correct geocoding errors reproducibly from
     # source instead of hand-editing data/city_coords.csv.
-    coord_overrides = _coord_overrides_from_sections(sections)
+    coord_overrides = coord_overrides_from_sections(sections)
     coords = ensure_coords(agg['city_state'].tolist(),
                            overrides=coord_overrides)
     agg['lat'] = agg['city_state'].map(

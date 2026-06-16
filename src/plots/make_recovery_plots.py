@@ -448,7 +448,7 @@ def main():
     apply_default_layout(
         fig,
         font=dict(color=FG, size=12),
-        margin=dict(l=70, r=300, t=40, b=70),
+        margin=dict(l=70, r=300, t=40, b=28),
         hoverlabel=dict(bgcolor='#222', bordercolor='#555',
                         font=dict(color=FG, size=12)),
         hovermode='closest',

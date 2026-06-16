@@ -23,6 +23,7 @@ from src.shared.plot_window import daily_floor
 from src.shared.workouts import (
     load_cs, add_cs,
     project_workouts, project_long_runs, project_hill_continuous,
+    project_hill_reps,
     WORKOUTS_PATH, DAILY_PATH, CS_PATH,
 )
 from src.shared.long_run_model import (
@@ -197,6 +198,22 @@ def long_run_hover(r):
     return "<br>".join(p for p in parts if p)
 
 
+def hill_rep_hover(r):
+    title = f"Hill repeats{route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}"
+    n = int(r['rep_count'])
+    word = 'rep' if n == 1 else 'reps'
+    rt = float(r['rep_time_min'])
+    rt_str = f"{int(rt)} min" if rt == int(rt) else f"{int(rt)}:{int(round((rt-int(rt))*60)):02d}"
+    parts = [
+        f"<b>{title}</b>",
+        f"{n} {word} × {rt_str}",
+        f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
+        f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
+        residual_line(r['raw_resid'], r['resid']),
+    ]
+    return "<br>".join(p for p in parts if p)
+
+
 def hill_hover(r):
     title = f"Continuous hills{route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}"
     nreps = int(r['nreps'])
@@ -226,6 +243,10 @@ def main():
     workouts  = project_workouts(cs, epoch)
     long_runs = project_long_runs(cs, epoch)
     hills     = project_hill_continuous(cs, epoch)
+    # Watch-era hill reps (measured per-rep structure projected to 5K-equiv in
+    # project_hill_reps) feed TQ like any other quality workout. Pre-watch reps
+    # (no trustworthy gain -> p5k_min NaN) and snow days do not.
+    hill_reps = project_hill_reps(cs, epoch)
     # Record why each quality workout is excluded from Training so the Workouts
     # plot can annotate it (the slow-"outlier" sessions show only there). Snow
     # is a category flag here; outliers are added during the prune below.
@@ -235,6 +256,16 @@ def main():
     workouts  = workouts[workouts['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
     long_runs = long_runs[long_runs['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
     hills     = hills[hills['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
+    if hill_reps.empty:
+        hill_reps = hill_reps.assign(raw_resid=pd.Series(dtype=float),
+                                     p5k_cs_min=pd.Series(dtype=float))
+    else:
+        for _, r in hill_reps[hill_reps['p5k_min'].notna()
+                              & hill_reps['excluded_reason'].notna()].iterrows():
+            tq_excluded.append({'date': r['date'], 'reason': r['excluded_reason'],
+                                'resid': np.nan, 'src': 'hill_rep'})
+        hill_reps = hill_reps[hill_reps['p5k_min'].notna()
+                              & hill_reps['excluded_reason'].isna()].copy()
 
     # Long-run model, WITHOUT its intercept (Max, June 2026): the projection
     # itself is race-equivalent (β_long un-bias + watch/rule corrections in
@@ -304,15 +335,17 @@ def main():
     # 2016 tempo sits near the soft 2016 track and survives); a session that
     # sticks out from its own surroundings goes.
     workouts = workouts.copy()
-    rep_w = hill_w = lr_w = 1.0
+    rep_w = hill_w = lr_w = hr_w = 1.0
     thr = float('nan')
     pruned_w_idx, pruned_h_idx, pruned_lr_idx = set(), set(), set()
+    pruned_hr_idx = set()
     print(f'\n--- Track-relative prune (one-sided, '
           f'median+{PRUNE_SIGMA}*MAD on detrended residuals) ---')
     for it in range(12):
         w_keep = workouts.drop(index=list(pruned_w_idx)).copy()
         h_keep = hills.drop(index=list(pruned_h_idx)).copy()
         lr_keep = long_runs.drop(index=list(pruned_lr_idx)).copy()
+        hr_keep = hill_reps.drop(index=list(pruned_hr_idx)).copy()
         # No class constants anywhere: every point on this graph AND the
         # Workouts tab is the same number — the best attempt at predicting
         # 5K race pace from that session (Max's contract). Workouts enter
@@ -322,6 +355,9 @@ def main():
         w_keep['resid'] = w_keep['raw_resid']
         h_keep['resid'] = h_keep['corrected']
         lr_keep['resid'] = lr_keep['raw_resid'] - lr_keep['model_adj']
+        # Hill reps enter at their grade-adjusted raw residual (the Minetti
+        # one-way + CP3 projection already handles the climb; no trail term).
+        hr_keep['resid'] = hr_keep['raw_resid']
 
         # Scatter weights (reps, hills, and long runs are noisier CS
         # signals; same (sd_ref/sd)^2 construction as always), recomputed
@@ -344,6 +380,11 @@ def main():
             sd_lr = lr_keep['resid'].std()
             if sd_lr and sd_lr > 0 and sd_ref and sd_ref > 0:
                 lr_w = float(np.clip((sd_ref / sd_lr) ** 2, 0.1, 1.0))
+        hr_w = 1.0
+        if len(hr_keep):
+            sd_hr = hr_keep['resid'].std()
+            if sd_hr and sd_hr > 0 and sd_ref and sd_ref > 0:
+                hr_w = float(np.clip((sd_ref / sd_hr) ** 2, 0.1, 1.0))
 
         combined = pd.concat([
             w_keep[['date', 'resid', 'weight']].assign(src='w', orig=w_keep.index),
@@ -351,6 +392,8 @@ def main():
                                               orig=lr_keep.index),
             h_keep[['date', 'resid']].assign(weight=hill_w, src='h',
                                              orig=h_keep.index),
+            hr_keep[['date', 'resid']].assign(weight=hr_w, src='hr',
+                                              orig=hr_keep.index),
         ], ignore_index=True).sort_values('date').reset_index(drop=True)
 
         ds = (combined['date'] - epoch).dt.days.astype(float).values
@@ -401,6 +444,14 @@ def main():
                 print(f'    LR {r["date"].date()}  {r["location"]:<20} '
                       f'vs-track={detrended[pos]:+5.1f}  raw={r["raw_resid"]:+5.1f}  '
                       f'miles={r["miles"]:.1f}')
+            elif row['src'] == 'hr':
+                r = hill_reps.loc[row['orig']]
+                pruned_hr_idx.add(row['orig'])
+                tq_excluded.append({'date': r['date'], 'reason': 'outlier',
+                                    'resid': round(float(detrended[pos]), 1),
+                                    'src': 'hill_rep'})
+                print(f'    HR {r["date"].date()}  loop={r["loop"]:<6} '
+                      f'vs-track={detrended[pos]:+5.1f}  raw={r["raw_resid"]:+5.1f}')
             else:
                 r = hills.loc[row['orig']]
                 pruned_h_idx.add(row['orig'])
@@ -413,8 +464,10 @@ def main():
     workouts = workouts.drop(index=list(pruned_w_idx)).copy()
     hills = hills.drop(index=list(pruned_h_idx)).copy()
     long_runs = long_runs.drop(index=list(pruned_lr_idx)).copy()
+    hill_reps = hill_reps.drop(index=list(pruned_hr_idx)).copy()
     workouts['resid'] = workouts['raw_resid']
     long_runs['resid'] = long_runs['raw_resid'] - long_runs['model_adj']
+    hill_reps['resid'] = hill_reps['raw_resid']
     rep_mask = workouts['category'] == 'rep'
     workouts['weight'] = np.where(rep_mask, rep_w, 1.0)
     if len(hills):
@@ -489,6 +542,7 @@ def main():
     workouts['pos_min']  = workouts['p5k_cs_min']  + workouts['resid']  / 60.0
     long_runs['pos_min'] = long_runs['p5k_cs_min'] + long_runs['resid'] / 60.0
     hills['pos_min']     = hills['p5k_cs_min']     + hills['resid']     / 60.0
+    hill_reps['pos_min'] = hill_reps['p5k_cs_min'] + hill_reps['resid'] / 60.0
 
     # Persist the kept corpus (post-filter, post-prune, corrected residuals)
     # as a data artifact. Consumer: the performance frontier on the Fitness
@@ -524,6 +578,10 @@ def main():
                       'category': hills['category'],
                       'p5k_corr_min': hills['pos_min'],
                       'detail': hills['workout_raw'].astype(str)}),
+        pd.DataFrame({'date': hill_reps['date'], 'src': 'hill_rep',
+                      'category': 'hillrep_' + hill_reps['loop'].astype(str),
+                      'p5k_corr_min': hill_reps['pos_min'],
+                      'detail': hill_reps['workout_raw'].astype(str)}),
     ], ignore_index=True).sort_values('date').reset_index(drop=True)
     corpus_csv = DATA_DIR / 'training_quality_corpus.csv'
     corpus.to_csv(corpus_csv, index=False)
@@ -542,6 +600,7 @@ def main():
     workouts['pos_norm']  = workouts['resid']
     long_runs['pos_norm'] = long_runs['resid']
     hills['pos_norm']     = hills['resid']
+    hill_reps['pos_norm'] = hill_reps['resid']
 
     # ---------- build figure ----------
     # Each trace stashes both raw_y (min/mi pace) and norm_y (sec/mi residual
@@ -658,6 +717,23 @@ def main():
             meta={'snap_eligible': True, 'raw_y': raw_y, 'norm_y': norm_y},
         ))
 
+    # Hill repeats: watch-era only (the projected ones), their own trace.
+    if len(hill_reps):
+        cd = [hill_rep_hover(r) for _, r in hill_reps.iterrows()]
+        raw_y = _y_safe(hill_reps['pos_min'].values)
+        norm_y = _y_safe(hill_reps['pos_norm'].values)
+        fig.add_trace(go.Scatter(
+            x=hill_reps['date'], y=norm_y,
+            mode='markers',
+            name=f'Hill reps (n={len(hill_reps)})',
+            marker=dict(color=CAT_COLORS['hill_rep'], size=7,
+                        line=dict(color='rgba(255,255,255,0.4)', width=0.5),
+                        opacity=0.85),
+            customdata=cd,
+            hoverinfo='skip',
+            meta={'snap_eligible': True, 'raw_y': raw_y, 'norm_y': norm_y},
+        ))
+
     # ---------- layout ----------
     # Raw axis: actual pace (min/mi), descending = faster up. Data-driven over
     # the markers + CS line; target=10 reproduces the former 4:20–6:00 / 10 s/mi
@@ -666,6 +742,7 @@ def main():
         workouts['pos_min'].to_numpy(dtype=float),
         long_runs['pos_min'].to_numpy(dtype=float),
         hills['pos_min'].to_numpy(dtype=float),
+        hill_reps['pos_min'].to_numpy(dtype=float),
         cs_plot['p5k_implied_min'].to_numpy(dtype=float),
         frontier['frontier_pace_min'].to_numpy(dtype=float),
     ])
@@ -682,6 +759,7 @@ def main():
         workouts['pos_norm'].to_numpy(dtype=float),
         long_runs['pos_norm'].to_numpy(dtype=float),
         hills['pos_norm'].to_numpy(dtype=float),
+        hill_reps['pos_norm'].to_numpy(dtype=float),
         smoothed[np.isfinite(smoothed)],
         np.asarray([v for v in ((frontier['frontier_pace_min'].to_numpy(float)
                                  - front_plot['p5k_implied_min'].to_numpy(float))
@@ -699,14 +777,13 @@ def main():
         fig,
         margin=dict(t=20, l=70,
                     r=right_margin_for_anchored_box(ROUTES_BOX_WIDTH, legend_min_px=220),
-                    b=60),
+                    b=28),
         hovermode=False,
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     groupclick='toggleitem', font=dict(size=11)),
         xaxis=yearly_x_axis_kwargs(
             daily_floor(),
             combined['date'].max() + pd.Timedelta(days=30),
-            title='Date',
         ),
         yaxis=dict(title='Residual from CS (sec/mi)',
                    range=norm_axis_range,
@@ -753,6 +830,9 @@ def main():
     for _, r in hills.iterrows():
         sessions.append({'day': int((r['date'] - js_epoch).days),
                          'html': hill_hover(r)})
+    for _, r in hill_reps.iterrows():
+        sessions.append({'day': int((r['date'] - js_epoch).days),
+                         'html': hill_rep_hover(r)})
     sessions.sort(key=lambda s: s['day'])
 
     first_day = int((all_days[0] - js_epoch).days)

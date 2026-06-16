@@ -566,9 +566,9 @@ def main():
         hovermode='closest',
         margin=dict(t=20, l=70,
                     r=right_margin_for_anchored_box(BIN_FILTER_WIDTH, legend_min_px=200),
-                    b=60),
+                    b=28),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02),
-        xaxis=yearly_x_axis(x_lo, x_hi, title='Date'),
+        xaxis=yearly_x_axis(x_lo, x_hi),
         yaxis=reversed_pace_y_axis(y_lo_all, y_hi_all))
 
     out1 = os.path.join(args.out_dir, 'race_pace_all.html')
@@ -927,9 +927,8 @@ function buildTooltip(day, isSnap, pointHtml) {
     apply_default_layout(
         fig2,
         hovermode='closest',
-        margin=dict(t=40, l=70, r=200, b=60),
+        margin=dict(t=40, l=70, r=200, b=28),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02))
-    fig2.update_xaxes(title_text='Date', row=n_rows)
 
     out2 = os.path.join(args.out_dir, 'race_pace_by_distance.html')
 
