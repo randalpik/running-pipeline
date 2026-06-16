@@ -3,8 +3,9 @@
     python -m src.coros --from 20260101 --to 20260529 --out data/coros_current_log.csv
 
 Credentials come from the environment (COROS_EMAIL / COROS_PASSWORD) so they
-never land in argv or on disk. Activity details are optionally cached as JSON
-(--cache-dir) to make dev re-runs free and avoid re-hitting the API.
+never land in argv; locally the gitignored repo-root .env supplies them.
+Activity details are optionally cached as JSON (--cache-dir) to make dev
+re-runs free and avoid re-hitting the API.
 """
 from __future__ import annotations
 
@@ -17,6 +18,9 @@ from pathlib import Path
 from src.coros import mappings as M
 from src.coros.build_current_log import build_current_log, slim_detail
 from src.coros.client import CorosClient
+from src.shared.env import load_env_file
+
+load_env_file()
 
 
 def _fetch_details(client, from_day, to_day, cache_dir):

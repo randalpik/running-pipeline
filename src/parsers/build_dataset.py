@@ -169,6 +169,71 @@ def _join_location_metadata(daily, locations_df):
     return merged
 
 
+def _backfill_location_metadata(daily, locations_df):
+    """Fill blank location-metadata cells (terrain_type, elev_per_mile,
+    altitude, display_name) for rows whose `location` was finalized AFTER the
+    initial _join_location_metadata — notably the historically-located routes
+    (e.g. `education hill`, whose location apply_historical fills where the
+    raw log left it blank). The first join keyed on a still-blank location and
+    missed them; this second pass keys on the now-final location and fills
+    only blank cells, never overwriting values set by the first join, autopop,
+    or adjustments. city_state is set by apply_historical itself, so it's
+    already populated and untouched here."""
+    if (locations_df is None or len(locations_df) == 0
+            or "log_location" not in locations_df.columns):
+        return daily
+    cols = [c for c in LOCATION_METADATA_COLS
+            if c in locations_df.columns and c in daily.columns]
+    if not cols:
+        return daily
+    sheet = locations_df[["log_location"] + cols].copy()
+    sheet["log_location"] = (sheet["log_location"].astype(str)
+                             .str.strip().str.lower())
+    sheet = sheet.drop_duplicates(subset=["log_location"], keep="last") \
+                 .set_index("log_location")
+    key = daily["location"].astype(str).str.strip().str.lower()
+    n_filled = 0
+    for c in cols:
+        mapped = key.map(sheet[c])
+        fill_mask = daily[c].isna() & mapped.notna()
+        if fill_mask.any():
+            daily.loc[fill_mask, c] = mapped[fill_mask].to_numpy()
+            n_filled += int(fill_mask.sum())
+    if n_filled:
+        print(f"[locations] backfilled {n_filled} metadata cell(s) for "
+              f"historically-located rows (e.g. education hill)")
+    return daily
+
+
+def _apply_weather_measured(daily, data_dir):
+    """Enrich daily with watch-derived weather (weather_measured.csv in
+    `data_dir`). Overrides temp_c + time_of_day and fills wind_mph +
+    humidity_pct on every day the watch covered; the `weather` bin is held.
+    Adds the wind_mph/humidity_pct columns if missing. No file -> no-op."""
+    path = os.path.join(data_dir, "weather_measured.csv")
+    if not os.path.exists(path):
+        return daily
+    wm = pd.read_csv(path, dtype={"date": str})
+    if wm.empty:
+        return daily
+    wm = wm.drop_duplicates("date").set_index("date")
+    for col in ("wind_mph", "humidity_pct"):
+        if col not in daily.columns:
+            daily[col] = None
+    dstr = pd.to_datetime(daily["date"]).dt.date.astype(str)
+    stats = []
+    for col in ("temp_c", "time_of_day", "wind_mph", "humidity_pct"):
+        if col not in wm.columns:
+            continue
+        mapped = dstr.map(wm[col])
+        mask = mapped.notna()
+        daily.loc[mask, col] = mapped[mask]
+        stats.append(f"{col}={int(mask.sum())}")
+    print(f"[weather] watch enrichment from {os.path.basename(path)}: "
+          + ", ".join(stats))
+    return daily
+
+
 def main():
     p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     p.add_argument("--historical",
@@ -419,6 +484,13 @@ def main():
         print(f"[historical] applied {n_entries}/{len(historical_df)} entr(ies); "
               f"city_state set on {n_cs}, location set on {n_ll} non-race row(s)")
 
+    # ---------- backfill metadata for historically-located rows ----------
+    # apply_historical just finalized `location` on rows the raw log left
+    # blank (education hill, etc.); re-attach their terrain_type/elev_per_mile/
+    # altitude, which the earlier _join_location_metadata couldn't (location
+    # was blank then). Fills blanks only.
+    daily = _backfill_location_metadata(daily, locations_df)
+
     # ---------- reconcile race-date daily rows to run_type='race' ----------
     # races.csv is the truth for what happened on a race date. A daily row on
     # a race date that the parser left as a non-race type is the race itself,
@@ -529,6 +601,15 @@ def main():
             daily = daily.sort_values("date").reset_index(drop=True)
             print(f"[synth] created {len(synth_rows)} daily row(s) from race "
                   f"additions for dates not already in daily")
+
+    # ---------- watch-derived weather enrichment ----------
+    # Override temp_c + time_of_day and fill wind_mph + humidity_pct from the
+    # watch on days it recorded (weather_measured.csv, written by
+    # src/coros/weather_measured.py). The qualitative `weather` bin is held
+    # (watch sky labels disagree too much with the hand log — see the accuracy
+    # comparison). No file (e.g. a profile with no sibling watch cache, or CI
+    # before a sync) -> no-op.
+    daily = _apply_weather_measured(daily, args.out_dir)
 
     # ---------- final daily metadata coverage ----------
     # Reported after backprop so the numbers reflect the daily.csv state

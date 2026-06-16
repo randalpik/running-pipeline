@@ -20,6 +20,7 @@ BORDER     = '#555'
 # --- Reference / overlay lines ---
 CS_LINE       = 'rgb(255,180,80)'   # orange — Critical Speed reference
 CS_LINE_WIDTH = 2.5
+FRONTIER_LINE = '#9933ff'           # vibrant purple (tab-shell accent #93f) — performance frontier
 TREND_LINE    = 'rgb(220,220,220)'  # white-ish — recovery rolling trend
 TREND_WIDTH   = 2.0
 
@@ -48,10 +49,30 @@ CAT_COLORS = {
     'rep':                "#F38A12",  # carrot orange (CF peach → vivid)
     'continuous_fartlek': "#FF5643",  # warm orange (CF peach → vivid, distinct from rep)
     'long':               '#674EA7',  # deep purple (CF purple family)
-    'hill_lc':            '#3D85C6',  # saturated medium blue (CF light blue → vivid)
-    'hill_rc':            '#3D85C6',
-    'hill_pwr1':          '#3D85C6',
+    'hill_cont':          '#3D85C6',  # saturated medium blue (CF light blue → vivid)
     'hill_rep':           '#1ABC9C',  # vivid teal (CF muted teal #A2C4C9 → vivid)
+}
+
+
+# --- Workout condition-tag rings (Workouts tab). One color per tag, used
+#     both for the marker ring and the matching tooltip tag text so the two
+#     always read as the same signal. 'xc' deliberately reuses the XC surface
+#     green — it marks XC-corrected sessions that stay in Training. ---
+TAG_COLORS = {
+    'uncertain accuracy': '#FF4500',         # bright red-orange (kept clearly
+                                             # off the carrot-orange rep fill)
+    'snow':               '#8FD3FF',         # light blue
+    'outlier':            '#E8A33C',         # amber — matches the exclusion
+                                             # tooltip text; distinct from the
+                                             # red-orange accuracy ring
+    'xc':                 SURFACES['XC'],    # XC green
+    'enriched':           '#AAAAAA',         # light gray — informational:
+                                             # session successfully watch-
+                                             # enriched (white overpowered)
+    'partners':           '#F4D03F',         # bright yellow — partner-paced
+                                             # run excluded from Training
+                                             # (distinct from the amber
+                                             # outlier ring's orange cast)
 }
 
 

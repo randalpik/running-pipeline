@@ -41,7 +41,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.parsers import snapshot as snap          # noqa: E402
 from src.plots.build_shell import write_index      # noqa: E402
 from src.profiles import PROFILES, get_profile     # noqa: E402
+from src.shared.env import load_env_file           # noqa: E402
 from src.shared.paths import REPO_ROOT             # noqa: E402
+
+load_env_file()
 
 SITE_DIST = REPO_ROOT / "site" / "dist"
 
@@ -86,7 +89,14 @@ def build_drive_data(profile, env, *, fit=False, historical=False):
     _run(cmd, env, f"{profile.id}: pipeline")
 
 
-def build_coros_data(profile, env, *, rebuild, fit=False):
+def sync_coros_cache(profile, *, rebuild):
+    """Sync a Coros profile's detail cache + current_log and return the log df.
+
+    The detail cache (``<data_dir>/details``) is the shared resource that both
+    the watch profile's own build AND the Max drive build's enrichment read
+    (run_pipeline.sh reads data/profiles/coros/details). ``--sync-only`` calls
+    just this — populating the cache without rendering the profile — so CI can
+    refresh Max's watch cache without building the hidden coros test profile."""
     from src.coros.sync import sync_current_log
 
     cfg = profile.coros
@@ -99,16 +109,19 @@ def build_coros_data(profile, env, *, rebuild, fit=False):
 
     data_dir = profile.data_dir
     data_dir.mkdir(parents=True, exist_ok=True)
-    current_log = data_dir / "coros_current_log.csv"
-    details_dir = data_dir / "details"
-    token_cache = data_dir / "coros_token.json"
-
-    df = sync_current_log(
+    return sync_current_log(
         email=email, password=password, region=cfg.get("region", "us"),
-        current_log_path=current_log, details_dir=details_dir,
-        token_cache=token_cache, rebuild=rebuild,
+        current_log_path=data_dir / "coros_current_log.csv",
+        details_dir=data_dir / "details",
+        token_cache=data_dir / "coros_token.json", rebuild=rebuild,
         start_day=cfg.get("start_day"),
     )
+
+
+def build_coros_data(profile, env, *, rebuild, fit=False):
+    cfg = profile.coros
+    data_dir = profile.data_dir
+    df = sync_coros_cache(profile, rebuild=rebuild)
 
     # Assemble a snapshot. current_log carries the data; the reverse-geocoded
     # "City, ST" already in its `location` column is also the city_state, so we
@@ -141,8 +154,9 @@ def build_coros_data(profile, env, *, rebuild, fit=False):
           "--no-fetch", "--snapshot", str(snapshot_path),
           "--out-dir", str(data_dir), "--current-year", str(current_year)],
          env, f"{profile.id}: build_dataset")
-    _run(["python", "src/parsers/parse_workouts.py", "--continuous-fartlek-only"],
-         env, f"{profile.id}: parse_workouts")
+    # CS fit before workouts: the rep-extraction layer (reps.py) needs the
+    # CS timeline for its quality cutoff, and parse_workouts consumes its
+    # output. The fit itself only needs races, so the order is safe.
     if profile.fit and fit:
         try:
             _run(["python", "src/models/bayes_cs_fit.py"], env,
@@ -155,6 +169,24 @@ def build_coros_data(profile, env, *, rebuild, fit=False):
                   f"CS-dependent tabs will be omitted")
     elif profile.fit:
         print(f"[{profile.id}] no --fit: reusing existing bayes_cs_* outputs")
+    # Watch-derived rep extraction (workout_measured.csv). Watch profiles
+    # have no hand log to reconcile against -> --watch-only. Needs the rich
+    # details cache and a CS fit; skipped (with the tab unaffected) if absent.
+    if (data_dir / "details").exists() and (data_dir / "bayes_cs_summary.csv").exists():
+        _run(["python", "src/coros/reps.py", "--watch-only"],
+             env, f"{profile.id}: reps")
+    else:
+        print(f"[{profile.id}] reps: no details cache or CS fit — skipped")
+    _run(["python", "src/parsers/parse_workouts.py", "--continuous-fartlek-only"],
+         env, f"{profile.id}: parse_workouts")
+    # Per-day altitude + local-time envelopes (altitude_daily.csv /
+    # time_daily.csv) for the Misc. Trends Altitude/Time panels, mined from the
+    # rich detail cache (no network). Graceful no-op without rich details.
+    if (data_dir / "details").exists():
+        _run(["python", "-m", "src.coros.daily_envelopes"],
+             env, f"{profile.id}: daily_envelopes")
+    else:
+        print(f"[{profile.id}] daily_envelopes: no details cache — skipped")
 
 
 def _race_additions(cfg):
@@ -222,6 +254,12 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--only", help="comma-separated profile ids to build")
+    p.add_argument("--sync-only", action="store_true",
+                   help="for Coros profiles in --only, sync just the detail "
+                        "cache + current_log and exit (no dataset/plots). Used "
+                        "in CI to refresh Max's watch cache — which his Drive "
+                        "build enriches from — without rendering the test "
+                        "profile.")
     p.add_argument("--skip-data", action="store_true")
     p.add_argument("--rebuild-coros", action="store_true")
     p.add_argument("--fit", action="store_true",
@@ -238,6 +276,19 @@ def main(argv=None):
         profiles = [get_profile(pid.strip()) for pid in args.only.split(",")]
     else:
         profiles = PROFILES
+
+    if args.sync_only:
+        for profile in profiles:
+            if profile.source != "coros":
+                print(f"[{profile.id}] --sync-only: not a Coros profile — skipped")
+                continue
+            print(f"\n{'#' * 64}\n# Sync watch cache: {profile.id} "
+                  f"({profile.label})\n{'#' * 64}")
+            try:
+                sync_coros_cache(profile, rebuild=args.rebuild_coros)
+            except ProfileSkip as e:
+                print(f"[{profile.id}] SKIPPED: {e}")
+        return
 
     # The switcher lists every profile that can currently be built, regardless
     # of which subset --only is rebuilding, so cross-profile navigation always

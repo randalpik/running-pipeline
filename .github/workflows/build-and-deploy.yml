@@ -27,7 +27,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60   # multi-profile build (Max Drive + Maddy Coros); fit runs cover both
+    timeout-minutes: 120  # multi-profile build + Coros watch-cache sync; the
+                          # first run seeds ~2200 rich details (one-time, slow)
     env:
       PYTHONUNBUFFERED: "1"
     steps:
@@ -68,10 +69,24 @@ jobs:
         with:
           path: |
             data/city_coords.csv
+            data/reverse_coords.csv
             data/historical_daily.csv
             data/bayes_cs_summary.csv
             data/bayes_cs_params.csv
             data/bayes_cs_auto_exclusions.csv
+            data/watch_activities.csv
+            data/weather_measured.csv
+            data/elevation_measured.csv
+            data/elevation_splits.csv
+            data/altitude_daily.csv
+            data/time_daily.csv
+            data/long_run_measured.csv
+            data/recovery_measured.csv
+            data/long_run_calibration.csv
+            data/dem_cache.json
+            data/profiles/coros/details
+            data/profiles/coros/coros_token.json
+            data/profiles/coros/coros_current_log.csv
             data/profiles/maddy/coros_current_log.csv
             data/profiles/maddy/coros_token.json
             data/profiles/maddy/city_coords.csv
@@ -126,12 +141,32 @@ jobs:
           printf '%s' "$GCP_SA_JSON" > "$RUNNER_TEMP/sa.json"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> "$GITHUB_ENV"
 
-      - name: Build all profiles
-        # Multi-profile orchestrator: builds Max (Drive) + Maddy (Coros),
-        # renders each profile's plots, writes the profile-switcher shell, and
-        # stages into site/dist (Max -> root, Maddy -> profiles/maddy/). The
-        # coros test profile is hidden via prod=False + RP_PRODUCTION. Maddy's
-        # Coros sync is incremental and her CS fit is cached (see cache step).
+      - name: Sync Max's watch cache (Coros)
+        # Populate data/profiles/coros/details (Max's watch account) WITHOUT
+        # rendering the hidden coros test profile — the Max Drive build below
+        # enriches from this cache (run_pipeline.sh reads it for weather,
+        # elevation, altitude, reps, long-run reconciliation). Incremental
+        # after the one-time seed; the cache persists via the state cache.
+        # Soft-fails so a Coros outage degrades Max to log-only rather than
+        # failing the whole deploy.
+        env:
+          COROS_EMAIL: ${{ secrets.COROS_EMAIL }}
+          COROS_PASSWORD: ${{ secrets.COROS_PASSWORD }}
+        run: |
+          if [ -z "$COROS_EMAIL" ] || [ -z "$COROS_PASSWORD" ]; then
+            echo "::warning::COROS_EMAIL/PASSWORD unset — skipping watch-cache sync; Max builds log-only."
+          else
+            python scripts/build_profiles.py --only coros --sync-only \
+              || echo "::warning::watch-cache sync failed — Max builds from the last cached details."
+          fi
+
+      - name: Build production profiles
+        # Builds Max (Drive, enriched from the watch cache synced above) and
+        # Maddy (Coros). Renders each profile's plots, writes the profile-
+        # switcher shell, and stages into site/dist (Max -> root, Maddy ->
+        # profiles/maddy/). The coros test profile is NOT built here (it's a
+        # cache provider only in production); --only keeps it out. Maddy's
+        # Coros sync is incremental and their CS fit is cached (see cache step).
         env:
           COROS2_EMAIL: ${{ secrets.COROS2_EMAIL }}
           COROS2_PASSWORD: ${{ secrets.COROS2_PASSWORD }}
@@ -140,7 +175,7 @@ jobs:
           flags=()
           [ "${{ steps.cfg.outputs.historical }}" = "true" ] && flags+=(--historical)
           [ "${{ steps.cfg.outputs.fit }}" = "true" ] && flags+=(--fit)
-          python scripts/build_profiles.py "${flags[@]}"
+          python scripts/build_profiles.py --only max,maddy "${flags[@]}"
 
       - name: Save pipeline state cache
         # Save a fresh cache entry under a unique key after every successful
@@ -151,10 +186,24 @@ jobs:
         with:
           path: |
             data/city_coords.csv
+            data/reverse_coords.csv
             data/historical_daily.csv
             data/bayes_cs_summary.csv
             data/bayes_cs_params.csv
             data/bayes_cs_auto_exclusions.csv
+            data/watch_activities.csv
+            data/weather_measured.csv
+            data/elevation_measured.csv
+            data/elevation_splits.csv
+            data/altitude_daily.csv
+            data/time_daily.csv
+            data/long_run_measured.csv
+            data/recovery_measured.csv
+            data/long_run_calibration.csv
+            data/dem_cache.json
+            data/profiles/coros/details
+            data/profiles/coros/coros_token.json
+            data/profiles/coros/coros_current_log.csv
             data/profiles/maddy/coros_current_log.csv
             data/profiles/maddy/coros_token.json
             data/profiles/maddy/city_coords.csv

@@ -4,8 +4,8 @@ from .layout import apply_default_layout, right_margin_for_anchored_box
 from . import tokens
 from .tokens import (
     BG, FG, FG_SOFT, FG_DIM, FG_MUTE, GRID, GRID_FAINT, PANEL_BG, TOOLTIP_BG, BORDER,
-    CS_LINE, CS_LINE_WIDTH, TREND_LINE, TREND_WIDTH,
-    SURFACES, CAT_COLORS, rgba,
+    CS_LINE, CS_LINE_WIDTH, FRONTIER_LINE, TREND_LINE, TREND_WIDTH,
+    SURFACES, CAT_COLORS, TAG_COLORS, rgba,
 )
 from .formatters import (sec_to_mss, sec_to_mss_full, signed_sec, fmt_min,
                          route_label, route_paren)
@@ -25,8 +25,8 @@ __all__ = [
     'tokens', 'rgba',
     'BG', 'FG', 'FG_SOFT', 'FG_DIM', 'FG_MUTE', 'GRID', 'GRID_FAINT', 'PANEL_BG',
     'TOOLTIP_BG', 'BORDER',
-    'CS_LINE', 'CS_LINE_WIDTH', 'TREND_LINE', 'TREND_WIDTH',
-    'SURFACES', 'CAT_COLORS',
+    'CS_LINE', 'CS_LINE_WIDTH', 'FRONTIER_LINE', 'TREND_LINE', 'TREND_WIDTH',
+    'SURFACES', 'CAT_COLORS', 'TAG_COLORS',
     'sec_to_mss', 'sec_to_mss_full', 'signed_sec', 'fmt_min',
     'route_label', 'route_paren',
     'thin_yearly_ticks', 'yearly_x_axis_kwargs',

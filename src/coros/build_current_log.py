@@ -33,16 +33,17 @@ from src.parsers.snapshot import CURRENT_LOG_COLUMNS
 # caching. Values stay RAW (unscaled) so current_log can be re-derived if a
 # scaling/mapping changes. See sync.py for the cache.
 _SUMMARY_KEYS = ("sportType", "distance", "workoutTime", "totalTime",
-                 "startTimestamp", "timezone", "name", "avgPace")
+                 "startTimestamp", "timezone", "name", "avgPace", "elevGain")
 _WEATHER_KEYS = ("temperature", "windSpeed", "windDirection", "weatherType",
                  "humidity")
 
 
 def slim_detail(d: dict) -> dict:
-    """Project a full (or already-slim) activity detail to the slim record.
+    """Project a full (or already-slim/rich) activity detail to the slim record.
 
-    Idempotent: a record that's already slim (has 'gps', lacks 'frequencyList')
-    is returned unchanged, so callers can pass either shape.
+    Idempotent: a record that's already slim or rich (has 'gps', lacks
+    'frequencyList') is returned unchanged, so callers can pass any shape —
+    rich records are a slim-compatible superset.
     """
     if "gps" in d and "frequencyList" not in d:
         return d
@@ -56,12 +57,58 @@ def slim_detail(d: dict) -> dict:
     }
 
 
+def rich_detail(d: dict):
+    """Project a full activity detail to the rich record (slim + per-second).
+
+    A slim-compatible superset (every slim consumer accepts it) adding the
+    fields the rep-extraction layer (reps.py) needs, RAW/unscaled like slim:
+
+      pauses: [[startTimestamp, endTimestamp, duration], ...]
+      freq:   [[timestamp, distance, heart, gpsLat, gpsLon, altitude, speed],
+               ...]  per-second
+
+    ~100 KB vs slim's ~600 B, so it's kept only where the stream is consumed:
+    reps.py (every Track Run — sync caches those rich from the start — and
+    runs on hand-logged workout days, scripts/backfill_rich_details.py) and
+    the elevation enrichment (altitude/speed; scripts/backfill_elevation.py).
+
+    Schema version (``rich``):
+      1 — freq points are [t, dist, heart, gpsLat, gpsLon] (pre-2026-06).
+      2 — appends [altitude, speed] (raw: altitude is meters, speed is the
+          Coros raw value). ``altitude``/``speed`` are None on devices that
+          don't report them. Consumers index by position, so v2 is a strict
+          superset — f[0..4] are unchanged.
+
+    ``altitude`` enables the Minetti per-run grade correction; ``speed`` is
+    kept for corrected-mile split pace (informational) and a possible future
+    pace-vs-grade physiology model. Split pace is computed from the distance
+    + timestamp streams, not this raw speed (whose scaling is unverified).
+
+    Idempotent on rich records (returns as-is — a v1 record is NOT upgraded
+    in place; the frequencyList it was built from is gone, so altitude
+    requires a re-fetch). Returns None for a slim record.
+    """
+    if "freq" in d:
+        return d
+    if "frequencyList" not in d:
+        return None
+    rec = slim_detail(d)
+    rec["rich"] = 2
+    rec["pauses"] = [[p.get("startTimestamp"), p.get("endTimestamp"),
+                      p.get("duration")] for p in (d.get("pauseList") or [])]
+    rec["freq"] = [[p.get("timestamp"), p.get("distance"), p.get("heart"),
+                    p.get("gpsLat"), p.get("gpsLon"),
+                    p.get("altitude"), p.get("speed")]
+                   for p in (d.get("frequencyList") or [])]
+    return rec
+
+
 class Activity:
     """One Coros activity with scaling applied to real units."""
 
     __slots__ = ("sport_type", "distance_m", "moving_s", "total_s",
                  "start_utc", "tz_min", "lat", "lon", "temp_c",
-                 "wind_ms", "weather_type")
+                 "wind_mph", "weather_type", "humidity_pct")
 
     def __init__(self, record: dict):
         rec = slim_detail(record)
@@ -79,9 +126,12 @@ class Activity:
         w = rec["weather"]
         self.temp_c = (_num(w.get("temperature")) / M.WEATHER_DIV
                        if w.get("temperature") is not None else None)
-        self.wind_ms = (_num(w.get("windSpeed")) / M.WEATHER_DIV
-                        if w.get("windSpeed") is not None else None)
+        # raw/10 is km/h (see mappings.KMH_TO_MPH); store mph.
+        self.wind_mph = (_num(w.get("windSpeed")) / M.WEATHER_DIV * M.KMH_TO_MPH
+                         if w.get("windSpeed") is not None else None)
         self.weather_type = w.get("weatherType")
+        self.humidity_pct = (_num(w.get("humidity")) / M.WEATHER_DIV
+                             if w.get("humidity") is not None else None)
 
     @property
     def local_date(self):
@@ -107,6 +157,39 @@ def _first_gps(freq_list):
         if lat not in (None, 0) and lon not in (None, 0):
             return lat, lon
     return None, None
+
+
+# A run whose midpoint falls before this local hour is the dead of night, not
+# the pre-dawn run-up to morning, so it bins as 'late' rather than 'early' —
+# this is what makes a cross-midnight evening run read correctly.
+NIGHT_HOUR = 4
+
+
+def _activity_tod(a: Activity) -> str:
+    """Time-of-day bin for a single activity, by its midpoint (the 'majority'
+    of a one-boundary-crossing run), with the dead-of-night correction."""
+    mid = a.start_utc + timedelta(seconds=a.total_s / 2.0)
+    lat = None if a.is_indoor else a.lat
+    lon = None if a.is_indoor else a.lon
+    b = time_of_day(mid, lat, lon, a.tz_min)
+    if b == "early":
+        local = mid.astimezone(timezone(timedelta(minutes=a.tz_min)))
+        if local.hour < NIGHT_HOUR:
+            b = "late"
+    return b
+
+
+def _day_time_of_day(runs: list[Activity]) -> str:
+    """The bin holding the most of the day's total activity time, across all
+    activities started that day. Generalizes Max's "majority" rule from one
+    run to multi-activity days (e.g. a morning shakeout + a later race): each
+    activity contributes its elapsed time to its own bin and the largest wins.
+    Ties break toward the later bin."""
+    order = ["early", "morning", "afternoon", "late"]
+    totals: dict = defaultdict(float)
+    for a in runs:
+        totals[_activity_tod(a)] += a.total_s
+    return max(order, key=lambda b: (totals[b], order.index(b)))
 
 
 def _fmt_pace(moving_s: float, meters: float) -> str | None:
@@ -197,11 +280,11 @@ def build_current_log(details, *, geocode=True):
             "workout_raw": _workout_raw(runs),
             "partners": None,
             "conditions": None,
-            "wind": None if rep.is_indoor else M.wind_bin(rep.wind_ms),
-            "time_of_day": time_of_day(rep.start_utc,
-                                       None if rep.is_indoor else rep.lat,
-                                       None if rep.is_indoor else rep.lon,
-                                       rep.tz_min),
+            "wind": None if rep.is_indoor else M.wind_bin(rep.wind_mph),
+            "wind_mph": None if rep.is_indoor else _round_or_none(rep.wind_mph, 1),
+            "humidity_pct": None if rep.is_indoor
+                            else _round_or_none(rep.humidity_pct, 0),
+            "time_of_day": _day_time_of_day(runs),
             "shoes": None,
             "location": geo.get(day),
             "weight_lbs": None,

@@ -49,6 +49,7 @@ import arviz as az
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, DEBUG_DIR
 from src.shared.plot_window import pad_range
+from src.shared.recovery_model import race_physical_correction
 
 
 DEFAULT_RACES   = str(DATA_DIR / 'races.csv')
@@ -82,9 +83,16 @@ def build_eligible(races_path):
     if 'event' not in races.columns:
         races['event'] = ''
 
+    # Downhill is CS-ineligible by default — but a watch-covered Downhill race
+    # is ADMITTED, because the measured grade correction (§B) discounts its
+    # downhill-assisted time to a flat-equivalent that IS CS-comparable. The
+    # categorical hard-exclusion remains the pre-watch fallback. (No current
+    # Downhill race has watch coverage, so this is a no-op today; it arms the
+    # behavior for any future watch-covered downhill course.)
+    has_measured = race_physical_correction(races)['has_measured'].to_numpy()
     elig = races[
         (~races['fatigued'].astype(bool)) &
-        (races['surface'] != 'Downhill') &
+        ((races['surface'] != 'Downhill') | has_measured) &
         (races['time_sec'] >= 120)
     ].copy().sort_values('date').reset_index(drop=True)
     return elig
@@ -148,9 +156,15 @@ def derive_exclusions(elig, xc_correction=0.06,
     df = elig.copy().reset_index(drop=True)
     df['date'] = pd.to_datetime(df['date'])
 
-    # XC pre-correction (matches main fit's pre-correction)
+    # Race-time pre-correction (matches the main fit). Physical route
+    # correction first (grade + footing + altitude → flat/sea-level-equivalent),
+    # then the categorical XC factor ONLY where there's no measured correction
+    # — so the exclusion residuals are computed on the same times the fit sees.
     df['time_sec_corr'] = df['time_sec'].astype(float)
-    xc_mask = df['surface'].fillna('').astype(str).str.upper() == 'XC'
+    corr = race_physical_correction(df)
+    df['time_sec_corr'] = df['time_sec_corr'] - corr['dt_sec'].to_numpy()
+    has_measured = corr['has_measured'].to_numpy()
+    xc_mask = (df['surface'].fillna('').astype(str).str.upper() == 'XC') & ~has_measured
     df.loc[xc_mask, 'time_sec_corr'] = df.loc[xc_mask, 'time_sec_corr'] / (1.0 + xc_correction)
 
     # Distance bands
@@ -296,6 +310,19 @@ def main():
     p.add_argument('--tag', default='',
                    help='Suffix for output filenames (e.g. "v4a") to keep '
                         'experiments separate')
+    p.add_argument('--workout-obs', default='',
+                   help='EXPERIMENTAL (cs-workout-enrichment spike, June '
+                        '2026): path to a CSV of near-race training '
+                        'observations with columns date, t5k_sec, dp_fixed_m, '
+                        'sigma_obs. Each row enters the likelihood as a '
+                        '5K-equivalent effort at its date: '
+                        'log(t5k_sec) ~ N(log((5000 - dp_fixed_m)/CS(t)), '
+                        'sigma_obs). dp_fixed_m is the RACE-FIT D\' median at '
+                        'that date (fixed, not the model\'s D\' — workouts '
+                        'inform the CS curve only, races stay the sole D\' '
+                        'anchor; Gate 2 of the enrichment plan). No beta_long '
+                        '(5000m < d_thresh). Default off: race-only fit, '
+                        'output unchanged.')
     p.add_argument('--diagnostics', action='store_true',
                    help='Also write bayes_cs_residuals.csv, '
                         'bayes_cs_posterior.nc, and bayes_cs_diagnostics.txt '
@@ -357,7 +384,28 @@ def main():
     elig['time_sec_original'] = elig['time_sec'].copy()
     if 'pace_sec_per_mi' in elig.columns:
         elig['pace_sec_per_mi_original'] = elig['pace_sec_per_mi'].copy()
-    is_xc_mask = elig['surface'].fillna('').astype(str).str.upper() == 'XC'
+
+    # ---------- physical route correction (grade + footing + altitude) ----------
+    # Convert each watch-covered race to its flat / sea-level / smooth-equivalent
+    # TIME before it enters the likelihood, so CS measures fitness not the
+    # course (docs/watch-stream-enrichment-plan.md §B). MUST match the same
+    # helper in cs_projection (the displayed diamonds) and derive_exclusions.
+    # Net-downhill races get time ADDED (Boston discounted); net-uphill /
+    # altitude races credited faster. Subtracted BEFORE the β_long un-bias.
+    phys = race_physical_correction(elig)
+    elig['phys_dt_sec'] = phys['dt_sec'].to_numpy()
+    elig['time_sec'] = elig['time_sec'].astype(float) - elig['phys_dt_sec']
+    has_measured = phys['has_measured'].to_numpy()
+    n_meas = int(has_measured.sum())
+    if n_meas:
+        moved = elig['phys_dt_sec'][has_measured]
+        print(f"Physical route correction: {n_meas} watch-covered races "
+              f"(dt {moved.min():+.0f}..{moved.max():+.0f}s, "
+              f"median {moved.median():+.1f}s)")
+
+    # The categorical XC factor applies ONLY where there's no measured
+    # correction (pre-watch fallback; measured grade+footing supersedes it).
+    is_xc_mask = (elig['surface'].fillna('').astype(str).str.upper() == 'XC') & ~has_measured
     n_xc = int(is_xc_mask.sum())
     if args.xc_correction > 0 and n_xc > 0:
         factor = 1.0 / (1.0 + args.xc_correction)
@@ -410,6 +458,21 @@ def main():
     race_distances = elig['distance_m'].to_numpy().astype(float)
     race_times = elig['time_sec'].to_numpy().astype(float)
     log_race_times = np.log(race_times)
+
+    # ---------- optional near-race workout observations (spike) ----------
+    wobs = None
+    if args.workout_obs:
+        wobs = pd.read_csv(args.workout_obs, parse_dates=['date'])
+        wobs_grid_idx = np.array([
+            min(int(round((wd.date() - first_d).days / args.grid_step)), n_grid - 1)
+            for wd in wobs['date']
+        ])
+        wobs_dp = wobs['dp_fixed_m'].to_numpy().astype(float)
+        wobs_log_t = np.log(wobs['t5k_sec'].to_numpy().astype(float))
+        wobs_sigma = wobs['sigma_obs'].to_numpy().astype(float)
+        print(f"Workout observations: {len(wobs)} from {args.workout_obs} "
+              f"(sigma_obs {wobs_sigma.min():.4f}-{wobs_sigma.max():.4f}; "
+              f"D' fixed from race fit, CS-only likelihood)")
 
     # Center grid_t for HSGP numerical stability
     grid_t_centered = (grid_t - grid_t.mean()) / 365.0  # in years
@@ -503,6 +566,18 @@ def main():
         log_expected = pm.math.log(expected_time_corrected)
 
         pm.Normal('obs', mu=log_expected, sigma=sigma_per_race, observed=log_race_times)
+
+        # Near-race workout observations (spike): 5K-equivalent efforts with
+        # D' FIXED at the race-fit median (wobs_dp), so the gradient flows
+        # into the CS GPs only — races remain the sole anchor for D' and
+        # beta_long (which doesn't apply at 5000m anyway). sigma_obs is a
+        # per-row constant measured empirically (pair-based repeatability),
+        # not a fitted parameter.
+        if wobs is not None:
+            cs_at_wobs = cast(Any, pm.math.exp(log_cs_total[wobs_grid_idx]))
+            expected_t_w = (5000.0 - wobs_dp) / cs_at_wobs
+            pm.Normal('obs_workout', mu=pm.math.log(expected_t_w),
+                      sigma=wobs_sigma, observed=wobs_log_t)
 
     # ---------- prior predictive ----------
     print("\nRunning prior predictive (200 samples)...")

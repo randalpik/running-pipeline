@@ -19,7 +19,13 @@ from typing import Iterable
 from src.shared.paths import DATA_DIR
 
 CACHE_PATH = DATA_DIR / 'city_coords.csv'
-CACHE_HEADER = ['city_state', 'latitude', 'longitude', 'geocoded_at']
+# ``tz`` is the IANA zone name (e.g. 'America/Chicago'), resolved automatically
+# from the geocoded lat/lon at cache time (see ``_timezone_for``). Consumers use
+# it with ``zoneinfo`` for DST-correct local time — notably the Misc. Trends
+# Time panel, which converts each run's absolute UTC moment into the canonical
+# city's local clock + solar gradient, rather than trusting the watch's
+# (occasionally stale) reported offset.
+CACHE_HEADER = ['city_state', 'latitude', 'longitude', 'tz', 'geocoded_at']
 
 # Reverse cache maps a rounded (lat, lon) -> city_state, so repeated runs
 # starting from the same area (the common case for watch imports) cost one
@@ -33,8 +39,13 @@ REVERSE_ROUND = 2
 
 NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search'
 NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse'
+# Open-Meteo echoes the resolved IANA timezone for a lat/lon when queried with
+# timezone=auto — keyless, no account, so it fits the geocoding step without a
+# new Python dependency (timezonefinder would pull a ~50 MB polygon dataset).
+OPEN_METEO_URL = 'https://api.open-meteo.com/v1/forecast'
 USER_AGENT = 'max-running-pipeline/1.0'
 RATE_LIMIT_SEC = 1.1   # Nominatim ToS: max 1 req/sec
+TZ_RATE_LIMIT_SEC = 0.4  # Open-Meteo is generous; stay polite
 
 US_STATES = {
     'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
@@ -76,6 +87,25 @@ def _geocode_one(city_state: str) -> tuple[float, float] | None:
         print(f'[geocode] {city_state!r}: no results for query {q!r}')
         return None
     return float(data[0]['lat']), float(data[0]['lon'])
+
+
+def _timezone_for(lat: float, lon: float) -> str | None:
+    """IANA timezone name for a lat/lon via Open-Meteo (timezone=auto), or None.
+
+    Used at cache time so each city carries a DST-aware zone alongside its
+    coordinates. Failures are non-fatal (the city simply has no tz until a later
+    run retries)."""
+    url = (f'{OPEN_METEO_URL}?'
+           f'{urllib.parse.urlencode({"latitude": lat, "longitude": lon, "timezone": "auto", "forecast_days": 1})}')
+    req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+    except Exception as e:
+        print(f'[geocode-tz] ({lat},{lon}): request failed ({e})')
+        return None
+    tz = data.get('timezone') if isinstance(data, dict) else None
+    return tz or None
 
 
 def _region_from_address(addr: dict) -> str | None:
@@ -177,7 +207,9 @@ def reverse_geocode(points: Iterable[tuple[float, float]],
     return out
 
 
-def _read_cache(path: Path) -> dict[str, tuple[float, float]]:
+def _read_cache(path: Path) -> dict[str, dict]:
+    """``{city_state: {'lat','lon','tz','geocoded_at'}}``. Tolerates a legacy
+    cache file with no ``tz`` column (tz comes back None, to be backfilled)."""
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, 'w', newline='') as f:
@@ -187,68 +219,90 @@ def _read_cache(path: Path) -> dict[str, tuple[float, float]]:
     with open(path, newline='') as f:
         for row in csv.DictReader(f):
             try:
-                out[row['city_state']] = (float(row['latitude']),
-                                          float(row['longitude']))
+                out[row['city_state']] = {
+                    'lat': float(row['latitude']),
+                    'lon': float(row['longitude']),
+                    'tz': (row.get('tz') or None) or None,
+                    'geocoded_at': row.get('geocoded_at') or '',
+                }
             except (KeyError, ValueError):
                 continue
     return out
 
 
-def _append_cache(path: Path, city_state: str, lat: float, lon: float) -> None:
-    with open(path, 'a', newline='') as f:
-        csv.writer(f).writerow([city_state, lat, lon, date.today().isoformat()])
-
-
-def _resort_cache(path: Path) -> None:
-    """Rewrite cache sorted by city_state for clean diffs."""
-    with open(path, newline='') as f:
-        reader = csv.reader(f)
-        header = next(reader)
-        rows = sorted(reader, key=lambda r: r[0])
+def _write_cache(path: Path, cache: dict[str, dict]) -> None:
+    """Rewrite the whole cache (sorted by city_state) with the current header.
+    Also migrates a legacy headerless-tz file to the new schema."""
     with open(path, 'w', newline='') as f:
         w = csv.writer(f)
-        w.writerow(header)
-        w.writerows(rows)
+        w.writerow(CACHE_HEADER)
+        for cs in sorted(cache):
+            v = cache[cs]
+            w.writerow([cs, v['lat'], v['lon'], v.get('tz') or '',
+                        v.get('geocoded_at') or ''])
 
 
 def ensure_coords(city_states: Iterable[str],
                   cache_path: Path = CACHE_PATH,
                   overrides: dict[str, tuple[float, float]] | None = None,
-                  ) -> dict[str, tuple[float, float]]:
-    """Return ``{city_state: (lat, lon)}`` for everything we have coords for.
+                  ) -> dict[str, tuple[float, float, str | None]]:
+    """Return ``{city_state: (lat, lon, tz)}`` for everything we have coords for.
 
-    Geocodes any inputs missing from the cache, appends to disk as it goes,
-    and rewrites sorted at the end if anything was added. Failures are
-    silently skipped (the city won't be in the returned dict).
+    Geocodes any inputs missing from the cache (lat/lon via Nominatim, then the
+    IANA ``tz`` via Open-Meteo) and backfills ``tz`` for any cached city that
+    lacks one (e.g. a legacy cache predating the column). Rewrites the cache
+    sorted if anything changed. Failures are skipped (the city won't be in the
+    returned dict, or keeps a None tz to retry next run).
 
-    ``overrides`` is applied last and wins over cached / freshly-fetched
-    Nominatim results — used by the snapshot's ``coordinates`` section to
-    correct city-states whose Nominatim lookup is wrong, without mutating
-    ``city_coords.csv`` (which is regenerable from source).
+    ``overrides`` (snapshot ``coordinates`` section) wins over the cached coords
+    in the returned dict but is NOT persisted — keeping ``city_coords.csv``
+    regenerable from source. The existing cached ``tz`` is kept for an override
+    (coordinate corrections almost never cross a timezone).
     """
     cache = _read_cache(cache_path)
     missing = sorted(set(city_states) - set(cache.keys()))
     if missing:
         print(f'[geocode] cache miss for {len(missing)} city-state(s); '
               f'geocoding via Nominatim')
-    added = 0
+    changed = False
     for cs in missing:
         result = _geocode_one(cs)
-        if result is not None:
-            lat, lon = result
-            cache[cs] = (lat, lon)
-            _append_cache(cache_path, cs, lat, lon)
-            added += 1
         time.sleep(RATE_LIMIT_SEC)
-    if added:
-        _resort_cache(cache_path)
-        print(f'[geocode] appended {added} new entries to {cache_path.name}')
+        if result is None:
+            continue
+        lat, lon = result
+        tz = _timezone_for(lat, lon)
+        time.sleep(TZ_RATE_LIMIT_SEC)
+        cache[cs] = {'lat': lat, 'lon': lon, 'tz': tz,
+                     'geocoded_at': date.today().isoformat()}
+        changed = True
+
+    # Backfill tz for any city missing one (legacy cache / earlier tz failure).
+    backfill = [cs for cs, v in cache.items() if not v.get('tz')]
+    if backfill:
+        print(f'[geocode] resolving timezone for {len(backfill)} city-state(s) '
+              f'via Open-Meteo')
+        for cs in backfill:
+            v = cache[cs]
+            tz = _timezone_for(v['lat'], v['lon'])
+            time.sleep(TZ_RATE_LIMIT_SEC)
+            if tz:
+                v['tz'] = tz
+                changed = True
+
+    if changed:
+        _write_cache(cache_path, cache)
+        print(f'[geocode] wrote {cache_path.name} ({len(cache)} city-states)')
+
+    out = {cs: (v['lat'], v['lon'], v.get('tz')) for cs, v in cache.items()}
     if overrides:
         applied = 0
         for cs, (lat, lon) in overrides.items():
-            if cs in cache and cache[cs] != (lat, lon):
+            prev = out.get(cs)
+            tz = prev[2] if prev else None        # keep cached tz for overrides
+            if prev is None or (prev[0], prev[1]) != (lat, lon):
                 applied += 1
-            cache[cs] = (lat, lon)
+            out[cs] = (lat, lon, tz)
         if applied:
             print(f'[geocode] applied {applied} coordinate override(s) from snapshot')
-    return cache
+    return out

@@ -21,11 +21,12 @@ curve; right panel shows residual (pace − CS) vs flat zero.
 ## Files
 
 - `make_recovery_plots.py` — single script. Reads `daily.csv`, `races.csv`,
-  `bayes_cs_summary_{tag}.csv`. Writes `recovery_pace.html` and
-  `route_betas_{tag}.csv` (per-route empirical betas, recovery-only,
-  effort-uncontaminated — consumable by downstream long-run TQ work, see
-  `route-normalization-reference.md`). Default invocation: `python
-  make_recovery_plots.py --tag v11`. Runtime: seconds.
+  `bayes_cs_summary_{tag}.csv`. Writes `recovery_pace.html`. Default
+  invocation: `python make_recovery_plots.py --tag v11`. Runtime: seconds.
+  The model itself (the physical route channels + the fitted confounds) lives
+  in `recovery_model.py`; `physical_route_betas()` there is the single source
+  of truth for the footing/altitude constants shared with the long-run and
+  race conversions (see `route-normalization-reference.md`).
 
 Location metadata (display_name, city_state, elev_per_mile, altitude,
 terrain_type) is read directly from columns on `daily.csv` — populated
@@ -61,22 +62,35 @@ job to within its window.
 
 ```
 residual_detrended ~ β_temp     · temp_centered
-                   + Σ β_r      · route_dummy_r       (n ≥ MIN_ROUTE_N)
+                   + β_foot     · is_offroad          (pinned, physical)
+                   + β_alt      · altitude_regressor  (pinned, physical)
+                   +              elev_cost            (pinned, grade-aware)
                    + β_marathon · fatigue_marathon    (exp(−t/τ_mar))
                    + β_race     · fatigue_race_short  (exp(−t/τ_rs))
                    + β_tod      · tod_is_pm
 ```
+
+The route handling is a **physical, era-free model** (June 2026 — replaced
+the per-route dummies; see the "Physical route model" subsection below). The
+temp / fatigue / TOD terms are the fast-varying, era-immune confounds fitted
+on the era-detrended residual; the three physical channels (footing,
+altitude, grade) are pinned from `recovery_model.physical_route_betas()` and
+consumed via `fit_recovery_model(pin_physical=True)`.
 
 - **Temperature**: linear, reference 12°C. β ≈ +0.28 sec/mi per °C from
   reference. Real but small — captures roughly 25% of the seasonal pace
   pattern; the rest is summer-training-intensity confound that era trend
   absorbs.
 
-- **Route dummies**: one per location with n ≥ 13 recovery runs. 12
-  qualifying routes typically. Coefficients range from −10 (centennial,
-  fast flat Nashville) to +27 (banff, altitude+terrain) sec/mi. Recovery-
-  only by design — see `route-normalization-reference.md` for why long
-  runs are excluded from the route-beta fit.
+- **Route handling — physical, era-free model** (June 2026): the per-route
+  dummies were **removed** and replaced by three physical channels that
+  re-explain the route variance without any per-route knob. See the
+  "Physical route model" subsection below for the full decomposition and why
+  the fit is a backfit. The three channels are footing (`is_offroad`),
+  altitude, and a grade-aware `elev_cost`; the first two are pinned from
+  `recovery_model.physical_route_betas()` (the single source of truth shared
+  with the long-run and race conversions), the third is imported from
+  per-mile elevation data.
 
 - **Recent race** (renamed from "Recent effort" in April 2026): two
   categories — marathon and race_short — using **exponential decay
@@ -93,6 +107,73 @@ residual_detrended ~ β_temp     · temp_centered
   morning-slowness signal had been wrongly absorbed by long-run fatigue
   before TOD was in the model). `fat_long` removed in the same iteration.
 
+### Physical route model (June 2026 — replaced per-route dummies)
+
+The watch-stream enrichment work (`docs/watch-stream-enrichment-plan.md`,
+now complete) retired the per-route dummies in favour of a **physical,
+era-free** route model. The route's pace cost is no longer a hand-set
+`elev_per_mile × constant` or a fitted per-location offset — it decomposes
+into three physical channels that apply identically across eras (off-road
+routes cluster early/sea-level, paved/altitude in the Boulder era, so the
+dummies were partly encoding the era trend itself).
+
+**Fit via a backfit.** The era trend is a temporal smoother, and footing /
+altitude vary on the same era timescale, so a one-pass era-detrend *absorbs*
+them (footing collapsed to 0). The model is fit by **iterating the era
+smoother against the parametric factors** (era ↔ factors) until they
+stabilize, which isolates the physical terms from the overlap years. The
+fast-varying confounds (temp / fatigue / TOD) are era-immune and fitted
+freely; the physical channels are pinned.
+
+**Channels:**
+
+- **Off-road footing** (`is_offroad`, the mixed+trail binary — bucket every
+  run by its LOCATION `terrain_type`, never by surface): the flat-surface
+  penalty for running on non-paved ground, ≈ **+4.78 sec/mi**. Pinned, not
+  fitted in this model.
+- **Altitude** (hypoxia): ≈ **+2.28 sec/mi per 1000 ft above a ~3000 ft
+  threshold** (VO2max is ~flat below the threshold, then declines roughly
+  linearly — the shape is science-pinned, only the slope is data-fit).
+  Below ~3000 ft the term is exactly 0. Pinned, not fitted here. (Threshold-
+  curve derivation lives with the engine — → see `route-normalization-reference.md`.)
+- **Grade-aware `elev_cost`** (pinned): scales with each route's *per-run
+  measured* gain/loss, so a hilly-mixed route costs far more than a flat one.
+  Imported from the per-mile elevation data (where gain and loss separate),
+  not chosen — gain/loss are collinear within loops at run-level. The
+  `elevation_cost` formula, the terrain×effort descent refund, and the
+  altitude threshold-curve derivation are not duplicated here →
+  see `route-normalization-reference.md` (elevation engine).
+
+**`physical_route_betas()` is the single source of truth** for the footing
+and altitude constants. It pools recovery + in-slice long runs on a shared
+`pace − cs_pace` scale (with an `is_long` level dummy and the recovery
+era-backfit), so one constant per channel applies in both the recovery model
+and the long-run / race conversions. `fit_recovery_model(pin_physical=True)`
+consumes those pinned betas. (Recovery-only would give footing +4.09 /
+altitude +0.87; both shift <1 se when the long runs join.)
+
+**Per-run features (the physical channels read these, not per-location
+constants):**
+
+- `per_run_elevation` — gain/loss in ft/mi, with the fallback chain
+  per-run watch-measured → route-median → the route's `elev_per_mile`
+  constant → 0.
+- `per_run_altitude` — the midpoint of the watch's smoothed daily min/max
+  (from `altitude_daily.csv`, the layer feeding the Altitude trend), with the
+  location base-elevation constant as the pre-watch fallback, then 0. This is
+  per-run MEASURED, not a per-city estimate, so it adds within-location
+  resolution and fixes hand-set constant errors.
+
+**Elevation source — barometric, not DEM.** Recovery runs use the watch's
+barometric elevation directly: across a large recovery corpus the per-run
+barometric noise averages out. Only RACES throw away the barometric vertical
+and resample from a DEM along the GPS track (the per-race net is too noisy to
+trust on a single course) — see the cache/route references for that path.
+
+**Fit quality:** R²_detrended ≈ 0.298, raw ≈ 0.622 — essentially unchanged
+from the old per-route-dummy model. The physical terms re-explain the route
+variance era-free, so nothing was lost by dropping the dummies.
+
 ### Pruning: three classes, can overlap
 
 Three independent flags. A row can be in any combination of them. All
@@ -105,11 +186,17 @@ flags exclude the row from the OLS fit but the points remain plotted.
    the bad-cond set** in April 2026 — those are treadmill/indoor-track
    runs at stable surface and pace, valid data.
 
-2. **Partner runs** (`is_partner_run`): any `partners` entry that isn't
-   blank/solo/none. Concentrated in 2016-17 HS varsity team easy days.
-   This is a fundamentally different population: in 2016-17, partner
-   runs averaged 442 sec/mi vs. solo 400 sec/mi (42 sec/mi gap). Pruning
-   these markedly improves R² on detrended residual.
+2. **Partner runs** (`is_partner_run`): any `partners` entry outside
+   `ADMITTED_PARTNERS` = blank/solo/none/**varsity**. Varsity was
+   admitted June 2026 (Max): in the 2016-17 era the varsity group's
+   recovery pace WAS Max's own pace strategy — those 90 runs are his
+   effort policy, not someone else's — so they belong in the fit pool
+   (partner-pruned 169 → 79; R² on raw residual 0.54 → 0.68 because the
+   2016-17 era trend now tracks the era's true level; the recovery
+   marathon/short fatigue ratio that pins the TQ long-run model moved
+   1.82 → ~1.5). Individual named partners remain pruned — a
+   fundamentally different population (pace targets and route choices
+   aren't Max's own).
 
 3. **Outliers** (`is_outlier_loo`): `|residual from leave-one-out 28-day
    local mean| > 45 sec/mi`. The local mean is computed against the
@@ -122,6 +209,77 @@ flags exclude the row from the OLS fit but the points remain plotted.
    extreme post-marathon fatigue) without biting into normal variance.
 
 `is_pruned = is_bad_cond | is_partner_run | is_outlier_loo`.
+
+### Watch / route-rule distance corrections (June 2026)
+
+The fit runs on the **corrected** pace where one exists
+(`pace_for_fit`); the logged columns are never rewritten and the plot
+still displays logged values. Machinery in
+`recovery_model.add_watch_corrections`, mirroring the long-run
+treatment (`workouts._lr_watch_corrections`); measurement artifact
+`recovery_measured.csv` written by `src/coros/long_runs.py` alongside
+the long-run one; the **calibration curve is shared**
+(`long_run_calibration.csv` — it was already fit on the pooled paved
+recovery+long corpus).
+
+- **Watch correction** (paved + time-complete days): corrected distance
+  = `watch_mi·(1+slope) + intercept`, corrected time = watch moving
+  seconds, corrected pace = their ratio. ~1,190 of ~2,550 recovery days
+  qualify; 788 actually move (median +7.4 s/mi, p99 +28).
+- **Paved gate**: trail/mixed/un-typed terrain keeps logged values —
+  same rationale as the long-run gate (the curve is a paved fit; trail
+  GPS corner-cutting is a route property).
+- **Watch-failure guard** (`WATCH_FAIL_DEV = 0.06`): the time gate
+  can't catch GPS that loses *distance* with intact time (sporadic
+  lakefront days read 20-30% short → implied "corrections" of +50-550
+  s/mi). Disambiguation from genuine route mislogging is route
+  structure: real mislogs are systematic (the route's median inflation
+  moves), GPS failures are one-day spikes against an honest route
+  median. A day is corrected only when its logged/calibrated inflation
+  sits within 0.06 of its route median (95th pct of the deviation
+  distribution is 0.0585; 57 days skipped; the ±45 LOO prune backstops
+  the rest).
+- **Trailing strides/sprints** (`STRIDE_SUFFIX_RX` — `…/6x100st`,
+  `…/400st`, `…/6sp`): **Max pauses the watch for the strides**, so the
+  watch records the recovery portion only — it's *short* of the logged
+  run, not long. Verified June 2026 against the 22 watch-covered paved
+  stride days vs 1,227 normal: watch moving time runs −1.3% of logged
+  (vs +1.0% normal), recorded pause time is 4.5 min (vs 1.75), and
+  logged miles sit **+0.32 mi above** the calibrated watch distance (vs
+  −0.01 normal) — that 0.32 mi is the stride distance the paused watch
+  never recorded. Two consequences: (a) **excluded from the
+  calibration-fit corpus** — the +0.32 mi excess would bias the slope/
+  intercept up and over-correct every day; (b) **no watch correction
+  applied** — `recovery_pace_sec_per_mi` is the explicit logged
+  `rec@M:SS` (`extract_recovery_pace`), already the clean recovery-segment
+  pace, and a recovery-only watch measurement run through the
+  whole-run-fit calibration would only reproduce it, so the logged pace
+  is kept. A strides day on a mislogged ROUTE still takes the route-rule
+  pace ×factor — that's a distance-estimate error biasing the logged
+  @pace itself, independent of strides — but carries no corrected
+  distance (corr_miles NaN).
+- **Route-era rules**: `MISLOGGED_ROUTES` (belle meade 1.068, greenway
+  1.056, 2018 → 2022-04-15 — the constant moved here from workouts.py)
+  now also deflates those routes' ~9 recovery rows. No OTHER recovery
+  route warrants a rule: every watch-covered route's median inflation
+  sits within 0.97–1.011 (the Nashville long-route inflation was a
+  property of those route-distance estimates, not of Max's logging).
+- **Distance bracket** (same as long runs): true distance is bracketed
+  `watch_mi <= true <= hand-logged`. The watch under-reads, so
+  `(watch + calibration error)` is the estimate; the hand log is a hard
+  ceiling Max never under-estimates, so `corr_mi = min(estimate, logged)`.
+  **Time is the anchor** — it IS the watch time (the hand log just rounds
+  it to the minute, ~30 s), so `corr_time` stays the watch time and
+  `corr_pace = corr_time / corr_mi` is a pure derivative, never clamped on
+  its own. On routes Max logs tightly — centennial 0.991/0.986 (pre/post
+  2022-04-15), mccabe 0.985, boulder creek 0.970, hopewell junction 0.970
+  logged/honest — the estimate overshoots the log, so they clamp to the
+  logged distance (effectively uncorrected, never longer). This replaced
+  the old pace-floor "overread clamp" (June 2026), which governed pace (a
+  derivative) instead of distance: it let `corr_mi` exceed the log on some
+  days and fabricated a phantom distance (`moving_s / logged_pace`) on the
+  days it bound — visible only as a distance/time incoherence the
+  pace-axis plot couldn't show.
 
 ### Features tested and rejected
 
@@ -156,11 +314,35 @@ evidence.** Each entry below documents the test and rationale.
   truly anomalous days, and adding a binary feature for a small
   structural shift wasn't worth the knob.
 
-- **Wind (high)** — tested April 2026. n=23 days, Δmean +0.27 vs clear,
-  p=0.93. Effectively zero. Even the single "extreme" wind row sits
-  just under the ±45 outlier threshold. Wind is logged sparsely (only
-  ~15% of recent runs have a value), so the test is power-limited, but
-  the effect — if any — is well below what we'd care about.
+- **Wind — ADOPTED June 2026.** The April 2026 qualitative-bin test
+  (n=23, Δmean +0.27 vs clear, p=0.93) failed on power, not effect: hand
+  logging only captured ~15% of runs. With continuous watch `wind_mph`
+  now on ~60% of recovery days (n=1446 unpruned), wind comes in at
+  **+0.29 s/mi per mph (t=2.6, p=0.009)** — ~+3.3 s/mi at 15 mph. It's
+  near-orthogonal to temp (r=−0.04) so it leaves the temp beta untouched,
+  and it pulls ~0.3 s/mi out of the PM (tod) effect (afternoons run
+  windier). Wired as a **pooled, pinned per-mph cost** (`wind_beta`),
+  estimated on the watch subset but applied as a fixed offset only where a
+  watch reading exists — so the main fit keeps the full corpus instead of
+  collapsing to watch-era rows. Calm (0 mph) is the zero-contribution
+  baseline. Degrades to 0 (no-op) without watch data.
+
+- **Humidity → heat index — ADOPTED June 2026 (as a temp transform, not
+  a standalone term).** A standalone humidity main effect is small
+  (~+0.04 s/mi/%, t=2.6) and confounded with mild-dry-Boulder-ideal days;
+  the hypothesized temp×humidity *compounding* interaction is **not
+  supported and reverses** in Max's data (humid−dry is +2.8 s/mi at mild
+  temps but −0.7 at ≥22°C — his hot days are dry Boulder/altitude, and
+  the hot-humid travel days e.g. Baton Rouge June 2024 carry no penalty
+  beyond temp once the lost sea-level/altitude bonus is accounted for).
+  So humidity enters only by replacing air temp with **apparent
+  ("feels-like") temperature** (NWS heat index, `apparent_temp_c`),
+  centered at 12°C. Adopted on principle (validated physiological
+  construct, correct-by-default for humid-climate profiles, sharpens the
+  residual toward behavior) rather than fit: it touches only ~80 hot-humid
+  rows (max +4.8°C felt), shrinks the temp beta ~1.5% (+0.241→+0.239), and
+  every other beta holds to <0.1%. Below 80°F and where humidity is
+  missing it equals plain air temp.
 
 - **Shoe age** (cumulative miles in this physical pair before the run) —
   tested April 2026. n=1671 runs across 18 pairs with ≥30 runs each,
@@ -348,7 +530,7 @@ The scaffold itself owns the date header, the CS-pace / Trend-pace section, and 
 ```
 daily.csv ──┐
 races.csv ──┼─→ make_recovery_plots.py ─→ recovery_pace.html
-bayes_cs_   │                            └→ route_betas_{tag}.csv
+bayes_cs_   │
 summary.csv ┘
 ```
 
@@ -358,12 +540,16 @@ Single-pass:
 3. Compute `is_bad_cond`, `is_partner_run`, `tod_is_pm`
 4. Compute `is_outlier_loo` against clean neighbor pool (LOO 28d)
 5. Combine: `is_pruned = is_bad_cond | is_partner_run | is_outlier_loo`
-6. Determine qualifying routes (n ≥ MIN_ROUTE_N on non-pruned subset)
-7. Compute era trend (centered rolling mean over non-pruned pool)
+6. Pin the physical route channels from `physical_route_betas()` (footing,
+   altitude); attach the per-run `per_run_elevation` / `per_run_altitude`
+   features for the grade-aware `elev_cost`
+7. Compute era trend (centered rolling mean over non-pruned pool), backfit
+   against the physical channels
 8. Compute exponential fatigue features (per-category τ)
-9. Fit OLS on era-detrended residual using non-pruned, non-NaN rows
-10. Build per-point contribution channels (5: temp, route, recent_race,
-    tod, era — order matches JS `FACTOR_ORDER`)
+9. Fit the era-immune confounds (temp/fatigue/TOD) on the era-detrended
+   residual using non-pruned, non-NaN rows, with the physical channels pinned
+10. Build per-point contribution channels (temp, route [grade+footing+
+    altitude], recent_race, tod, era — order matches JS `FACTOR_ORDER`)
 11. Render plot with embedded JS for normalization toggles, visibility
     toggles, custom tooltip, and trend recomputation
 
@@ -376,34 +562,20 @@ fat_marathon        +17.0       exp(−t/6) decay from marathon
 fat_race_short       +8.7       exp(−t/5) decay from short race
 tod_is_pm            −4.7       sec/mi for afternoon/late vs early/morning
 
-Route offsets (vs unspecified-location baseline):
-  centennial         −10.1     n≈519 — Nashville flat/road
-  baton rouge         −9.6     n≈20  — Nashville-era flat-paved
-  east boulder        −7.1     n≈394 — Boulder flat
-  mccabe              −6.8     n≈400 — Nashville rolling
-  lakefront           −3.7     n≈216 — Chicago lakefront
-  nike>nature         +4.6     n≈51  — Redmond rolling
-  english hill        +6.8     n≈140 — Redmond hilly
-  river trail         +8.0     n≈32  — Sammamish River Trail
-  nike>powerline     +11.2     n≈82  — Redmond hilly
-  suburbia           +12.5     n≈108 — Redmond very hilly
-  boulder creek      +13.1     n=14  — Boulder creek path
-  banff              +26.8     n≈25  — altitude + terrain
+Physical route channels (pinned, not fitted here — from physical_route_betas):
+  is_offroad          +4.78     sec/mi flat-surface footing (mixed+trail)
+  altitude            +2.28     sec/mi per 1000 ft above the ~3000 ft threshold
+  elev_cost           (per-run) grade-aware, scales with measured gain/loss
 
-R² on detrended:    0.323
-R² on raw residual: 0.542
-fit n ≈ 2,231
-unique pruned: 281 (96 bad-cond, 170 partner, 32 outlier; classes overlap)
+R² on detrended:    0.298
+R² on raw residual: 0.622
 ```
 
 Note: numbers shift slightly between rebuilds as the locations sheet
 evolves and additional days log into the high-volume routes. Don't
 treat the table as authoritative — re-run the plotter for current
-values.
-
-Side-output: `route_betas_{tag}.csv` writes the per-route betas in a
-3-column flat file (`route, n, beta_sec_per_mi`) for consumption by
-downstream tooling.
+values. The footing/altitude constants are pinned from
+`physical_route_betas()`, so they move only when that pooled fit is re-run.
 
 ## Findings
 
@@ -551,8 +723,9 @@ in joint OLS, not just bivariate.
 - Tighter era window (would absorb cross-sectional signal)
 - Linear or hard-cutoff fatigue decay (replaced with exponential —
   empirically better-shaped, no arbitrary cutoff)
-- Rejected weather/wind/sleep features without a concrete new
-  hypothesis or data improvement
+- Rejected sleep features without a concrete new hypothesis or data
+  improvement (wind and humidity were re-tested with richer watch data
+  and adopted June 2026 — see rejected/adopted list above)
 
 ## Naming notes
 

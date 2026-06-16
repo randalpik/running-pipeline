@@ -68,16 +68,27 @@ quiet_step() {
   echo "    done in $((SECONDS - t0))s"
 }
 
-quiet_step "bayes_cs_plot"           python src/plots/bayes_cs_plot.py
+# Training quality runs FIRST: it persists training_quality_corpus.csv,
+# which bayes_cs_plot consumes for the performance-frontier line.
 quiet_step "plot_training_quality"   python src/plots/plot_training_quality.py
+quiet_step "bayes_cs_plot"           python src/plots/bayes_cs_plot.py
 quiet_step "plot_workouts"           python src/plots/plot_workouts.py
 quiet_step "plot_long_runs"          python src/plots/plot_long_runs.py
+# World map first: its ensure_coords() call geocodes any new cities AND resolves
+# their IANA timezone into data/city_coords.csv, which qualitative_trends then
+# reads to drive the Time panel's canonical-tz solar gradient (same run, no lag).
+quiet_step "make_world_map"          python src/plots/make_world_map.py
 quiet_step "plot_qualitative_trends" python src/plots/plot_qualitative_trends.py
+# Standalone full-page versions of each Misc. Trends panel (linked from the
+# panel ↗ insets; not shell tabs). Auto-staged to site/dist root + auto-gated.
+for panel in conditions temp humidity wind volume altitude time weight; do
+  quiet_step "plot_qualitative_trends --panel $panel" \
+    python src/plots/plot_qualitative_trends.py --panel "$panel"
+done
 quiet_step "make_annual_plot"        python src/plots/make_annual_plot.py
 quiet_step "make_recovery_plots"     python src/plots/make_recovery_plots.py "${diag_flag[@]}"
 quiet_step "make_race_plots"         python src/plots/make_race_plots.py
 quiet_step "make_geography_plot"     python src/plots/make_geography_plot.py
-quiet_step "make_world_map"          python src/plots/make_world_map.py
 quiet_step "dashboard"               python src/plots/dashboard.py
 # The profile-aware orchestrator (build_profiles.py) builds the shell itself
 # with the profile switcher; --no-shell skips this single-profile default.

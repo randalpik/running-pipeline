@@ -15,11 +15,23 @@ DISTANCE_DIV = 100.0      # centimetres -> metres
 TIME_DIV = 100.0          # centiseconds -> seconds  (time/totalTime/workoutTime)
 TIMESTAMP_DIV = 100.0     # centiseconds -> unix epoch seconds
 GPS_DIV = 1e7             # scaled int -> decimal degrees
-WEATHER_DIV = 10.0        # temperature/humidity/windSpeed/windDirection
+WEATHER_DIV = 10.0        # temperature/humidity/windDirection (raw/10)
+# windSpeed: raw/10 is KM/H, NOT m/s. The earlier "m/s" label was wrong — a
+# uniform ~3.6x scale error is invisible to the rank-correlation that "validated"
+# it (verified 2024-11-05: raw 463 -> 46.3 km/h = 28.8 mph, matching the Coros
+# app's "29 mph"; the old code showed 46.3 m/s). Display in mph (Coros app unit).
+KMH_TO_MPH = 0.6213712
 TZ_UNIT_MIN = 15          # `timezone` is in quarter-hours
 
 METERS_PER_MILE = 1609.344
 SEC_PER_KM_TO_SEC_PER_MILE = METERS_PER_MILE / 1000.0  # avgPace is sec/km
+
+# ---- excluded activities ----
+# Phantom / corrupted Coros activities to drop wherever the cache is loaded.
+# 440449841644994562: a 2021-12-29 "North Bend Course" duplicate with a
+# corrupted GPS track and a wrong (01:52 local) start time — Max confirmed it
+# never happened; the day's real run is a separate activity that stays.
+EXCLUDED_LABEL_IDS = {"440449841644994562"}
 
 # ---- sport types (Coros sportType codes) ----
 SPORT_RUN = 100
@@ -66,25 +78,24 @@ def weather_bin(weather_type) -> str | None:
 
 
 # ---- wind bins ----
-# windSpeed comes in (raw/10) units, in m/s. Thresholds are NOT Beaufort —
-# they're calibrated against a 21-day overlap between Coros windSpeed and Max's
-# own subjective wind labels (Spearman r=0.62; this cut agreed on 81% of days).
-# The takeaway: the subjective scale runs much higher than Beaufort — winds up
-# to ~8.5 m/s read as "low". The actual second runner labels differently, but
-# this is the best anchor we have and far better than a generic scale. Retune
-# if/when that runner's own labels become available.
-WIND_BINS_MS = [
-    (8.75, "low"),
-    (11.75, "moderate"),
-    (14.0, "high"),
+# Wind bins in MPH. Thresholds are NOT Beaufort — calibrated against a 21-day
+# overlap between Coros windSpeed and Max's subjective labels (Spearman r=0.62,
+# 81% agreement); his scale runs low (gentle winds read "low"). Originally fit in
+# the raw km/h units (8.75/11.75/14 km/h) back when those were mislabeled m/s;
+# converted to mph here (x KMH_TO_MPH), preserving the calibration. Retune when
+# the second runner's own labels exist.
+WIND_BINS_MPH = [
+    (5.44, "low"),
+    (7.30, "moderate"),
+    (8.70, "high"),
 ]
 WIND_BIN_TOP = "extreme"
 
 
-def wind_bin(wind_speed_ms) -> str | None:
-    if wind_speed_ms is None:
+def wind_bin(wind_speed_mph) -> str | None:
+    if wind_speed_mph is None:
         return None
-    for threshold, label in WIND_BINS_MS:
-        if wind_speed_ms < threshold:
+    for threshold, label in WIND_BINS_MPH:
+        if wind_speed_mph < threshold:
             return label
     return WIND_BIN_TOP

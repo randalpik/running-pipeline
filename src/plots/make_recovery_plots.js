@@ -1,7 +1,7 @@
 // Normalization sidebar for the recovery plot.
 //
-// Toggles 4 normalization factors (temp, route, recent_effort,
-// time_of_day, era) and 3 visibility filters (bad conditions,
+// Toggles normalization factors (temp, elevation, terrain, altitude,
+// recent_effort, time_of_day, era, wind) and 3 visibility filters (bad conditions,
 // non-solo, outliers). On each change, walks every recovery point's
 // customdata, subtracts the selected factor contributions, and
 // restyles both the pace panel and the residual panel. Trend lines
@@ -12,7 +12,8 @@
 // AND the rolling-mean trend ignores them.
 (function () {
   // ORDER MUST MATCH customdata channel order in Python
-  var FACTOR_ORDER = ['temp', 'route', 'recent_effort', 'time_of_day', 'era'];
+  var FACTOR_ORDER = ['temp', 'elevation', 'terrain', 'altitude',
+                      'recent_effort', 'time_of_day', 'era', 'wind'];
   var ERA_INDEX = FACTOR_ORDER.indexOf('era');
 
   var TREND_SIGMA_MS = window.__PLOT_TREND_SIGMA_DAYS * 86400000;

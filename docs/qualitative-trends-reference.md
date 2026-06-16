@@ -44,6 +44,27 @@ Fix: 3-stop gradients with the middle stop placed at the trendline's typical val
 
 White trendline contrasts WCAG-AA across the full range of every gradient.
 
+## Time panel — canonical location & timezone
+
+**Principle (since June 2026): the hand-logged `city_state` is the single source of truth for the Time panel's location and timezone. The watch supplies only the *absolute moment* of each run.** Its reported GPS and timezone offset are not trusted for the gradient.
+
+Why: the watch's `tz_min` and `lat`/`lon` each fail on travel days, in ways that previously produced visible sunrise/clock anomalies on the Time band:
+- **Failed-GPS home-default.** `daily_envelopes.py` stamps `HOME_LAT/LON` (Boulder) on any day with no usable GPS fix — including a failed-GPS outdoor run while traveling. Because the run still has a valid *time*, the pre-watch bin estimate never fired, so the day rendered at Boulder's solar times (e.g. 2025-10-27, 2025-08-05..07: logged Chicago, drawn Boulder).
+- **Stale watch tz.** The watch can report the offset of the zone it last synced in, not where it is now (e.g. 2025-11-01 in Nashville reporting Eastern −240 instead of Central −300 — a +1 h jag in the sunrise band right before the genuine Nov-2 DST fall-back).
+
+These are not solar-model bugs — only ~2/1885 watch days had a truly wrong `tz_min`, and the validated lesson is that the watch offset is essentially authoritative *except* on travel days, while the hand-logged city always knows where you were. Cross-checking the watch `tz_min` against a longitude→offset heuristic is **not** a valid verifier (it mis-flags Hawaii/Korea/EU/Canada and Eastern-zone cities near −84° lon — all no-DST or off-by-a-band); the authoritative check is the city's IANA zone via `zoneinfo`.
+
+Mechanism (all in `plot_qualitative_trends.load_series`):
+1. **`city_coords.csv` carries an IANA `tz` per city** (`America/Chicago`, …), auto-resolved from the geocoded lat/lon via keyless Open-Meteo (`timezone=auto`) at cache time — see `src/shared/geocoding.py::_timezone_for`. New cities get their zone for free during geocoding; legacy rows are backfilled. No new Python dependency (timezonefinder would pull a ~50 MB dataset).
+2. **Watch era — `reproject_watch_to_canonical`.** `time_daily.csv` stores each run's local-clock minutes + the watch offset it was written with, so the absolute UTC instant is recoverable as `(date 00:00 in watch tz) + start_min`. That instant is projected into the canonical city's IANA zone (DST-correct) and coordinates: `start_min`/`end_min` become canonical local minutes, `lat`/`lon` the canonical city centroid, `tz_min` the canonical offset (which the solar gradient consumes). No change to `daily_envelopes.py` or the `time_daily.csv` schema was needed.
+3. **Pre-watch era — `estimate_binned_time`.** Unified onto the same canonical IANA tz (was a longitude + US-DST heuristic).
+
+Consequences and fallbacks:
+- Every watch day's coordinates snap to the city centroid rather than the exact run GPS (sub-0.1° → a few seconds of solar difference, invisible).
+- A day whose canonical city has no cached zone keeps the watch values (watch era) or the longitude+US-DST estimate (pre-watch) — graceful degradation only.
+- Near-midnight runs that cross a local day boundary under the canonical offset are clamped to the day edge (rare; ≤ a few hours of shift).
+- **Build ordering:** `run_plots.sh` runs `make_world_map` (whose `ensure_coords` populates lat/lon + tz) **before** `plot_qualitative_trends`, so a newly-added city's zone is cached the same run.
+
 ## Weight gap discipline
 
 Weight has multi-day stretches without measurements. `WEIGHT_INTERP_MAX_GAP = 7` controls which gaps get linearly interpolated:

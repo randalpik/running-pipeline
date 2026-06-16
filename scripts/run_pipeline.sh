@@ -80,12 +80,52 @@ if [[ $historical -eq 1 ]]; then
 fi
 
 quiet_step "drive_fetch (snapshot)"  python src/parsers/drive_fetch.py snapshot --year "$(date +%Y)"
+# Unified watch-derived per-day table (incremental, presence-based; parses only
+# new activities). Projects weather_measured.csv, which build_dataset joins.
+# Must precede build_dataset. Skipped when the cache is absent (graceful no-op).
+if [[ -d data/profiles/coros/details ]]; then
+  quiet_step "watch_daily"           python -m src.coros.watch_daily
+fi
 quiet_step "build_dataset"           python src/parsers/build_dataset.py
-quiet_step "parse_workouts"          python src/parsers/parse_workouts.py "${diag_flag[@]}"
-
+# Long-run + recovery watch reconciliation: measurement rows + the log/watch
+# distance calibration. Reads the precomputed watch_daily.csv (no per-second
+# parse); doesn't depend on CS, so it runs before the fit. Without the details
+# cache, project_long_runs/recovery fall back to logged values + route-era rules.
+if [[ -d data/profiles/coros/details ]]; then
+  quiet_step "long_runs (watch)"     python src/coros/long_runs.py --details-dir data/profiles/coros/details
+fi
+# CS fit BEFORE reps: reps reconciles against the CS timeline, so on a refit
+# (e.g. a new race added) it must see the fresh CS. The fit only needs races,
+# so this order is safe. When the fit runs, the watch producers do a full
+# re-extract (--full-regen safety valve) so they refresh against the new CS /
+# calibration; otherwise they're incremental against their presence caches.
+watch_regen=()
 if [[ $fit -eq 1 ]]; then
   loud_step "bayes_cs_fit"  python src/models/bayes_cs_fit.py "${diag_flag[@]}"
+  watch_regen=(--full-regen)
 fi
+# Watch-derived rep extraction: reconciles the Coros per-second stream against
+# the hand log (parse_workouts consumes the result). Incremental via the
+# watch_activities index. Skipped when the details cache or CS timeline is
+# absent — parse_workouts then falls back to string parsing.
+if [[ -d data/profiles/coros/details && -f data/bayes_cs_summary.csv ]]; then
+  quiet_step "reps"                  python src/coros/reps.py --details-dir data/profiles/coros/details "${watch_regen[@]}"
+fi
+# Elevation enrichment (gain/loss, Minetti grade, per-mile splits). Incremental
+# via the watch_activities index; no network (the sync now caches outdoor runs
+# rich). corr_miles depends on the distance calibration, so --full-regen on a
+# fit run refreshes it too.
+if [[ -f data/watch_activities.csv ]]; then
+  quiet_step "elevation"             python scripts/backfill_elevation.py "${watch_regen[@]}"
+fi
+# Per-day altitude + local-time envelopes for the Misc. Trends plot, from the
+# rich detail cache (no network). Same lifecycle as elevation_measured.csv:
+# built wherever the details cache is present, gitignored, and the plot renders
+# those panels empty when the CSVs are absent.
+if [[ -d data/profiles/coros/details && -f data/watch_activities.csv ]]; then
+  quiet_step "daily_envelopes"       python -m src.coros.daily_envelopes
+fi
+quiet_step "parse_workouts"          python src/parsers/parse_workouts.py "${diag_flag[@]}"
 
 echo
 echo "Pipeline complete."

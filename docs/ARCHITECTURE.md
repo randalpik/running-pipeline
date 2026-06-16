@@ -39,7 +39,7 @@ The repo's truth sources are checked-in CSVs in `data/` (flat — no raw/process
 | `additions` | races not in the daily log (mostly pre-2016) — `date | distance_m | time_sec | surface | location | event`. Also produces stub daily rows for race dates not already in daily |
 | `locations` | `log_location → city_state / display_name / elev_per_mile / altitude / terrain_type` lookup |
 | `hills` | hill-loop metadata used by parser and TQ — `abbrev | location | type | distance_m | elev_gain_up | elev_gain_down | elev_net | elev_per_min` |
-| `coordinates` | `city_state → (latitude, longitude)` overrides on top of the Nominatim cache for the world map |
+| `coordinates` | `city_state → (latitude, longitude)` overrides on top of the Nominatim cache for the world map. The cache (`data/city_coords.csv`) also stores an IANA `tz` per city — auto-resolved from lat/lon via Open-Meteo at geocode time — which drives the Misc. Trends Time panel's canonical-timezone solar gradient (see `qualitative-trends-reference.md`) |
 | `historical` | `city_state | min_hist | max_hist | log_location` — surfaces remembered-but-unlogged cities on the world map AND date-range-overrides non-race daily rows. Replaces the legacy 2016-17 `infer_2016_2017_location` date branches |
 
 2018+ is converged: across eight years there's only one location change and four surface changes. New work focuses on pre-2018 rough edges and on 2026+ ongoing data.
@@ -64,13 +64,13 @@ A residual layer on top of CS. Translates each workout, long run, and hill effor
 
 ### Layer 3 — Recovery
 
-Era-windowed regression on recovery-run pace, with a small set of OLS features (temperature, route, recent race exposure, time-of-day). Volume normalizers and bodyweight features were explored and rejected. Captures the slow drift in baseline aerobic fitness independent of race performance.
+Era-windowed regression on recovery-run pace, with a small set of OLS features (apparent/"feels-like" temperature — humidity folded in via the heat index, recent race exposure, time-of-day, pinned physical footing/altitude/elevation, and a pinned wind cost on watch-measured days). Volume normalizers and bodyweight features were explored and rejected. Captures the slow drift in baseline aerobic fitness independent of race performance.
 
 → See `recovery-runs-reference.md`
 
 ### Cross-cutting — route normalization
 
-Locations propagate location-specific pace costs into both the recovery model and TQ long-run residuals. Lives between the two and informs both. The locations sheet (in `Max's Running Data`) is the single source for `log_location → city_state / display_name / elev_per_mile / altitude / terrain_type`.
+Locations propagate location-specific pace costs into the recovery model, TQ long-run residuals, **and race CS**. Lives between the layers and informs all three. The locations sheet (in `Max's Running Data`) seeds `log_location → city_state / display_name / elev_per_mile / altitude / terrain_type`; since the per-second watch enrichment shipped (June 2026), this doc also owns the **physical elevation engine** — the grade cost model (`elevation_cost.py`), the science-pinned altitude curve, the pinned footing/altitude betas (`physical_route_betas`), the per-run features, and the race DEM — that all three layers share.
 
 → See `route-normalization-reference.md`
 
@@ -85,10 +85,13 @@ The volume / temperature / weight panel: three stacked subplots with moving-aver
 | Doc | Layer | Covers |
 |-----|-------|--------|
 | `cs-model-reference.md` | 1 | PyMC HSGP fit, race exclusion logic, why the combined model was rejected, run flow (`bayes_cs_fit.py --tag vN` then `bayes_cs_plot.py --tag vN`, ~8min). |
-| `training-quality-reference.md` | 2 | tau decay (210), distance thresholds, long-run binning, hill-loop offsets, iterative prune threshold (+23.3 s/mi), smoother bandwidth, ESS gates, gap-break logic. |
+| `training-quality-reference.md` | 2 | tau decay (210), distance thresholds, long-run binning, ONE shared CS predictor for quality workouts (per-category offsets removed June 2026 — era effort policy is signal), hill correction (pinned Minetti net cost + fitted trail term, `hill_model.csv`), continuous-fartlek 500/300 reconstruction (float:hard pinned 1.25), watch-measured hill-block time (GPS loop-point detection in `reps.py`, surveyed distance authoritative), long-run watch reconciliation (June 2026 — log/watch distance calibration in `long_runs.py`, watch moving times, pause-aware D_eff, Nashville mislogged-route rules), track-relative iterative outlier prune, rep/hill scatter weights, smoother bandwidth, ESS gates, gap-break logic. |
 | `recovery-runs-reference.md` | 3 | Era window (±182d), OLS features, route inclusion threshold, rejected normalizers (volume, bodyweight). |
-| `route-normalization-reference.md` | cross | Schema and dataflow of the locations sheet, propagation to recovery and TQ. |
+| `route-normalization-reference.md` | cross | Locations-sheet schema/dataflow + the **physical elevation engine** (June 2026, watch enrichment): grade cost model (`elevation_cost.py`, terrain×effort refund), threshold+linear altitude curve, pinned footing/altitude betas (`physical_route_betas`, the single source shared by recovery/long/race), per-run features (`per_run_elevation`/`per_run_altitude`), and the race DEM (`dem_elevation.py`). |
 | `qualitative-trends-reference.md` | diagnostic | Window sizes (56/28/56-day MA, 14d min-max with 7d smoothing), gradient-strip rendering, weight gap-align before+after smoothing. |
+| `cs-workout-enrichment-plan.md` | 1 (plan) | Plan-of-record for *if/how* watch-enriched interval workouts get added to the CS fit. Spike executed June 2026 → HALTED at validation (level bias); fit stays race-only. |
+| `short-effort-unification-plan.md` | cross (plan) | Proposed June 2026: replace race-side β_short AND workout-side g(d) with ONE effort-aware anaerobic correction (scales with speed-above-CS; a 400m race analyzes exactly like a 400m rep). Problem evidence, candidate designs (effort-aware g, 3-param CP), validation gates. |
+| `cs-workout-enrichment-spike-report.md` | 1 (report) | June 2026 spike: CS-likelihood enrichment HALTED (hold-out failures, characterized likelihood pathologies); pivoted to the **performance frontier** — deterministic demonstrated-capability envelope on Fitness (`src/shared/performance_frontier.py`, cone slopes from the spike's structure-function analysis). `bayes_cs_fit.py --workout-obs` remains flag-gated, default off. |
 
 ## Pre-2016 race data
 

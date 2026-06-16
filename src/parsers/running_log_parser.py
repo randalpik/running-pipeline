@@ -41,6 +41,14 @@ SCHEMAS = {
            "conditions": 11, "wind": 12, "time_of_day": 13,
            "shoes": 14, "location": 15, "weight": 16,
            "sleep_unit": "cycles"},
+    # 2026 reorg: sleep/temp/wind/time_of_day dropped from the hand log (now
+    # sourced from watch data); remaining columns reordered. Watch override
+    # refills temp_c/time_of_day/wind_mph downstream; sleep is unused.
+    2026: {"month": 2, "day": 3, "sleep": None, "miles": 4, "minutes": 5,
+           "temp": None, "weather": 6, "workout": 8, "partners": 11,
+           "conditions": 7, "wind": None, "time_of_day": None,
+           "shoes": 9, "location": 10, "weight": 12,
+           "sleep_unit": "cycles"},
 }
 
 # Map each year -> (default_sheet_name, schema_era). Sheet name is a fallback;
@@ -55,8 +63,8 @@ YEAR_SCHEMAS = {
     2023: ("Sheet1", 2022),
     2024: ("Data",   2022),
     2025: ("Data",   2025),
-    2026: ("Data",   2025),
-    2027: ("Data",   2025),  # assume 2027 uses same schema as 2025 by default
+    2026: ("Data",   2026),
+    2027: ("Data",   2026),  # assume 2027 uses same schema as 2026 by default
 }
 
 # Authoritative annual totals from Lifetime Miles, for validation.
@@ -78,7 +86,7 @@ DAILY_COLUMNS = [
     "date", "year", "month", "day_of_year", "dow",
     "miles", "minutes", "pace_sec_per_mi",
     "temp_c", "sleep_cycles",
-    "weather", "conditions", "wind", "time_of_day",
+    "weather", "conditions", "wind", "wind_mph", "humidity_pct", "time_of_day",
     "shoes", "location", "weight_lbs", "surface",
     "partners", "workout_raw",
     "run_type",
@@ -443,6 +451,7 @@ def _derive_daily_row(dt, year, schema_key, source_file,
                       miles, minutes, temp, sleep_cycles,
                       weather, workout, partners, conditions, wind,
                       time_of_day, shoes, location, weight,
+                      wind_mph=None, humidity_pct=None,
                       hill_lookup=None):
     """Assemble one daily row dict from already-normalized cell values.
 
@@ -488,6 +497,8 @@ def _derive_daily_row(dt, year, schema_key, source_file,
         "weather": weather,
         "conditions": conditions,
         "wind": wind,
+        "wind_mph": wind_mph,
+        "humidity_pct": humidity_pct,
         "time_of_day": time_of_day,
         "shoes": shoes,
         "location": location,
@@ -734,6 +745,10 @@ def ingest_year_standard_csv(df_or_path, year, source_file=None):
         partners = _str("partners")
         conditions = (_str("conditions") or "").lower() or None
         wind = (_str("wind") or "").lower() or None
+        # Numeric watch weather (current_log from build_current_log). Optional:
+        # absent in hand-logged drive snapshots, so default to None.
+        wind_mph = _safe_float(r.get("wind_mph"))
+        humidity_pct = _safe_float(r.get("humidity_pct"))
         time_of_day = (_str("time_of_day") or "").lower() or None
         shoes = _str("shoes")
         location = (_str("location") or "").lower() or None
@@ -743,6 +758,7 @@ def ingest_year_standard_csv(df_or_path, year, source_file=None):
             miles, minutes, temp, sleep_cycles,
             weather, workout, partners, conditions, wind,
             time_of_day, shoes, location, weight,
+            wind_mph=wind_mph, humidity_pct=humidity_pct,
         ))
     return rows
 

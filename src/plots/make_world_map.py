@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'parsers'))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.geocoding import ensure_coords
 from src.shared.country_codes import country_abbrev
+from src.shared.effective_mileage import effective_daily_miles
 from src.plotting import render_plot, apply_default_layout
 from src.plotting import widgets
 from src.plots.make_geography_plot import build_categories
@@ -375,7 +376,11 @@ def main():
 
     df = pd.read_csv(args.daily, parse_dates=['date'])
     df = df.dropna(subset=['city_state'])
-    df = df[df['city_state'].astype(str).str.strip() != '']
+    df = df[df['city_state'].astype(str).str.strip() != ''].copy()
+    # Source of truth: watch/route distance-corrected mileage (decrease-only;
+    # corr <= logged) drives per-city totals. On-disk daily.csv 'miles' is
+    # untouched; pre-2016 race stubs and uncorrected rows keep logged miles.
+    df['miles'] = effective_daily_miles(df)
 
     agg = (df.groupby('city_state', as_index=False)
              .agg(miles=('miles', 'sum'),

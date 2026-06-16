@@ -21,10 +21,16 @@ CS reference.
 Per-day factors are fit via OLS on the era-detrended residual:
 
   residual_detrended ~ β_temp · temp_centered
-                     + Σ β_r · route_dummy_r       (n ≥ MIN_ROUTE_N)
                      + β_marathon · fatigue_marathon
                      + β_race    · fatigue_race_short
-                     + β_long    · fatigue_long
+                     + β_tod     · tod_is_pm
+                     + (pinned) footing + altitude + grade-aware elevation
+                     + (pinned) wind_mph · β_wind
+
+temp_centered is apparent ("feels-like") temperature — humidity folded in via
+the heat index (see recovery_model.apparent_temp_c). Wind is a pinned per-mph
+cost applied where a watch wind reading exists. See the model module for the
+pooled/pinned mechanics.
 
 Sleep cycles and recovery distance were tested in earlier model versions
 and produced near-zero coefficients with no useful explanatory power. They
@@ -48,8 +54,10 @@ can fall into multiple classes** — the three flags are independent.
      contains "snow" (catches "[2" snow]" annotations the conditions
      field missed). Inside/treadmill/indoor-track runs are kept (still
      valid pace data on a stable surface).
-  2. Partner runs — any partners entry that isn't blank/solo/none.
-     Concentrated in 2016-2017 HS team easy runs; different population.
+  2. Partner runs — any partners entry outside ADMITTED_PARTNERS
+     (blank/solo/none/varsity). Varsity is admitted (June 2026): in the
+     2016-17 era the varsity group's recovery pace WAS Max's own pace
+     strategy. Individual named partners remain a different population.
   3. Outliers — |residual from leave-one-out 28-day local mean| > 45
      sec/mi, where the local mean is computed against the *clean*
      neighbor pool (rows that are neither bad-cond nor partner-run).
@@ -59,7 +67,7 @@ can fall into multiple classes** — the three flags are independent.
      its pace is anomalous against the clean local mean.
 
 The visibility section has three independent toggles ("Hide bad
-conditions", "Hide non-solo", "Hide outliers"), each with its own count
+conditions", "Hide partner runs", "Hide outliers"), each with its own count
 and an All/None group. Because flags can overlap, the counts may sum
 to more than the unique pruned total.
 
@@ -202,8 +210,45 @@ def main():
         # itself, so this content focuses on what's run-specific.
         parts = [f"Pace: {sec_to_mss(row['recovery_pace_sec_per_mi'])}/mi  "
                  f"({row['miles']:.1f} mi)"]
+        # Watch/route-rule correction — the value the FIT actually used
+        # (add_watch_corrections). Logged leads above; the corrected line
+        # shows the calibrated pace and distance. Same logged-on-top,
+        # corrected-below shape as the Long Runs tooltip; recovery has no
+        # watch toggle so it's always shown when present. Suppressed when
+        # the pace shift is negligible: the overread clamp pins ~400
+        # under-logged days to corr_pace == logged exactly (no real pace
+        # info), and a redundant line is noise. A rule day on a strides
+        # route carries pace only (corr_miles NaN — distance is polluted by
+        # both the route over-estimate and the strides).
+        corr_p = row.get('corr_pace_sec_per_mi')
+        if (pd.notna(corr_p)
+                and abs(float(corr_p) - row['recovery_pace_sec_per_mi']) >= 1.0):
+            if row.get('rec_watch'):
+                src = 'watch-measured'
+            elif row.get('rec_rule'):
+                src = 'mislogged route'
+            else:
+                src = ''
+            if pd.notna(row.get('corr_miles')):
+                dist = f"  ({row['corr_miles']:.1f} mi)"
+            elif row.get('has_strides'):
+                dist = '  (pace only — strides)'
+            else:
+                dist = ''
+            tag = f" <span style=\"color:#888\">[{src}]</span>" if src else ''
+            parts.append(
+                f"<b>Corrected:</b> "
+                f"{sec_to_mss(float(corr_p))}/mi{dist}{tag}")
         if pd.notna(row.get('temp_c')):
-            parts.append(f"Temp: {row['temp_c']:.0f}°C")
+            temp_line = f"Temp: {row['temp_c']:.0f}°C"
+            feels = row.get('temp_centered')
+            if pd.notna(feels):
+                feels_c = feels + TEMP_REFERENCE_C
+                if abs(feels_c - row['temp_c']) >= 0.5:
+                    temp_line += f" (feels {feels_c:.0f}°C)"
+            parts.append(temp_line)
+        if pd.notna(row.get('wind_mph')):
+            parts.append(f"Wind: {row['wind_mph']:.0f} mph")
         loc = row.get('location')
         if pd.notna(loc) and str(loc) != 'nan':
             # Shared dedup formatter (watch profiles: display_name == city_state).
@@ -288,13 +333,17 @@ def main():
     ), row=1, col=2)
 
     # Customdata channels — ORDER MUST MATCH FACTOR_ORDER in JS:
-    # 0=temp, 1=route, 2=recent_effort, 3=tod, 4=era
+    # 0=temp, 1=elevation, 2=terrain, 3=altitude, 4=recent_effort, 5=tod,
+    # 6=era, 7=wind
     contrib_arr = np.stack([
         rec['contrib_temp'].to_numpy(),
-        rec['contrib_route'].to_numpy(),
+        rec['contrib_elevation'].to_numpy(),
+        rec['contrib_terrain'].to_numpy(),
+        rec['contrib_altitude'].to_numpy(),
         rec['contrib_quality'].to_numpy(),
         rec['contrib_tod'].to_numpy(),
         rec['contrib_era'].to_numpy(),
+        rec['contrib_wind'].to_numpy(),
     ], axis=1).tolist()
 
     # Snap HTML lives on the residual trace's text field — same content as
@@ -642,9 +691,12 @@ def _available_norm_factors(rec, qualifying_routes):
     return {
         'era':           has_signal('contrib_era'),
         'temp':          has_signal('contrib_temp'),
-        'route':         len(qualifying_routes) > 0,
+        'elevation':     has_signal('contrib_elevation'),
+        'terrain':       has_signal('contrib_terrain'),
+        'altitude':      has_signal('contrib_altitude'),
         'recent_effort': has_signal('contrib_quality'),
         'time_of_day':   has_signal('contrib_tod'),
+        'wind':          has_signal('contrib_wind'),
     }
 
 
@@ -674,9 +726,12 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
     factors_norm = [(k, label) for (k, label) in (
         ('era',           'Era trend'),
         ('temp',          'Temperature'),
-        ('route',         'Route'),
+        ('elevation',     'Elevation (net)'),
+        ('terrain',       'Terrain'),
+        ('altitude',      'Altitude'),
         ('recent_effort', 'Recent race'),
         ('time_of_day',   'Time of day'),
+        ('wind',          'Wind'),
     ) if av.get(k, True)]
     norm_rows = widgets.checkbox_rows(
         factors_norm, data_attr='factor', checked=False
@@ -684,7 +739,7 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
 
     filter_items = [(k, label, f'({c})') for (k, label, c) in (
         ('hide_bad_cond', 'Hide bad conditions', n_bad_cond),
-        ('hide_partner',  'Hide non-solo',       n_partner_runs),
+        ('hide_partner',  'Hide partner runs',   n_partner_runs),
         ('hide_outlier',  'Hide outliers',       n_outliers),
     ) if c > 0]
     filter_rows = widgets.checkbox_rows(
@@ -700,8 +755,8 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
     if av.get('temp', True):
         detail_rows.append(widgets.detail_row(
             'Temperature',
-            f'β = {betas["temp_centered"]:+.2f} sec/mi per °C '
-            f'from {int(TEMP_REFERENCE_C)}°C'))
+            f'β = {betas["temp_centered"]:+.2f} sec/mi per °C felt '
+            f'(heat index) from {int(TEMP_REFERENCE_C)}°C'))
     if av.get('recent_effort', True):
         detail_rows.append(widgets.detail_row(
             'Recent race',
@@ -714,22 +769,38 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
             'Time of day',
             f'β = {betas["tod_is_pm"]:+.2f} sec/mi for afternoon/late '
             '(vs early/morning)'))
-    if av.get('route', True) and qualifying_routes:
-        routes_by_beta = sorted(qualifying_routes,
-                                key=lambda r: betas[route_col_map[r]])
-        detail_rows.append(widgets.detail_row('Route offsets', f'(n ≥ {MIN_ROUTE_N}):'))
-        detail_rows.append(widgets.table(
-            ('Route', 'n', 'β'),
-            [(r, int(route_counts[r]), f'{betas[route_col_map[r]]:+.2f}')
-             for r in routes_by_beta],
-            align=('left', 'left', 'right')))
+    if av.get('elevation', True):
+        from src.shared.elevation_cost import CLIMB_COST
+        detail_rows.append(widgets.detail_row(
+            'Elevation (net)',
+            f'climb {CLIMB_COST["paved"]:.2f} s/mi per ft/mi · net gain−loss; '
+            'zero on loops, applies on point-to-point'))
+    if av.get('terrain', True):
+        from src.shared.elevation_cost import CLIMB_COST, REFUND_RECOVERY
+        detail_rows.append(widgets.detail_row(
+            'Terrain',
+            f'off-road footing {betas.get("is_offroad", 0):+.1f} s/mi flat + '
+            f'mixed descent-braking (refund {REFUND_RECOVERY["mixed"]:.0%} vs '
+            f'paved {REFUND_RECOVERY["paved"]:.0%}, scales with descent)'))
+    if av.get('altitude', True):
+        detail_rows.append(widgets.detail_row(
+            'Altitude',
+            f'{betas.get("alt_kft", 0):+.2f} s/mi per 1000 ft '
+            f'({betas.get("alt_kft", 0) * 5.4:+.1f} at Boulder)'))
+    if av.get('wind', True):
+        detail_rows.append(widgets.detail_row(
+            'Wind',
+            f'β = {betas.get("wind_mph", 0):+.2f} sec/mi per mph '
+            f'({betas.get("wind_mph", 0) * 15:+.1f} at 15 mph; '
+            'watch-measured days only)'))
 
     details_body = (
         ''.join(detail_rows)
         + widgets.noteworthy(
-            'Sleep cycles, run distance, shoes, rain and wind were tested '
-            'and excluded as non-factors. Non-race quality efforts were '
-            'also found to have no detectable next-day pace effect.')
+            'Sleep cycles, run distance, shoes and rain were tested and '
+            'excluded as non-factors; humidity enters via the heat-index '
+            'temperature. Non-race quality efforts were also found to have no '
+            'detectable next-day pace effect.')
     )
 
     parts = []

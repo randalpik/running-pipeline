@@ -293,12 +293,14 @@ def main():
 
     # data/*.csv changes rerun all plots — except plot-derived CSVs that some
     # plot scripts emit into data/ (training_quality_track.csv,
-    # training_quality_offsets.csv). Those would feed an infinite rebuild
-    # loop: rebuild writes the CSV → CSV watch fires → rebuild again.
+    # training_quality_exclusions.csv, hill_model.csv). Those would feed an
+    # infinite rebuild loop: rebuild writes the CSV → CSV watch fires →
+    # rebuild again.
     server.watch(
         "data/*.csv",
         _silent(_named("data:*.csv", lambda: enqueue(_REBUILD_ALL))),
-        ignore=lambda p: os.path.basename(p).startswith("training_quality_"),
+        ignore=lambda p: (os.path.basename(p).startswith("training_quality_")
+                          or os.path.basename(p) == "hill_model.csv"),
     )
 
     # Index regenerates whenever a plot HTML appears or disappears.

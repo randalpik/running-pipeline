@@ -54,8 +54,8 @@ import pandas as pd
 # list; duplicated here so this module stands alone).
 CURRENT_LOG_COLUMNS = [
     "date", "sleep_cycles", "miles", "minutes", "temp_c", "weather",
-    "workout_raw", "partners", "conditions", "wind", "time_of_day",
-    "shoes", "location", "weight_lbs",
+    "workout_raw", "partners", "conditions", "wind", "wind_mph",
+    "humidity_pct", "time_of_day", "shoes", "location", "weight_lbs",
 ]
 
 # xlsx column positions per year era, mirroring running_log_parser.SCHEMAS.
@@ -87,13 +87,21 @@ _XLSX_SCHEMAS = {
            "conditions": 11, "wind": 12, "time_of_day": 13,
            "shoes": 14, "location": 15, "weight": 16,
            "sleep_unit": "cycles"},
+    # 2026 reorg: sleep/temp/wind/time_of_day dropped from the hand log (now
+    # sourced from watch data); remaining columns reordered. None-valued fields
+    # pass through blank; the watch override refills temp/time_of_day/wind_mph.
+    2026: {"month": 2, "day": 3, "sleep": None, "miles": 4, "minutes": 5,
+           "temp": None, "weather": 6, "workout": 8, "partners": 11,
+           "conditions": 7, "wind": None, "time_of_day": None,
+           "shoes": 9, "location": 10, "weight": 12,
+           "sleep_unit": "cycles"},
 }
 
 _YEAR_TO_SCHEMA = {
     2017: 2017, 2018: 2018, 2019: 2018,
     2020: 2020, 2021: 2020,
     2022: 2022, 2023: 2022, 2024: 2022,
-    2025: 2025, 2026: 2025, 2027: 2025,
+    2025: 2025, 2026: 2026, 2027: 2026,
 }
 
 
