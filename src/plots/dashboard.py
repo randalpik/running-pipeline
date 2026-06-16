@@ -634,7 +634,7 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
 
 # ----- main -----
 def main():
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     now_utc = dt.datetime.now(dt.timezone.utc)
 
     daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])

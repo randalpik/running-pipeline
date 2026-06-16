@@ -441,15 +441,27 @@ def main():
     # by moving the rules into the spreadsheet — multiple rows per city
     # express disjoint visit windows (e.g. Nashville x3 in 2017). Entries
     # are applied in row order; later entries override earlier ones for
-    # overlapping ranges, so put broad defaults first and specific
-    # exceptions after. Race rows are exempt — their city_state comes
-    # from races.csv via the back-prop below.
+    # overlapping ranges (last-wins for BOTH city_state and log_location —
+    # the latter only over locations a prior historical entry set, never over
+    # a parser-set route), so put broad defaults first and specific exceptions
+    # after. Race rows are exempt — their city_state comes from races.csv via
+    # the back-prop below.
     if len(historical_df):
         daily_dt = pd.to_datetime(daily["date"])
         is_non_race = daily["run_type"].fillna("") != "race"
         n_cs = 0
         n_ll = 0
         n_entries = 0
+        # Track rows whose `location` was set by an EARLIER historical entry so
+        # a later, narrower entry can override the broad default. The 2016-17
+        # "Redmond -> education hill" catch-all is listed first and stamps
+        # education hill on every blank-location day across both years; the
+        # specific trip entries that follow (Nashville, Geneva, ...) must then
+        # replace it within their own date windows, or those days inherit
+        # education hill's `mixed` terrain. Parser-set route names (hill-loop
+        # synthesis -> 'powerline west') are never in hist_set, so the
+        # blank-only guard below still protects them.
+        hist_set = pd.Series(False, index=daily.index)
         for _, h in historical_df.iterrows():
             cs = h.get("city_state")
             if cs is None or (isinstance(cs, float) and pd.isna(cs)) \
@@ -471,15 +483,18 @@ def main():
                 n_cs += int(mask.sum())
             ll = h.get("log_location")
             if isinstance(ll, str) and ll.strip():
-                # Only fill location where it's currently blank — preserves
-                # precise route names set at freeze time (e.g. hill-loop
-                # synthesis -> 'powerline west'). Historical entries
-                # supply log_location as a default fill, not an override.
+                # Fill location where it's currently blank, OR where an earlier
+                # historical entry set it (last-wins among historical entries,
+                # mirroring the city_state overwrite above). Parser-set route
+                # names (hill-loop synthesis -> 'powerline west') are never in
+                # hist_set, so they're preserved — they were finalized before
+                # this step ran and historical defers to them.
                 loc_blank = (daily["location"].isna()
                              | (daily["location"].astype(str).str.strip() == ''))
-                fill_mask = mask & loc_blank
+                fill_mask = mask & (loc_blank | hist_set)
                 if fill_mask.any():
                     daily.loc[fill_mask, "location"] = ll.strip()
+                    hist_set.loc[fill_mask] = True
                     n_ll += int(fill_mask.sum())
         print(f"[historical] applied {n_entries}/{len(historical_df)} entr(ies); "
               f"city_state set on {n_cs}, location set on {n_ll} non-race row(s)")

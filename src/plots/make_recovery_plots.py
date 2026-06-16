@@ -332,9 +332,12 @@ def main():
         meta={'role': 'trend_resid'},
     ), row=1, col=2)
 
-    # Customdata channels — ORDER MUST MATCH FACTOR_ORDER in JS:
+    # Customdata channels — channels 0-7 ORDER MUST MATCH FACTOR_ORDER in JS:
     # 0=temp, 1=elevation, 2=terrain, 3=altitude, 4=recent_effort, 5=tod,
-    # 6=era, 7=wind
+    # 6=era, 7=wind. Channel 8 (terrain_descent) is NOT a FACTOR_ORDER entry
+    # and has no checkbox: it's the mixed/trail descent-braking refund, an
+    # elevation×terrain interaction the JS applies only when BOTH the Elevation
+    # and Terrain toggles are on.
     contrib_arr = np.stack([
         rec['contrib_temp'].to_numpy(),
         rec['contrib_elevation'].to_numpy(),
@@ -344,6 +347,7 @@ def main():
         rec['contrib_tod'].to_numpy(),
         rec['contrib_era'].to_numpy(),
         rec['contrib_wind'].to_numpy(),
+        rec['contrib_terrain_descent'].to_numpy(),
     ], axis=1).tolist()
 
     # Snap HTML lives on the residual trace's text field — same content as
@@ -779,9 +783,10 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
         from src.shared.elevation_cost import CLIMB_COST, REFUND_RECOVERY
         detail_rows.append(widgets.detail_row(
             'Terrain',
-            f'off-road footing {betas.get("is_offroad", 0):+.1f} s/mi flat + '
-            f'mixed descent-braking (refund {REFUND_RECOVERY["mixed"]:.0%} vs '
-            f'paved {REFUND_RECOVERY["paved"]:.0%}, scales with descent)'))
+            f'off-road footing {betas.get("is_offroad", 0):+.1f} s/mi flat; '
+            f'mixed/trail descent-braking (refund {REFUND_RECOVERY["mixed"]:.0%} '
+            f'vs paved {REFUND_RECOVERY["paved"]:.0%}, scales with descent) '
+            f'applies only with Elevation also on'))
     if av.get('altitude', True):
         detail_rows.append(widgets.detail_row(
             'Altitude',

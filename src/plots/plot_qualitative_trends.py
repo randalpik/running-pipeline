@@ -27,7 +27,10 @@ Panel render paths:
 
 Watch-only series (Humidity, Wind, Altitude, Time) are blank before the watch
 era (~late 2020) on the shared 2016->present axis; the other four carry full
-history, so each page always has populated panels.
+history. A panel with NO data for a profile (e.g. Weight on a watch-only
+profile that logs no body weight) is dropped entirely and the page reflows its
+surviving panels to fill the height — see build_panels / _panel_has_data and
+the per-page row sizing in main().
 
 Tooltip (custom, per-tab): up to eight rows — a day-specific block (that day's
 actual recorded value per metric) above an averages block (trend value + range).
@@ -496,6 +499,43 @@ def _axkey(r):
     return 'yaxis' if r == 1 else f'yaxis{r}'
 
 
+def _xaxkey(r):
+    return 'xaxis' if r == 1 else f'xaxis{r}'
+
+
+# Shared with _row_domains so the JS per-page relayout reproduces the
+# make_subplots row spacing exactly.
+VERTICAL_SPACING = 0.025
+
+
+def _row_domains(k, vs=VERTICAL_SPACING):
+    """Per-row y-axis paper domains [bottom, top] for ``k`` equal rows stacked
+    top-to-bottom with ``vs`` spacing — the same split make_subplots computes,
+    recomputed here so a page with fewer surviving panels can reflow its rows
+    to fill the full height (the shorter of the two toggled pages)."""
+    if k <= 0:
+        return []
+    h = (1.0 - vs * (k - 1)) / k
+    doms = []
+    for r in range(1, k + 1):
+        top = 1.0 - (r - 1) * (h + vs)
+        doms.append([round(top - h, 6), round(top, 6)])
+    return doms
+
+
+def _panel_has_data(pn, full):
+    """True when a panel has any finite data for this profile. Drives the
+    empty-panel drop (e.g. a watch-only profile logs no body weight, so the
+    Weight panel must disappear rather than render an empty graph)."""
+    if pn['type'] == 'scatter':                      # Conditions
+        return bool((full['weather'].notna() & full['temp_c'].notna()).any())
+    if 'series' in pn:
+        return bool(pd.Series(pn['series']).notna().any())
+    lo = pd.Series(pn.get('lo'))
+    hi = pd.Series(pn.get('hi'))
+    return bool((lo.notna() | hi.notna()).any())
+
+
 TIME_TICKVALS = [0, 240, 480, 720, 960, 1200, 1440]
 TIME_TICKTEXT = ['0:00', '4:00', '8:00', '12:00', '16:00', '20:00', '']
 
@@ -787,6 +827,13 @@ def build_single(args, key, start, full, panels, cond_cf, weather_syn, wcolor):
     if pn is None:
         valid = ', '.join(p['key'] for p in panels)
         raise SystemExit(f"unknown --panel {key!r}; choose one of: {valid}")
+    # A real panel key with no data for this profile (e.g. Weight on a watch-
+    # only profile): skip cleanly so the run_plots.sh standalone-page loop
+    # doesn't fail, and no empty standalone page is written (its inset ↗ link
+    # was dropped from the multi-panel build alongside the panel).
+    if not _panel_has_data(pn, full):
+        print(f'skip --panel {key}: no data for this profile')
+        return
     page = pn['page']
     dates = full.index
     n_days = len(dates)
@@ -895,14 +942,29 @@ def main():
     dates = full.index
     n_days = len(dates)
 
+    # Drop panels with no data for this profile (e.g. a watch-only profile logs
+    # no body weight) and reflow each page's survivors into contiguous rows, so
+    # an empty panel disappears and the rest fill the freed height instead of
+    # leaving a hole. (Regression: this filter + dynamic row count was lost in
+    # the two-page rewrite.) The two pages share the figure's physical rows and
+    # toggle by visibility, so each page resizes its rows independently below.
+    panels = [pn for pn in panels if _panel_has_data(pn, full)]
+    for pg in ('weather', 'other'):
+        for i, pn in enumerate([p for p in panels if p['page'] == pg], start=1):
+            pn['row'] = i
+    page_rows = {pg: max((p['row'] for p in panels if p['page'] == pg), default=0)
+                 for pg in ('weather', 'other')}
+    n_rows = max(max(page_rows.values(), default=0), 1)
+    panel_by_pr = {(p['page'], p['row']): p for p in panels}
+
     fig: go.Figure = make_subplots(
-        rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.025)
+        rows=n_rows, cols=1, shared_xaxes=True, vertical_spacing=VERTICAL_SPACING)
 
     # Invisible per-row anchor traces: with every envelope now a layout image +
-    # shapes (not traces), these are the only traces on rows 2-4, so they keep
-    # the four cartesian subplots (and the cursor-tooltip axis lookups) alive.
+    # shapes (not traces), these are the only traces on most rows, so they keep
+    # the cartesian subplots (and the cursor-tooltip axis lookups) alive.
     # No meta.page -> the toggle leaves them visible on both pages.
-    for r in range(1, 5):
+    for r in range(1, n_rows + 1):
         fig.add_trace(go.Scatter(
             x=[dates[0], dates[-1]], y=[0.0, 0.0], mode='markers',
             marker=dict(opacity=0), hoverinfo='skip', showlegend=False),
@@ -928,21 +990,44 @@ def main():
             shapes_list.append((idx, page))
 
     # ---- per-page axis configs ----
+    # Each page sizes its OWN rows: surviving panels reflow to fill the height
+    # (so a dropped panel on one page doesn't leave that page short), while the
+    # other page keeps its own count. Every row is configured in BOTH pages'
+    # relayout dicts (a row used by one page is collapsed + hidden on the other)
+    # so toggling always lands in a fully-specified state — Plotly.relayout only
+    # changes keys it's given. Rasters/trend shapes are in data coords on the
+    # row's axis, so resizing the y-domain carries them automatically.
     pages = {'weather': {'relayout': {}}, 'other': {'relayout': {}}}
-    for pn in panels:
-        r = pn['row']
-        page = pn['page']
+    for page in ('weather', 'other'):
         rel = pages[page]['relayout']
-        rel[f'{_axkey(r)}.range'] = pn['y_range']
-        rel[f'{_axkey(r)}.title.text'] = pn['unit']
-        if pn['key'] == 'time':
-            rel[f'{_axkey(r)}.tickmode'] = 'array'
-            rel[f'{_axkey(r)}.tickvals'] = TIME_TICKVALS
-            rel[f'{_axkey(r)}.ticktext'] = TIME_TICKTEXT
-        else:
-            rel[f'{_axkey(r)}.tickmode'] = 'auto'
-            rel[f'{_axkey(r)}.tickvals'] = None
-            rel[f'{_axkey(r)}.ticktext'] = None
+        k = page_rows[page]
+        doms = _row_domains(k)
+        for r in range(1, n_rows + 1):
+            yk, xk = _axkey(r), _xaxkey(r)
+            pn = panel_by_pr.get((page, r))
+            if pn is not None:
+                rel[f'{yk}.domain'] = doms[r - 1]
+                rel[f'{yk}.visible'] = True
+                rel[f'{yk}.range'] = pn['y_range']
+                rel[f'{yk}.title.text'] = pn['unit']
+                if pn['key'] == 'time':
+                    rel[f'{yk}.tickmode'] = 'array'
+                    rel[f'{yk}.tickvals'] = TIME_TICKVALS
+                    rel[f'{yk}.ticktext'] = TIME_TICKTEXT
+                else:
+                    rel[f'{yk}.tickmode'] = 'auto'
+                    rel[f'{yk}.tickvals'] = None
+                    rel[f'{yk}.ticktext'] = None
+                # Only the page's bottom row carries the year tick labels.
+                rel[f'{xk}.visible'] = True
+                rel[f'{xk}.showticklabels'] = (r == k)
+            else:
+                # Row unused on this page: collapse the axis out of the way and
+                # hide it (its always-visible anchor trace goes invisible too).
+                rel[f'{yk}.visible'] = False
+                rel[f'{yk}.domain'] = [0.0, 0.0001]
+                rel[f'{xk}.visible'] = False
+                rel[f'{xk}.showticklabels'] = False
 
     # Per-page image + shape visibility into the relayout dicts. (Inset labels
     # are HTML overlays toggled in JS, not Plotly annotations.)
@@ -953,22 +1038,30 @@ def main():
         pages['weather']['relayout'][f'shapes[{idx}].visible'] = (pg == 'weather')
         pages['other']['relayout'][f'shapes[{idx}].visible'] = (pg == 'other')
 
-    # Initial state = weather page: apply weather axis config, hide other-page
-    # traces. (Images/shapes already initialized visible only on weather.)
-    for pn in panels:
-        r = pn['row']
-        kw = dict(title=dict(text=pn['unit'],
-                             font=dict(color=FG_DIM, size=11)),
-                  gridcolor=GRID, zerolinecolor=GRID)
-        if pn['page'] == 'weather':
-            kw['range'] = pn['y_range']
+    # Initial state = weather page: bake its row domains / ranges / tick config
+    # straight onto the figure (a row the weather page doesn't use is collapsed
+    # + hidden), and hide other-page traces. Images/shapes already initialized
+    # visible only on weather.
+    k_init = page_rows['weather']
+    doms_init = _row_domains(k_init)
+    for r in range(1, n_rows + 1):
+        yk = _axkey(r)
+        pn = panel_by_pr.get(('weather', r))
+        if pn is not None:
+            kw = dict(domain=doms_init[r - 1], range=pn['y_range'], visible=True,
+                      title=dict(text=pn['unit'],
+                                 font=dict(color=FG_DIM, size=11)),
+                      gridcolor=GRID, zerolinecolor=GRID)
             if pn['key'] == 'time':
                 kw['tickmode'] = 'array'
                 kw['tickvals'] = TIME_TICKVALS
                 kw['ticktext'] = TIME_TICKTEXT
             fig.update_yaxes(row=r, col=1, **kw)
-    # Each row has exactly one weather panel, so the weather config above
-    # already covers every row's axis until the first toggle.
+            fig.update_xaxes(row=r, col=1, visible=True,
+                             showticklabels=(r == k_init))
+        else:
+            fig.update_yaxes(row=r, col=1, visible=False, domain=[0.0, 0.0001])
+            fig.update_xaxes(row=r, col=1, visible=False, showticklabels=False)
 
     for tr in fig.data:
         if (tr.meta or {}).get('page') == 'other':
@@ -994,6 +1087,10 @@ def main():
         'ma_window': MA_WINDOW,
         'city': _str_arr(full['city_state']) if 'city_state' in full else None,
         'tabs': pay,
+        # Surviving panel keys per page — the tooltip skips dropped metrics
+        # (e.g. Weight on a watch-only profile) so it matches the panels shown.
+        'present': {pg: [p['key'] for p in panels if p['page'] == pg]
+                    for pg in ('weather', 'other')},
     }
 
     sib = Path(__file__).with_suffix('.js')
@@ -1030,7 +1127,7 @@ def main():
         plotly_config={'staticPlot': True},
     )
     print(f'wrote {out_path}')
-    print(f'  panels=8 traces={len(tuple(fig.data))} '
+    print(f'  panels={len(panels)} traces={len(tuple(fig.data))} '
           f'images={len(fig.layout.images)} shapes={len(fig.layout.shapes)} '
           f'days={n_days}')
 
@@ -1087,6 +1184,12 @@ function buildTooltip(day) {
     ]
   };
   var metrics = META[tab];
+  // Skip metrics whose panel was dropped for this profile (no data), so the
+  // tooltip matches the panels actually shown.
+  var present = P.present && P.present[tab];
+  if (present) {
+    metrics = metrics.filter(function (m) { return present.indexOf(m.k) >= 0; });
+  }
   // Single-panel standalone page: render only that one metric's rows.
   if (window.__rpSingle) {
     metrics = metrics.filter(function (m) { return m.k === window.__rpSingle; });
