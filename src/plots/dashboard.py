@@ -604,9 +604,7 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
     wp_rows = [
         ('Intervals (6×1600m):', fmt_pace_per_mi(workout_preds['intervals_6x1600'])),
         ('Fartlek (8000m continuous):',
-         f"{fmt_pace_per_mi(workout_preds['fartlek_8000'])} "
-         f"<span class='dim'>(hard 500s @ "
-         f"{fmt_pace_per_mi(workout_preds['fartlek_8000_hard'])})</span>"),
+         f"{fmt_pace_per_mi(workout_preds['fartlek_8000'])} "),
     ]
     wp_rows.append((f'Long ({LR_PRED_HOURS} hours):',
                     fmt_pace_per_mi(workout_preds['long'])))

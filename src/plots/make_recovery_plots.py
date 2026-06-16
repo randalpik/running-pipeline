@@ -4,10 +4,17 @@ Two side-by-side panels in one HTML:
   - Left: absolute recovery pace + CS gold reference curve
   - Right: residual (pace - CS) + flat zero gold reference
 
+Both panels are anchored to the watch/route-corrected pace (``pace_for_fit``
+in recovery_model — calibrated watch measurement where one exists, route-era
+deflation for pre-watch mislogged routes, logged pace otherwise), the same
+canonical source of truth the fit and the Long Runs plot use. The
+originally-logged pace appears only as a secondary tooltip line. The residual
+panel therefore equals (absolute corrected pace − CS) point-for-point.
+
 A right-sidebar checkbox UI applies normalization factors. Most factors
 adjust BOTH panels simultaneously (subtracting β × x from each point's
 y-value), but the "Era trend" toggle is special and applies ONLY to the
-residual panel — the absolute pace panel always shows the actual recorded
+residual panel — the absolute pace panel always shows the corrected
 pace minus only the cross-sectional factor adjustments. This lets you
 ask "how did my absolute pace compare to CS over time, controlling for
 these factors?" without the chart's baseline shifting underneath you.
@@ -208,37 +215,44 @@ def main():
         # smooth-mode "Nearest run" section. The cursor scaffold renders the
         # date and the CS-pace/Trend-pace/CS-residual/Trend-residual rows
         # itself, so this content focuses on what's run-specific.
-        parts = [f"Pace: {sec_to_mss(row['recovery_pace_sec_per_mi'])}/mi  "
-                 f"({row['miles']:.1f} mi)"]
-        # Watch/route-rule correction — the value the FIT actually used
-        # (add_watch_corrections). Logged leads above; the corrected line
-        # shows the calibrated pace and distance. Same logged-on-top,
-        # corrected-below shape as the Long Runs tooltip; recovery has no
-        # watch toggle so it's always shown when present. Suppressed when
-        # the pace shift is negligible: the overread clamp pins ~400
-        # under-logged days to corr_pace == logged exactly (no real pace
-        # info), and a redundant line is noise. A rule day on a strides
-        # route carries pace only (corr_miles NaN — distance is polluted by
-        # both the route over-estimate and the strides).
+        # Watch/route-rule corrected pace is the displayed source of truth and
+        # leads (matching the Long Runs tooltip); the originally-logged value
+        # moves to a secondary line. corr_pace_sec_per_mi is the value the FIT
+        # used and what the marker is plotted at (pace_for_fit). The Logged
+        # line — with pauses — only appears when the correction meaningfully
+        # differs (>= 1 s/mi): the distance bracket pins many under-logged days
+        # to corr_pace ≈ logged, where a redundant line is noise. A rule day on
+        # a strides route carries pace only (corr_miles NaN — distance polluted
+        # by both the route over-estimate and the strides).
+        logged_pace = row['recovery_pace_sec_per_mi']
         corr_p = row.get('corr_pace_sec_per_mi')
-        if (pd.notna(corr_p)
-                and abs(float(corr_p) - row['recovery_pace_sec_per_mi']) >= 1.0):
+        has_corr = pd.notna(corr_p)
+        disp_pace = float(corr_p) if has_corr else logged_pace
+        meaningful = has_corr and abs(float(corr_p) - logged_pace) >= 1.0
+
+        if has_corr and pd.notna(row.get('corr_miles')):
+            disp_dist = f"  ({row['corr_miles']:.1f} mi)"
+        elif has_corr and row.get('has_strides'):
+            disp_dist = '  (pace only — strides)'
+        else:
+            disp_dist = f"  ({row['miles']:.1f} mi)"
+
+        tag = ''
+        if meaningful:
             if row.get('rec_watch'):
-                src = 'watch-measured'
+                tag = ' <span style="color:#888">[watch-measured]</span>'
             elif row.get('rec_rule'):
-                src = 'mislogged route'
-            else:
-                src = ''
-            if pd.notna(row.get('corr_miles')):
-                dist = f"  ({row['corr_miles']:.1f} mi)"
-            elif row.get('has_strides'):
-                dist = '  (pace only — strides)'
-            else:
-                dist = ''
-            tag = f" <span style=\"color:#888\">[{src}]</span>" if src else ''
+                tag = ' <span style="color:#888">[mislogged route]</span>'
+        parts = [f"Pace: {sec_to_mss(disp_pace)}/mi{disp_dist}{tag}"]
+
+        if meaningful:
+            pause = ''
+            if (row.get('rec_watch') and pd.notna(row.get('pause_s'))
+                    and row['pause_s'] >= 30):
+                pause = f" · {sec_to_mss(float(row['pause_s']))} paused"
             parts.append(
-                f"<b>Corrected:</b> "
-                f"{sec_to_mss(float(corr_p))}/mi{dist}{tag}")
+                f"<b>Logged:</b> {sec_to_mss(logged_pace)}/mi  "
+                f"({row['miles']:.1f} mi){pause}")
         if pd.notna(row.get('temp_c')):
             temp_line = f"Temp: {row['temp_c']:.0f}°C"
             feels = row.get('temp_centered')
@@ -311,7 +325,7 @@ def main():
     rec_dates_ms = np.array([d.value // 10**6 for d in rec['date']],
                             dtype=np.int64)
     init_pace_x, init_pace_y = gaussian_rolling_trend(
-        rec_dates_ms, rec['recovery_pace_sec_per_mi'].values,
+        rec_dates_ms, rec['pace_for_fit'].values,
         sigma_days=TREND_SMOOTH_SIGMA_DAYS)
     init_resid_x, init_resid_y = gaussian_rolling_trend(
         rec_dates_ms, rec['residual_raw'].values,
@@ -358,7 +372,7 @@ def main():
     hover_html = rec['_hover'].tolist()
     fig.add_trace(go.Scatter(
         x=rec['date'],
-        y=rec['recovery_pace_sec_per_mi'],
+        y=rec['pace_for_fit'],
         mode='markers',
         marker=dict(
             size=4.5,
@@ -374,7 +388,7 @@ def main():
         showlegend=False,
         meta={'role': 'pace',
               'snap_eligible': True,
-              'raw_y': rec['recovery_pace_sec_per_mi'].tolist()},
+              'raw_y': rec['pace_for_fit'].tolist()},
     ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
@@ -414,8 +428,8 @@ def main():
     # Absolute-pace axis: nice ticks over the central 99.8% of recovery paces,
     # clamped to a sane [3:00, 12:00] window. target=7 → the former 30s spacing
     # over Max's span, adapting the interval to any profile's range.
-    _llo = max(180.0, float(rec['recovery_pace_sec_per_mi'].quantile(0.001)))
-    _lhi = min(720.0, float(rec['recovery_pace_sec_per_mi'].quantile(0.999)))
+    _llo = max(180.0, float(rec['pace_for_fit'].quantile(0.001)))
+    _lhi = min(720.0, float(rec['pace_for_fit'].quantile(0.999)))
     left_ticks, _ = nice_time_ticks(_llo, _lhi, target=7)
     left_y_lo, left_y_hi = left_ticks[0], left_ticks[-1]
 

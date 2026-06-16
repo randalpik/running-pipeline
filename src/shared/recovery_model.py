@@ -272,6 +272,8 @@ def add_watch_corrections(rec):
       has_strides  : trailing strides/sprints logged (STRIDE_SUFFIX_RX)
       corr_miles, corr_time_s, corr_pace_sec_per_mi : corrected values on
                      the honest-log scale (NaN where uncorrected)
+      pause_s      : watch-recorded paused time (s) on watch-enriched rows
+                     (NaN elsewhere) — surfaced in the plot tooltip
 
     Trailing-strides days get NO watch correction: Max pauses the watch for
     the strides (see STRIDE_SUFFIX_RX), so the watch measures the recovery
@@ -305,7 +307,7 @@ def add_watch_corrections(rec):
                           .apply(lambda s: bool(STRIDE_SUFFIX_RX.search(s))))
     rec['rec_watch'] = False
     rec['rec_rule'] = False
-    for col in ('corr_miles', 'corr_time_s', 'corr_pace_sec_per_mi'):
+    for col in ('corr_miles', 'corr_time_s', 'corr_pace_sec_per_mi', 'pause_s'):
         rec[col] = np.nan
 
     cal = _load_calibration()
@@ -349,10 +351,12 @@ def add_watch_corrections(rec):
             # Distance bracket — see docstring (corr_mi never exceeds logged).
             corr_mi = np.minimum(cal_mi, logged_mi)
             idx = rec.index[hit]
+            pause_s = sub['pause_s'].to_numpy()
             rec.loc[idx[ok], 'rec_watch'] = True
             rec.loc[idx[ok], 'corr_time_s'] = mov_s[ok]
             rec.loc[idx[ok], 'corr_pace_sec_per_mi'] = (mov_s / corr_mi)[ok]
             rec.loc[idx[ok], 'corr_miles'] = corr_mi[ok]
+            rec.loc[idx[ok], 'pause_s'] = pause_s[ok]
 
     loc = (rec.get('location', pd.Series(np.nan, index=rec.index))
            .astype(str).str.strip().str.lower())
