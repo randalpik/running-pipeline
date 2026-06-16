@@ -764,6 +764,14 @@ def physical_route_betas():
         pool = pd.concat([r.reindex(columns=rcols, fill_value=0.0)
                           for r in rows], ignore_index=True)
         pool = pool.dropna(subset=['resid', 'elev_cost'] + fit_cols)
+        # Identifiability guard: with NO off-road terrain labels (watch-only
+        # profiles have none), footing can't be separated from altitude — a
+        # slow trail run has nowhere to load but altitude, skewing it wildly.
+        # Drop both terrain channels; a zero physical cost is just no
+        # correction. (The run/walk ceiling on long-run rows has already
+        # removed the hikes that made this acute.)
+        if pool['is_offroad'].abs().sum() == 0:
+            fit_cols = [c for c in fit_cols if c not in ('is_offroad', 'alt_kft')]
         if len(pool) > len(fit_cols) + 1:
             X = np.hstack([np.ones((len(pool), 1)),
                            pool[fit_cols].fillna(0.0).to_numpy(float)])
@@ -778,8 +786,8 @@ def physical_route_betas():
                     ERA_WINDOW_MIN_POINTS), dtype=float)
                 coef, *_ = np.linalg.lstsq(X, raw - elev - era, rcond=None)
             cmap = dict(zip(['const'] + fit_cols, coef))
-            out = {'is_offroad': float(cmap['is_offroad']),
-                   'alt_kft': float(cmap['alt_kft'])}
+            out = {'is_offroad': float(cmap.get('is_offroad', 0.0)),
+                   'alt_kft': float(cmap.get('alt_kft', 0.0))}
     except Exception:
         pass
     _PHYS_BETAS_CACHE[key] = out

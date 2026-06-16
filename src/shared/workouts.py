@@ -143,6 +143,14 @@ WATCH_LOG_MISMATCH_PER_REP_S = 1.75
 # would wrongly admit them.
 LONG_MIN_MINUTES = 80.0
 LONG_CEIL_MILES  = 26.2
+# A sustained pace this slow isn't running — it's hiking/scrambling (Banff/
+# Boulder summit days), a categorically different activity carrying NO per-mile
+# running-cost information. Excluded from the physical-route BETA fit only
+# (still projected normally everywhere else). The run/walk boundary for a
+# trained runner; the data shows a clean gap — real long runs sit <=10 min/mi,
+# the hikes >=14 — so the exact line isn't load-bearing. CS-independent (an
+# absolute gait boundary), so a wrong watch-only CS curve can't move it.
+RUN_PACE_CEIL_S_PER_MI = 720.0   # 12:00/mi
 
 # ---------- long-run watch enrichment ----------
 LR_MEASURED_PATH = DATA_DIR / 'long_run_measured.csv'
@@ -276,6 +284,10 @@ def load_cs():
 def add_cs(df, cs, epoch):
     """Add per-row CS context: day-since-epoch, p5k_cs_min, dp_t, dp3_t, year."""
     df = df.copy()
+    # An empty source CSV (e.g. a new profile with no decomposed workouts yet)
+    # reads back with an object-dtype 'date' column, which can't be subtracted
+    # from a Timestamp — coerce so the empty-frame path stays datetime.
+    df['date'] = pd.to_datetime(df['date'])
     df['day'] = (df['date'] - epoch).dt.days.astype(float)
     df['p5k_cs_min'] = np.interp(df['day'], cs['day'].values, cs['p5k_implied_min'].values)
     df['dp_t']       = np.interp(df['day'], cs['day'].values, cs['dp_med'].values)
@@ -544,6 +556,13 @@ def long_run_fit_rows():
     lr['pace_for_fit'] = np.where(lr['corr_pace_sec_per_mi'].notna(),
                                   lr['corr_pace_sec_per_mi'],
                                   lr['recovery_pace_sec_per_mi'])
+    # Drop hikes/scrambles (see RUN_PACE_CEIL_S_PER_MI): not runs, so they
+    # inform no per-mile running cost — and as the slowest, highest-leverage
+    # points they otherwise hijack the regression (esp. on watch-only profiles
+    # where, lacking a trail label, their slowness loads onto altitude).
+    lr = lr[lr['pace_for_fit'] <= RUN_PACE_CEIL_S_PER_MI].copy()
+    if lr.empty:
+        return lr
     ev = per_run_elevation(lr)
     lr['elev_gain_pm'] = ev['elev_gain_pm']
     lr['elev_loss_pm'] = ev['elev_loss_pm']
@@ -704,12 +723,18 @@ def watch_log_demotions():
     (WATCH_LOG_MISMATCH_PER_REP_S above). Consumers treat these days as
     NON-ENRICHED: parse_workouts keeps the string-parser row, project_workouts
     drops them from the verified set, the Workouts plot shows no Watch line.
-    Empty set when no enrichment or no hand log exists."""
+    Empty set when no enrichment or no hand log exists.
+
+    Only 'exact' (hand-log-reconciled) days are gated: the gate rejects watch
+    GPS error by deferring to the hand log, so it needs a trustworthy hand log
+    to defer to. A 'watch-only' day (watch-import profile) has no independent
+    hand measurement — the watch IS the source of truth — so it is never
+    demoted; its reps are trusted at face value."""
     path = DATA_DIR / 'workout_measured.csv'
     if not path.exists():
         return set()
     m = pd.read_csv(path)
-    m = m[(m['rep_idx'] > 0) & m['status'].isin(['exact', 'watch-only'])]
+    m = m[(m['rep_idx'] > 0) & (m['status'] == 'exact')]
     if m.empty or not DAILY_PATH.exists():
         return set()
     daily = pd.read_csv(DAILY_PATH)

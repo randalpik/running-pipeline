@@ -42,7 +42,11 @@ from src.coros.build_current_log import Activity
 from src.shared.hill_model import FT_PER_M
 from src.shared.paths import DATA_DIR
 
-DETAILS = DATA_DIR / 'profiles' / 'coros' / 'details'
+# Details dir: a watch-import profile carries its own cache at DATA_DIR/details;
+# the Max drive profile has none there and pulls from the coros (his watch)
+# cache. Resolve to the profile's own cache when present, else the coros one.
+_OWN_DETAILS = DATA_DIR / 'details'
+DETAILS = _OWN_DETAILS if _OWN_DETAILS.exists() else DATA_DIR / 'profiles' / 'coros' / 'details'
 ACTIVITIES = DATA_DIR / 'watch_activities.csv'
 ALT_OUT = DATA_DIR / 'altitude_daily.csv'
 TIME_OUT = DATA_DIR / 'time_daily.csv'
@@ -63,16 +67,35 @@ TIME_COLS = ['date', 'start_min', 'end_min', 'lat', 'lon', 'tz_min']
 
 
 def _ids_by_date():
-    """{iso_date: [labelId, ...]} from the per-activity index, or None."""
-    if not ACTIVITIES.exists():
+    """{iso_date: [labelId, ...]}, or None when no source is available.
+
+    Prefers the per-activity index (watch_activities.csv, written by
+    watch_daily on the Max drive profile — no per-second parse). A watch-import
+    profile has no such index, so fall back to scanning the detail cache
+    directly: every cached detail is a run activity, keyed by its local date."""
+    if ACTIVITIES.exists():
+        idx = pd.read_csv(ACTIVITIES, dtype={'labelId': str, 'date': str})
+        out = {}
+        for _, r in idx.iterrows():
+            if str(r['labelId']) in M.EXCLUDED_LABEL_IDS:
+                continue
+            out.setdefault(r['date'], []).append(str(r['labelId']))
+        return out
+    if not DETAILS.exists():
         return None
-    idx = pd.read_csv(ACTIVITIES, dtype={'labelId': str, 'date': str})
     out = {}
-    for _, r in idx.iterrows():
-        if str(r['labelId']) in M.EXCLUDED_LABEL_IDS:
+    for p in sorted(DETAILS.glob('*.json')):
+        if p.stem in M.EXCLUDED_LABEL_IDS:
             continue
-        out.setdefault(r['date'], []).append(str(r['labelId']))
-    return out
+        rec = _load(p.stem)
+        if rec is None:
+            continue
+        try:
+            d = Activity(rec).local_date
+        except (TypeError, ValueError, KeyError):
+            continue
+        out.setdefault(d.isoformat(), []).append(p.stem)
+    return out or None
 
 
 def _load(labelId):

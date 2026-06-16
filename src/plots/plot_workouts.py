@@ -138,8 +138,12 @@ def workout_hover(r, single_type=False):
     if isinstance(measured, str) and measured:
         body += f"<br>{measured}"
         # How much the watch reps above were scaled to match the log pace
-        # (negative = GPS read short, watch times compressed to fit).
-        wpr, qp = r.get('watch_pace_raw'), r.get('quality_pace_sec_per_mi')
+        # (negative = GPS read short, watch times compressed to fit). Compare
+        # the NORMALIZED pace actually applied (pace_per_mile) to the raw watch
+        # pace — so watch-only days, which aren't normalized (the watch is the
+        # source of truth), show no adjustment. Equals the logged quality pace
+        # on hand-log days, so those are unchanged.
+        wpr, qp = r.get('watch_pace_raw'), r.get('pace_per_mile')
         if pd.notna(wpr) and pd.notna(qp) and wpr > 0:
             pct = (qp / wpr - 1.0) * 100.0
             if abs(pct) >= 0.05:

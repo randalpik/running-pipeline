@@ -409,10 +409,16 @@ def measured_to_decomposed(measured, daily_df, cf_structure=True, dp3_at=None):
         watch_pace = day['time_s'].sum() / (total / MILE_M)
         dp3 = dp3_at(dt) if dp3_at is not None else None
 
-        # Normalize watch times to the logged pace (see docstring): one
-        # scale factor on every rep time, rests untouched (wall-clock).
+        # Normalize watch times to the logged pace (see docstring): one scale
+        # factor on every rep time, rests untouched (wall-clock). HAND-LOG
+        # DAYS ONLY — for watch-only profiles the watch IS the source of truth
+        # (there is no independent log; the profile's quality_pace is itself
+        # watch-derived ≈ the blended/total pace incl. floats, so normalizing
+        # would slow the real hard reps to it and show a phantom watch adj).
         qp_log = daily_qp.get(dt)
-        if qp_log is not None and not pd.isna(qp_log) and qp_log > 0:
+        watch_only = (day['status'] == 'watch-only').all()
+        if (not watch_only and qp_log is not None
+                and not pd.isna(qp_log) and qp_log > 0):
             day = day.copy()
             day['time_s'] = day['time_s'] * (qp_log / watch_pace)
         pace = day['time_s'].sum() / (total / MILE_M)
@@ -445,7 +451,13 @@ def measured_to_decomposed(measured, daily_df, cf_structure=True, dp3_at=None):
         rest_per_mile = rest_total / (rest_denom_m / MILE_M) if rest_denom_m else 0.0
         if run_type in ('tempo', 'interval', 'rep'):
             final_type = run_type
-        else:                           # fartlek collision / watch-only
+        elif (day['status'] == 'watch-only').all():
+            # Watch-only profile: no hand log to split interval from rep, and
+            # the reps are trusted at face value — any multi-segment day is an
+            # interval (a single no-pause segment became continuous_fartlek
+            # above, where kind=='cf').
+            final_type = 'interval'
+        else:                           # hand-log fartlek collision
             final_type = 'interval' if rep_dist >= 800 else 'rep'
         d_eff, t_eff = _measured_d_eff(day, dp3=dp3)
         rows.append({'date': dt, 'type': final_type,

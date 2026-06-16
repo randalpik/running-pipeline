@@ -1,18 +1,28 @@
 """Incremental sync of a Coros profile's current_log.
 
-Past activity days are immutable, so we never re-fetch them: the activity
+Past activity days are immutable, so we never re-FETCH them: the activity
 *detail* JSON is cached per labelId under ``details_dir`` (persisted across
-runs), and the built ``current_log`` CSV accumulates day rows. Each sync:
+runs). The cache is the sole persisted source of truth — the ``current_log``
+CSV is a pure DERIVATION of it, rebuilt in full every sync. Each sync:
 
   1. reads the last day already in the current_log,
   2. lists activities from that day forward only (the boundary day is
      re-listed so a late same-day run is picked up),
   3. fetches details only for labelIds not already cached,
-  4. rebuilds just the affected days and merges them over the persisted log.
+  4. rebuilds the WHOLE current_log from the complete local cache.
 
 So after the one-time backfill, a sync is a single list call plus details for
-genuinely new activities. ``rebuild=True`` reprocesses every cached detail
-without re-fetching — used when a mapping in mappings.py changes.
+genuinely new activities, then a local rebuild. ``rebuild=True`` skips the API
+entirely and rebuilds from cache — used offline or when a mapping changes.
+
+Rebuilding the whole log (rather than merging only the new days over the
+persisted CSV) is deliberate: it costs only local CPU + cached geocoding, and
+it means every historical row always reflects the CURRENT extraction/mappings.
+The previous merge-the-tail approach froze historical rows at whatever schema
+built them, so later additions (e.g. wind_mph / humidity_pct) never reached
+days already in the log — they stayed blank forever on the persisted cache,
+including in CI. Deriving from the cache each run makes that class of staleness
+impossible.
 """
 from __future__ import annotations
 
@@ -62,6 +72,38 @@ def _cache_detail(client, item, details_dir: Path):
     return rec
 
 
+def _upgrade_slim_runs(client, details_dir: Path):
+    """Re-fetch cached outdoor-run records still stored slim, upgrading them to
+    rich (per-second stream) so the elevation/altitude enrichment has data.
+
+    Outdoor runs are cached rich by ``_project``; a slim one predates rich
+    caching (an old backfill, or a profile whose history was fetched before the
+    rich logic existed). Indoor runs legitimately stay slim and are skipped.
+    One-time per record — once rich it's a hit and never re-fetched — so this
+    self-heals a stale cache (e.g. CI's persisted cache) without a manual
+    backfill step. Returns the count upgraded."""
+    upgraded = 0
+    for p in sorted(details_dir.glob("*.json")):
+        if p.stem in M.EXCLUDED_LABEL_IDS:
+            continue
+        try:
+            rec = json.loads(p.read_text())
+        except (ValueError, OSError):
+            continue
+        if "freq" in rec or "frequencyList" in rec:
+            continue                              # already rich (or raw)
+        sport = (rec.get("summary") or {}).get("sportType")
+        if sport not in (M.SPORT_RUN, M.SPORT_TRAIL_RUN, M.SPORT_TRACK_RUN):
+            continue                              # indoor etc. — slim is correct
+        new = rich_detail(client.activity_detail(p.stem, sport)) or rec
+        if "freq" in new:
+            p.write_text(json.dumps(new))
+            upgraded += 1
+    if upgraded:
+        print(f"[coros-sync] upgraded {upgraded} slim run record(s) to rich")
+    return upgraded
+
+
 def _load_all_details(details_dir: Path):
     """Load every cached detail record, migrating legacy full files."""
     out = []
@@ -90,48 +132,43 @@ def sync_current_log(*, email, password, region, current_log_path, details_dir,
     current_log_path = Path(current_log_path)
     details_dir = Path(details_dir)
 
-    persisted = None
-    if current_log_path.exists() and not rebuild:
-        persisted = pd.read_csv(current_log_path)
-
-    if rebuild:
-        from_day = start_day
-    elif persisted is not None and len(persisted):
-        last = pd.to_datetime(persisted["date"]).dt.date.max()
-        from_day = last.strftime("%Y%m%d")        # inclusive: re-list boundary day
-    else:
-        from_day = start_day
-
-    client = CorosClient(email, password, region=region, token_cache=token_cache)
-
-    if rebuild:
-        details = _load_all_details(details_dir)
-        print(f"[coros-sync] rebuild from {len(details)} cached details")
-    else:
+    # Incrementally fetch + cache any new activity details (skipped on rebuild).
+    # Only the cache is updated here; the current_log is rebuilt from it below.
+    if not rebuild:
+        if current_log_path.exists():
+            persisted = pd.read_csv(current_log_path)
+            from_day = (pd.to_datetime(persisted["date"]).dt.date.max()
+                        .strftime("%Y%m%d") if len(persisted) else start_day)
+        else:
+            from_day = start_day                   # inclusive: re-list boundary day
+        client = CorosClient(email, password, region=region,
+                             token_cache=token_cache)
         fetched = 0
-        details = []
         for item in client.iter_activities(from_day=from_day):
             if item.get("sportType") not in M.RUN_SPORTS:
                 continue
             label = str(item.get("labelId"))
             had = (details_dir / f"{label}.json").exists()
-            details.append(_cache_detail(client, item, details_dir))
+            _cache_detail(client, item, details_dir)
             fetched += 0 if had else 1
         print(f"[coros-sync] listed from {from_day or 'beginning'}: "
-              f"{len(details)} run activities, {fetched} newly fetched")
-
-    new_df, meta = build_current_log(details, geocode=geocode)
-
-    if persisted is not None and len(persisted) and not rebuild and from_day:
-        boundary = pd.to_datetime(from_day, format="%Y%m%d").date().isoformat()
-        kept = persisted[persisted["date"] < boundary]
-        merged = pd.concat([kept, new_df], ignore_index=True)
+              f"{fetched} newly fetched")
+        # Self-heal a cache whose outdoor-run records are still slim (no
+        # per-second stream) — e.g. CI's persisted cache or a pre-rich history.
+        # Needed for the elevation/altitude enrichment; one-time per record.
+        _upgrade_slim_runs(client, details_dir)
     else:
-        merged = new_df
+        print("[coros-sync] rebuild: skipping API fetch")
+
+    # The current_log is ALWAYS the full derivation of the local detail cache,
+    # so every row reflects the current extraction (no stale historical rows).
+    details = _load_all_details(details_dir)
+    merged, meta = build_current_log(details, geocode=geocode)
     merged = (merged.sort_values("date")
                     .drop_duplicates("date", keep="last")
                     .reset_index(drop=True))
     merged = merged.reindex(columns=CURRENT_LOG_COLUMNS)
+    print(f"[coros-sync] rebuilt current_log from {len(details)} cached details")
 
     current_log_path.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(current_log_path, index=False)

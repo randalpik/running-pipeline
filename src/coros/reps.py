@@ -89,6 +89,24 @@ TIER1 = {200, 300, 400, 800, 1600}
 TIER2 = {100, 500}
 ALT_W, OPT_W = 2.0, 0.5
 
+# Coverage bias (soft, applied in reconcile): a watch segment is USUALLY one
+# rep, so prefer decompositions that DON'T split a segment into several reps
+# when an equal-total alternative keeps them in their own segments. A BIAS,
+# not a rule — continuous fartlek is many reps in one segment, and a single
+# segment can legitimately hold two; small enough to only break ties.
+# Deliberately one-sided: we penalize EXTRA reps per segment but do NOT reward
+# "use every segment" — a salvaged jog core (see _salvage_core) is offered but
+# left unused unless it genuinely helps hit the total; rewarding coverage would
+# pull recovery-jog segments in as phantom reps.
+COVERAGE_EXTRA = 0.4
+MIN_SALVAGE = 80.0    # m, shortest quality core worth salvaging from a segment
+                      # whose block the cs_cut filter dropped
+SALVAGE_W = 0.3       # extra cost on a salvaged core so it is a LAST RESORT —
+                      # used only when it strictly beats the alternatives (e.g.
+                      # avoids splitting a segment), never to manufacture a tie
+                      # on a day that already reconciled without it. < COVERAGE_
+                      # EXTRA so a salvaged own-segment rep still beats a split.
+
 # Days adjudicated by Max (June 2026) as not worth watch enrichment: the
 # recording or the conditions make exact reconstruction impossible. These
 # apply to the hand-log corpus; watch-only profiles never consult this.
@@ -776,7 +794,8 @@ def build_reps(blocks, inflation=None):
 # ---------- reconciliation ----------
 
 def _cand_cost(c):
-    return (ALT_W if c['is_alt'] else 0.0) + c['tier']
+    return ((ALT_W if c['is_alt'] else 0.0) + c['tier']
+            + (SALVAGE_W if c.get('salvage') else 0.0))
 
 
 def _seg_options(rs, segments_by_id, sid, cf_allowed, target):
@@ -790,6 +809,8 @@ def _seg_options(rs, segments_by_id, sid, cf_allowed, target):
     def add(sumL, cost, sig, picks):
         if sumL > target:
             return
+        # coverage bias: splitting a segment into >1 rep costs a little.
+        cost += COVERAGE_EXTRA * max(0, len(picks) - 1)
         key = (sumL, sig)
         if key not in opts or cost < opts[key][0]:
             opts[key] = (cost, picks)
@@ -923,6 +944,30 @@ def cs_threshold_fn(cs_path):
     return cutoff
 
 
+def _salvage_core(seg, cs_cut):
+    """Longest contiguous run of quality windows (<= cs_cut) in a segment whose
+    block the cs_cut filter dropped — the rep core, surfaced so a
+    contamination-inflated block AVERAGE (a GPS cold-start jog, a freeze/jump
+    glitch) doesn't silently lose a real rep. Returns (a, b) or None."""
+    runs, s, e = [], None, None
+    x = seg.d0
+    while x + FINE_W <= seg.d1 + 0.01:
+        p = seg.pace(x, x + FINE_W)
+        if p is not None and p <= cs_cut:
+            s = x if s is None else s
+            e = x + FINE_W
+        elif s is not None:
+            runs.append((s, e))
+            s = None
+        x += CHUNK
+    if s is not None:
+        runs.append((s, e))
+    if not runs:
+        return None
+    best = max(runs, key=lambda r: r[1] - r[0])
+    return best if best[1] - best[0] >= MIN_SALVAGE else None
+
+
 def extract_day(recs, cs_cut, logged, cf_allowed):
     """Run the full pipeline for one day's rich records."""
     segments = [s for rec in recs for s in moving_segments(rec)]
@@ -931,6 +976,26 @@ def extract_day(recs, cs_cut, logged, cf_allowed):
     blocks = refine_blocks(blocks, cs_cut)
     reps = build_reps(blocks, inflation=seg_lap_ratios(recs))
     reps = [r for r in reps if r['t'] / (r['L'] / MILE) <= cs_cut]
+    if logged is not None:
+        # Salvage: a segment whose only block was contamination-filtered still
+        # offers its quality core as an OPTIONAL candidate, so the hand total
+        # can place it. The coverage bias (see _seg_options) then prefers using
+        # it over splitting another segment / leaving it unaccounted — without
+        # forcing it (a genuine all-jog segment stays dropped).
+        used = {id(r['seg']) for r in reps}
+        for seg in segments:
+            if id(seg) in used:
+                continue
+            sv = _salvage_core(seg, cs_cut)
+            if not sv:
+                continue
+            cands = _snap_variants(seg, sv[0], sv[1], False, False)
+            if cands:
+                for c in cands:
+                    c['salvage'] = True
+                reps.append({'seg': seg, 'cands': cands, 'first': True,
+                             'last': True, 'optional': True, **cands[0]})
+        reps.sort(key=lambda r: r['t0'])
     if not reps:
         return [], 'no-blocks'
     if logged is not None:

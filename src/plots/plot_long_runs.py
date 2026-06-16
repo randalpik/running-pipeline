@@ -234,6 +234,10 @@ def main():
     excl_csv = DATA_DIR / 'training_quality_exclusions.csv'
     if excl_csv.exists():
         excl = pd.read_csv(excl_csv, parse_dates=['date'])
+        # A stale exclusions file (older schema) may predate the 'src' column;
+        # treat its absence as "no long-run exclusions recorded".
+        if 'src' not in excl.columns:
+            excl['src'] = 'workout'
         excl = excl[excl['src'] == 'long_run'].set_index('date')
         hit = lr['date'].isin(excl.index)
         if hit.any():
