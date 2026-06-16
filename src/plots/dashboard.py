@@ -119,14 +119,22 @@ def fmt_pace_per_mi(sec_per_mi):
     return f'{sec_to_mss(sec_per_mi)}/mi'
 
 
-def fmt_cri_halfwidth(half_sec):
-    """±Ns for sub-1-minute, ±MM:SS otherwise."""
-    if half_sec is None or pd.isna(half_sec):
+def _fmt_cri_part(x):
+    """Ns for sub-1-minute, MM:SS otherwise."""
+    return f'{int(round(x))}s' if x < 60 else sec_to_mss(x)
+
+
+def fmt_cri_offsets(t_med, lo_sec, hi_sec):
+    """Asymmetric 95% CrI as offsets from the prediction: '−Δfast / +Δslow'.
+    The frontier band is NOT symmetric about the median (its width depends on
+    where the frontier sits relative to CS, and it collapses onto a binding
+    demonstration), so a single ± would misstate both bounds. Tiny negatives
+    from numerical noise are clamped to 0."""
+    if any(v is None or pd.isna(v) for v in (t_med, lo_sec, hi_sec)):
         return '—'
-    half = float(half_sec)
-    if half < 60:
-        return f'±{int(round(half))}s'
-    return f'±{sec_to_mss(half)}'
+    down = max(0.0, float(t_med) - float(lo_sec))   # faster bound
+    up = max(0.0, float(hi_sec) - float(t_med))      # slower bound
+    return f'−{_fmt_cri_part(down)} / +{_fmt_cri_part(up)}'
 
 
 # PR values are tinted gold, shaded by recency (most recent PR = brightest,
@@ -361,9 +369,10 @@ def compute_race_predictions(daily_summary, beta_long, d_thresh,
                                     d_thresh)[-1]
         t_slow = frontier_at_anchor(front_hi, daily_summary, d, beta_long,
                                     d_thresh)[-1]
-        half = (t_slow - t_fast) / 2.0
+        # Asymmetric band: t_med is generally NOT the midpoint of
+        # [t_fast, t_slow], so we keep both bounds rather than a half-width.
         out.append({'distance': name, 'time_sec': float(t_med),
-                    'half_sec': float(half)})
+                    'lo_sec': float(t_fast), 'hi_sec': float(t_slow)})
     return out
 
 
@@ -374,8 +383,11 @@ def compute_race_predictions(daily_summary, beta_long, d_thresh,
 # 90/180/365d half-lives all land within 2 s/mi, so the choice isn't
 # load-bearing.
 LR_PRED_HALFLIFE_DAYS = 365
-# Distance the card's long-run pace is projected to (and labeled as).
-LR_PRED_MILES = 20
+# Duration the card's long-run pace is projected to (and labeled as). A time
+# target (vs a fixed distance) self-scales per runner — no assumption that the
+# profile runs any particular distance — which matters for newer profiles that
+# have no grounds for a 20-mile projection yet.
+LR_PRED_HOURS = 2
 
 
 def _long_run_residual(lr_in_aug):
@@ -469,16 +481,30 @@ def compute_workout_predictions(daily_summary, front_med,
     pace_cf_hard = (pace_fartlek * 8000.0
                     / (hards + CF_FLOAT_HARD_RATIO * floats))
 
-    # --- Long run at the card's distance: race-equivalent projection with
-    #     the long-distance fade restored at the run's full distance.
-    #     Forward direction -> prediction edge (v_max-irrelevant at 20 mi).
+    # --- Long run = the fastest LR_PRED_HOURS-hour effort: the race-equivalent
+    #     projection with the long-distance fade, but inverted for a TIME target
+    #     instead of a fixed distance. Bisect for the distance whose projected
+    #     time equals the target (the projection is monotone in distance), then
+    #     report its pace. Self-scales per runner (no fixed-distance assumption);
+    #     v_max is irrelevant at this range. Same CS-derived projection as before.
     vp = vmax_predict()
     dp3_p = float(latest['dp3_pred_med'])
     cs_mps_f = float(cp3_implied_cs(5000.0, t5k_front, dp3_p, vp))
-    d_long = LR_PRED_MILES * 1609.344
-    t_long = (float(cp3_time(d_long, cs_mps_f, dp3_p, vp))
-              * _beta_long_factor(d_long, beta_long, d_thresh))
-    pace_long = t_long * 1609.344 / d_long
+
+    def _t_long(d):
+        return (float(cp3_time(d, cs_mps_f, dp3_p, vp))
+                * _beta_long_factor(d, beta_long, d_thresh))
+
+    target_long = LR_PRED_HOURS * 3600.0
+    lo_d, hi_d = 1000.0, 80000.0      # 1–80 km brackets any 2-hr effort
+    for _ in range(60):
+        mid = (lo_d + hi_d) / 2
+        if _t_long(mid) < target_long:
+            lo_d = mid
+        else:
+            hi_d = mid
+    d_long = (lo_d + hi_d) / 2
+    pace_long = target_long * 1609.344 / d_long
 
     return {
         'intervals_6x1600': pace_intervals,
@@ -569,7 +595,7 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
             f'<tr>'
             f'<td>{escape(r["distance"])}</td>'
             f'<td class="num"><b class="pred-value">{fmt_race_time(r["time_sec"])}</b></td>'
-            f'<td class="num">{fmt_cri_halfwidth(r["half_sec"])}</td>'
+            f'<td class="num">{fmt_cri_offsets(r["time_sec"], r["lo_sec"], r["hi_sec"])}</td>'
             f'</tr>'
         )
     race_pred_html = '\n'.join(rp_rows)
@@ -582,7 +608,7 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
          f"<span class='dim'>(hard 500s @ "
          f"{fmt_pace_per_mi(workout_preds['fartlek_8000_hard'])})</span>"),
     ]
-    wp_rows.append((f'Long ({LR_PRED_MILES} miles):',
+    wp_rows.append((f'Long ({LR_PRED_HOURS} hours):',
                     fmt_pace_per_mi(workout_preds['long'])))
     workout_html = ''.join(
         f'<div class="stat-label">{label}</div>'
@@ -628,7 +654,7 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
         <thead><tr>
           <th>Distance</th>
           <th class="num">Prediction</th>
-          <th class="num" title="95% credible interval (±), the frontier swept across the CS uncertainty band.">95% CrI</th>
+          <th class="num" title="95% credible interval. Real ability is very likely to land somewhere between these two bounds.">95% CrI</th>
         </tr></thead>
         <tbody>
 {race_pred_html}
