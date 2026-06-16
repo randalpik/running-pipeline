@@ -27,6 +27,8 @@ on top). Workouts plot keeps all rows.
 """
 from __future__ import annotations
 
+import functools
+import os
 import re
 
 import numpy as np
@@ -75,13 +77,70 @@ RECON_TAU_S = 540.0
 # v_max for the WORKOUT side of CP3 — the accumulator's effort-aware
 # deflation and the TQ projections (workouts / long runs / hills). This is
 # deliberately NOT one of cs_projection's conservative race edges: it's a
-# MEASUREMENT calibration, anchored to the watch rep corpus (the τ=540
+# MEASUREMENT calibration, anchored to Max's watch rep corpus (the τ=540
 # re-validation above ran at this value; the deflation reproduces the
 # retired empirically-fitted g(d) at rep paces here). The race edges
 # encode evidence/prediction conservatism policy; this encodes "what a
 # rep day actually demonstrates", and the TQ corpus's accuracy is owned
 # by its own gates (course verification, implausibility ceiling).
-WORKOUT_VMAX_MPS = 8.7
+#
+# Per-profile (Max, June 2026): 8.7 is a sprint cap measured on MAX. The CP3
+# bend only does its job when v_max sits near the runner's true short-effort
+# speed, so applying Max's 8.7 to a slower runner under-deflates their reps
+# and floats the 5K-equivalent (a new runner's all-400 sessions tower over
+# their stale, long-race-anchored CS). No other profile has a sprint corpus,
+# so v_max is sketched as a DIMENSIONLESS multiple of the profile's own CS,
+# the ratio anchored to Max's (8.7, watch-era CS) pair:
+#
+#     v_max(profile) = WORKOUT_VMAX_CS_RATIO · median(profile CS, watch era)
+#
+# Max himself is PINNED at the measured 8.7 (the ratio is calibrated off him;
+# pinning protects the validated value from drift as his CS refits). This is a
+# best-guess transfer, not a measurement — it removes the cross-athlete
+# artifact (a slower runner's ~5.5 m/s cap vs Max's 8.7) but is intentionally
+# a single-digit-s/mi correction; the residual gap of a rapidly-improving
+# runner's workouts over an under-informed CS is real signal, not error. If
+# workouts still tower over races once a profile's race history fills in, the
+# next suspect is RECON_TAU_S (per-person), which we can't yet say.
+WORKOUT_VMAX_MAX = 8.7          # Max's measured cap (watch rep corpus)
+WORKOUT_VMAX_CS_RATIO = 1.67    # = 8.7 / 5.21 (Max's median CS, 2020+);
+                                # recompute after a Max CS refit
+WORKOUT_VMAX_REF_ERA = 2020     # watch-era floor for the reference-CS median
+
+
+@functools.lru_cache(maxsize=None)
+def _profile_ref_cs():
+    """Median cs_mps over the watch era (>= WORKOUT_VMAX_REF_ERA) from the
+    ACTIVE profile's CS summary — the reference fitness the v_max ratio scales.
+    Falls back to the full-history median when no watch-era rows exist, and to
+    None when there is no CS summary at all (no fit yet)."""
+    if not CS_PATH.exists():
+        return None
+    cs = pd.read_csv(CS_PATH, parse_dates=['date'])
+    if cs.empty or 'cs_mps_med' not in cs.columns:
+        return None
+    era = cs[cs['date'].dt.year >= WORKOUT_VMAX_REF_ERA]
+    ref = era if len(era) else cs
+    return float(ref['cs_mps_med'].median())
+
+
+def workout_vmax():
+    """The active profile's CP3 workout-side v_max (m/s).
+
+    Max keeps the measured 8.7; every other profile inherits the dimensionless
+    v_max/CS ratio scaled by its own watch-era CS (see the constant block
+    above). RP_WORKOUT_VMAX overrides for calibration sweeps. Falls back to
+    8.7 when a non-Max profile has no CS fit to scale from (the deflation is
+    skipped upstream in that case anyway)."""
+    env = os.environ.get('RP_WORKOUT_VMAX')
+    if env:
+        return float(env)
+    if os.environ.get('RP_PROFILE', 'max') == 'max':
+        return WORKOUT_VMAX_MAX
+    ref = _profile_ref_cs()
+    return WORKOUT_VMAX_CS_RATIO * ref if ref is not None else WORKOUT_VMAX_MAX
+
+
 # Short-effort anaerobic handling (June 2026, CP3 unification): the former
 # distance-only pace add g(d) = K·(1/d − 1/d0)+ is GONE, replaced by the
 # effort-aware per-rep deflation inside parse_workouts._connected_core —
@@ -292,7 +351,7 @@ def add_cs(df, cs, epoch):
     df['p5k_cs_min'] = np.interp(df['day'], cs['day'].values, cs['p5k_implied_min'].values)
     df['dp_t']       = np.interp(df['day'], cs['day'].values, cs['dp_med'].values)
     dp3 = cp3_dprime(cs['dp_med'].values, cs['cs_mps_med'].values,
-                     WORKOUT_VMAX_MPS)
+                     workout_vmax())
     df['dp3_t']      = np.interp(df['day'], cs['day'].values, dp3)
     df['year']       = df['date'].dt.year
     return df
@@ -308,7 +367,7 @@ def dp3_at_date():
         return None
     cs, epoch = load_cs()
     dp3 = cp3_dprime(cs['dp_med'].values, cs['cs_mps_med'].values,
-                     WORKOUT_VMAX_MPS)
+                     workout_vmax())
     days = cs['day'].to_numpy(float)
 
     def at(dt):
@@ -437,8 +496,8 @@ def project_workouts(cs, epoch):
         w.loc[has, 't_eff'] = (w.loc[has, 't_eff_s']
                                / np.where(w.loc[has, 'xc_corrected'], 1.06, 1.0))
     cs_imp = cp3_implied_cs(w['D_eff'], w['t_eff'], w['dp3_t'],
-                            WORKOUT_VMAX_MPS)
-    w['t_5k_hyp'] = cp3_time(5000.0, cs_imp, w['dp3_t'], WORKOUT_VMAX_MPS)
+                            workout_vmax())
+    w['t_5k_hyp'] = cp3_time(5000.0, cs_imp, w['dp3_t'], workout_vmax())
     w['p5k_min']  = w['t_5k_hyp'] * 1609.344 / 5000 / 60.0
     w['raw_resid'] = (w['p5k_min'] - w['p5k_cs_min']) * 60
     w['category'] = w['type']
@@ -646,9 +705,9 @@ def project_long_runs(cs, epoch):
     # to the paved descent refund, one pass, not iterated.
     t5k_cs = lr['p5k_cs_min'] * 60.0 * 5000.0 / 1609.344
     cs_mps = cp3_implied_cs(5000.0, t5k_cs.to_numpy(), lr['dp3_t'],
-                            WORKOUT_VMAX_MPS)
+                            workout_vmax())
     t_pred = cp3_time(lr['d_m'].to_numpy(float), cs_mps, lr['dp3_t'],
-                      WORKOUT_VMAX_MPS)
+                      workout_vmax())
     lr['effort'] = t_pred / lr['t_run']
     # Refund: effort-aware on paved; terrain-default recovery refund on
     # mixed/trail. Fully numeric (no NaN) so the engine prices every row.
@@ -695,8 +754,8 @@ def project_long_runs(cs, epoch):
                                              / d_thresh),
                     1.0)
     t_eff = t_eff / beta
-    cs_imp = cp3_implied_cs(d_eff, t_eff, lr['dp3_t'], WORKOUT_VMAX_MPS)
-    lr['t_5k_hyp'] = cp3_time(5000.0, cs_imp, lr['dp3_t'], WORKOUT_VMAX_MPS)
+    cs_imp = cp3_implied_cs(d_eff, t_eff, lr['dp3_t'], workout_vmax())
+    lr['t_5k_hyp'] = cp3_time(5000.0, cs_imp, lr['dp3_t'], workout_vmax())
     lr['p5k_min']  = lr['t_5k_hyp'] * 1609.344 / 5000.0 / 60.0
     lr['raw_resid'] = (lr['p5k_min'] - lr['p5k_cs_min']) * 60
     return lr
@@ -846,8 +905,8 @@ def project_hill_continuous(cs, epoch):
 
     h = add_cs(h, cs, epoch)
     cs_imp = cp3_implied_cs(h['d_m'], h['t_eff'], h['dp3_t'],
-                            WORKOUT_VMAX_MPS)
-    h['t_5k_hyp'] = cp3_time(5000.0, cs_imp, h['dp3_t'], WORKOUT_VMAX_MPS)
+                            workout_vmax())
+    h['t_5k_hyp'] = cp3_time(5000.0, cs_imp, h['dp3_t'], workout_vmax())
     h['p5k_min']  = h['t_5k_hyp'] * 1609.344 / 5000.0 / 60.0
     h['raw_resid'] = (h['p5k_min'] - h['p5k_cs_min']) * 60
     # Informational grouping only — corrections come from the hill model
@@ -882,8 +941,8 @@ def project_hill_continuous(cs, epoch):
     h['minetti_factor'] = minetti_net_factor(per_loop_climb, h['loop_distance_m'])
     t_eff_corr = h['t_eff'] / h['minetti_factor']
     cs_imp_corr = cp3_implied_cs(h['d_m'], t_eff_corr, h['dp3_t'],
-                                 WORKOUT_VMAX_MPS)
-    t5k_corr = cp3_time(5000.0, cs_imp_corr, h['dp3_t'], WORKOUT_VMAX_MPS)
+                                 workout_vmax())
+    t5k_corr = cp3_time(5000.0, cs_imp_corr, h['dp3_t'], workout_vmax())
     h['p5k_min_hillcorr'] = t5k_corr * 1609.344 / 5000.0 / 60.0
     h['minetti_resid'] = (h['p5k_min_hillcorr'] - h['p5k_cs_min']) * 60
 

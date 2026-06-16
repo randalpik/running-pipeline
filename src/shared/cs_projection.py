@@ -105,8 +105,9 @@ from scipy.interpolate import CubicSpline
 # scripts/calibrate_vmax.py; re-run after a CS refit.
 #
 # The workout accumulator deliberately does NOT use these edges — its
-# deflation v_max (workouts.WORKOUT_VMAX_MPS) is a measurement calibration
-# anchored to the watch rep corpus, not a conservatism policy.
+# deflation v_max (workouts.workout_vmax()) is a measurement calibration
+# anchored to Max's watch rep corpus (CS-scaled for other profiles), not a
+# conservatism policy.
 #
 # Other profiles: no sprint corpus → symmetric literature-plausible
 # defaults for a trained distance runner.
