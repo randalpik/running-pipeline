@@ -7,15 +7,17 @@ model's [LONG_MIN_MINUTES, LONG_CEIL_MILES) slice — at absolute pace (no
 equivalent half-marathon and marathon paces from the model: how fast a
 given fitness predicts you could run those distances.
 
-Displayed values default to what was LOGGED. The Watch-correction toggle
-swaps distance and pace to the corrected values project_long_runs computed
-(calibrated watch measurements; route-era deflation for pre-watch mislogged
-routes). The Show-tags toggle (off by default — the distance gradient is
-the primary encoding) overlays halo rings: light blue = snow, yellow =
-partner-paced (both excluded from Training, matching the workout/recovery
-exclusion methodology), gray = watch-enriched, red = uncertain accuracy
-(rule-corrected, no watch data), amber = points the TQ fit's MAD prune
-excluded (tooltip carries the residual). Corrections are
+Displayed distance and pace are the WATCH-CORRECTED source of truth that
+project_long_runs computed (calibrated watch measurements; route-era
+deflation for pre-watch mislogged routes); the originally-logged value
+appears in the tooltip as a secondary line only. The Normalize toggle (on
+by default) subtracts route and training-state effects to the equivalent
+flat / sea-level pace. The Show-tags toggle (off by default — the distance
+gradient is the primary encoding) overlays halo rings: light blue = snow,
+yellow = partner-paced (both excluded from Training, matching the
+workout/recovery exclusion methodology), gray = watch-enriched, red =
+uncertain accuracy (rule-corrected, no watch data), amber = points the TQ
+fit's MAD prune excluded (tooltip carries the residual). Corrections are
 display/projection-side only — the log columns are never rewritten.
 
 Marker color encodes distance via a continuous lavender→deep-purple gradient,
@@ -51,7 +53,7 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
 GRADIENT_BOX_WIDTH = 182
 
 
-OUTPUT_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_HTML = str(OUTPUT_DIR / 'long_runs.html')
 _LR_JS = Path(__file__).resolve().parent / 'plot_long_runs.js'
 
@@ -121,10 +123,11 @@ LR_TAG_NOTE = {
 }
 
 
-def long_run_hover(r, watch_mode=False):
-    """Tooltip html for one long run. ``watch_mode`` renders the variant the
-    Watch-correction toggle shows: corrected figures lead, logged move to a
-    secondary line. Uncorrected rows render identically in both modes."""
+def long_run_hover(r):
+    """Tooltip html for one long run. The watch-corrected figures are the
+    displayed source of truth and lead; the originally-logged value moves to
+    a secondary line. Uncorrected rows show only the logged line. Temp is
+    omitted on log-only days (no watch sync → NaN)."""
     title = f"Long run{route_paren(r.get('display_name'), r.get('city_state'))}"
     logged = (f"{r['miles']:.1f} mi @ "
               f"{sec_to_mss(float(r['recovery_pace_sec_per_mi']))}/mi")
@@ -135,10 +138,8 @@ def long_run_hover(r, watch_mode=False):
     pause = ''
     if r.get('lr_watch') and pd.notna(r.get('pause_s')) and r['pause_s'] >= 30:
         pause = f" · {sec_to_mss(float(r['pause_s']))} paused"
-    if watch_mode and has_corr:
+    if has_corr:
         main, alt = corr, f"<b>Logged:</b> {logged}{pause}"
-    elif has_corr:
-        main, alt = logged, f"<b>Corrected:</b> {corr}{pause}"
     else:
         main, alt = logged, ''
     tag = lr_tag(r)
@@ -152,8 +153,9 @@ def long_run_hover(r, watch_mode=False):
     elif tag in LR_TAG_NOTE:
         note = (f'<i style="color:{TAG_COLORS[tag]}">'
                 f'{LR_TAG_NOTE[tag]}</i>')
-    parts = [f"<b>{title}</b>", main, alt,
-             f"<b>Temp:</b> {r['temp_c']:.0f}°C", note]
+    temp = (f"<b>Temp:</b> {r['temp_c']:.0f}°C"
+            if pd.notna(r.get('temp_c')) else '')
+    parts = [f"<b>{title}</b>", main, alt, temp, note]
     return "<br>".join(p for p in parts if p)
 
 
@@ -190,11 +192,14 @@ def main():
 
     pace_min = lr['recovery_pace_sec_per_mi'].astype(float) / 60.0
     miles    = lr['miles'].astype(float)
-    # Watch-corrected display values (NaN where no correction exists). The
-    # color fallback keeps the gradient continuous when the toggle is on.
+    # Watch-corrected values (NaN where no correction exists). These are the
+    # displayed source of truth: display pace/distance fall back to the
+    # logged value only where no correction exists, so the gradient stays
+    # continuous and every run plots.
     corr_pace_min = lr['corr_pace_sec_per_mi'].astype(float) / 60.0
     corr_miles    = lr['corr_miles'].astype(float).fillna(miles)
-    has_corr      = corr_pace_min.notna().any()
+    disp_pace = corr_pace_min.fillna(pace_min)
+    disp_miles = corr_miles
 
     # ---------- normalization (full physical + training-state) ----------
     # Normalize subtracts EVERYTHING project_long_runs / the TQ long-run model
@@ -265,16 +270,25 @@ def main():
     ))
 
     # Long-run markers: single trace, continuous purple gradient by distance.
-    # meta carries both display bases (logged / watch-corrected y and color)
-    # so plot_long_runs.js can swap them without re-deriving anything.
+    # y/color are the watch-corrected display (the source of truth); meta.disp_y
+    # carries that un-normalized base so plot_long_runs.js can re-derive the
+    # Normalize toggle without recomputing. Normalize ships ON, so the initial
+    # y is the normalized base (Python-baked → correct on first paint, no JS
+    # recompute needed; toggling off restores disp_y).
+    disp_base_y = _y_safe(disp_pace.values)
+    if norm_adj is not None:
+        init_y = [None if v is None else v - norm_adj[i] / 60.0
+                  for i, v in enumerate(disp_base_y)]
+    else:
+        init_y = disp_base_y
     cd = [long_run_hover(r) for _, r in lr.iterrows()]
     fig.add_trace(go.Scatter(
-        x=lr['date'], y=_y_safe(pace_min.values),
+        x=lr['date'], y=init_y,
         mode='markers', name=f'Long runs (n={len(lr)})',
         marker=dict(
-            color=miles.values, size=8,
+            color=disp_miles.values, size=8,
             colorscale=LR_GRADIENT,
-            cmin=float(miles.min()), cmax=float(miles.max()),
+            cmin=float(disp_miles.min()), cmax=float(disp_miles.max()),
             showscale=False,
             line=dict(color='rgba(255,255,255,0.4)', width=0.5),
             opacity=0.9,
@@ -283,10 +297,7 @@ def main():
         hoverinfo='skip',
         meta={'role': 'long_runs',
               'snap_eligible': True,
-              'raw_y': _y_safe(pace_min.values),
-              'corr_y': _y_safe(corr_pace_min.values),
-              'raw_color': [round(float(v), 2) for v in miles],
-              'corr_color': [round(float(v), 2) for v in corr_miles]},
+              'disp_y': disp_base_y},
     ))
 
     # Condition-tag halo rings (same construction as the Workouts plot).
@@ -301,7 +312,6 @@ def main():
     tags = [lr_tag(r) for _, r in lr.iterrows()]
     has_tags = any(t for t in tags)
     dates = lr['date'].tolist()
-    raw_y_list = _y_safe(pace_min.values)
     sentinel_x = [pd.Timestamp('1900-01-01')]
     sentinel_y = [6.0]
     for tag, label in LR_TAG_LEGEND.items():
@@ -328,10 +338,11 @@ def main():
     _ys = np.concatenate([
         np.asarray(front_mar_pace_min, dtype=float),
         np.asarray(front_hm_pace_min, dtype=float),
-        np.asarray(pace_min.values, dtype=float),
-        # Corrected paces are slower than logged; include them so the Watch
-        # correction toggle never pushes a point off-axis.
-        np.asarray(corr_pace_min.values, dtype=float),
+        # Displayed (corrected) paces and their normalized values — Normalize
+        # ships ON, and normalized paces run faster, so include both bases so
+        # neither the default view nor toggling pushes a point off-axis.
+        np.asarray(disp_pace.values, dtype=float),
+        np.asarray([np.nan if v is None else v for v in init_y], dtype=float),
     ])
     _ys = _ys[np.isfinite(_ys)]
     _lo, _hi = (float(_ys.min()), float(_ys.max())) if len(_ys) else (4.5, 8.5)
@@ -365,8 +376,8 @@ def main():
     # No native colorbar (showscale=False) since the encoding is
     # "intuitive: bigger = darker"; provide a small textual key by the legend
     # for explicit distance anchors.
-    miles_min_int = int(np.floor(miles.min()))
-    miles_max_int = int(np.ceil(miles.max()))
+    miles_min_int = int(np.floor(disp_miles.min()))
+    miles_max_int = int(np.ceil(disp_miles.max()))
     # Distance gradient strip — three plot-specific bits (gradient colors,
     # min/max labels) are inlined; the panel chrome comes from .rp-sidebar
     # via widgets.sidebar(compact=True).
@@ -380,16 +391,6 @@ def main():
         f'font-size:10.5px;color:#aaa"><span>{miles_min_int}</span>'
         f'<span>{miles_max_int}</span></div>'
     )
-    watch_section = ''
-    if has_corr:
-        watch_section = (
-            widgets.divider()
-            + widgets.checkbox_rows([('watch', 'Watch correction')],
-                                    data_attr='lrwatch', checked=False)
-            + widgets.subtitle('Show corrected distance and pace: calibrated '
-                               'watch measurements, or the mislogged-route '
-                               'deflation where no watch data exists.')
-        )
     tags_section = ''
     if has_tags:
         tags_section = (
@@ -406,12 +407,12 @@ def main():
         norm_section = (
             widgets.divider()
             + widgets.checkbox_rows([('normalize', 'Normalize')],
-                                    data_attr='lrnorm', checked=False)
+                                    data_attr='lrnorm', checked=True)
             + widgets.subtitle('Subtract route and training effects to show the equivalent flat, paved, non-fatigued pace at sea level in good conditions.')
         )
     overlay_html = widgets.sidebar(
         'lr-gradient',
-        body=gradient_bar + watch_section + norm_section + tags_section,
+        body=gradient_bar + norm_section + tags_section,
         compact=True, width_px=GRADIENT_BOX_WIDTH,
     )
     if norm_adj is not None:
@@ -434,9 +435,6 @@ def main():
     for i, (_, r) in enumerate(lr.iterrows()):
         s = {'day': int((r['date'] - js_epoch).days),
              'html': long_run_hover(r)}
-        if pd.notna(r.get('corr_miles')):
-            # Variant shown while the Watch-correction toggle is on.
-            s['whtml'] = long_run_hover(r, watch_mode=True)
         if norm_adj is not None:
             s['adj'] = round(float(norm_adj[i]), 1)
         sessions.append(s)
@@ -515,13 +513,9 @@ function buildTooltip(day, isSnap, pointHtml) {
                          :  dd2 + ' day' + (dd2 === -1 ? '' : 's'));
       html += '<div class="tt-section-title">Nearest long run [' + lbl + ']</div>';
     }
-    // Watch-correction toggle swaps in the corrected-variant html. Snap
-    // mode's pointHtml is the raw variant baked into customdata, so prefer
-    // the session lookup whenever the toggle is on and a variant exists.
-    var runHtml = run && window.__lrWatchOn && run.whtml ? run.whtml
-                : (run ? run.html : null);
-    html += (isSnap && pointHtml && !(run && window.__lrWatchOn && run.whtml)
-             ? pointHtml : runHtml);
+    // Watch-corrected figures are the displayed source of truth and are
+    // baked into both the snap-mode pointHtml (customdata) and run.html.
+    html += (isSnap && pointHtml ? pointHtml : (run ? run.html : ''));
     if (window.__lrNormOn && run && run.adj != null) {
       // Shift applied to the point by the Normalize toggle: y = raw − adj.
       // One decimal: adjustments are small (often < 5 s/mi), whole seconds

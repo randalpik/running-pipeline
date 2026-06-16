@@ -77,12 +77,12 @@ load + combine
   → apply_autopop
   → surface refresh        (re-call surface_from_location after autopop)
   → join_location_metadata
-  → apply_historical       (city_state always; location only where blank)
+  → apply_historical       (city_state always; location last-wins among historical entries, never over parser routes)
   → race city_state/surface back-prop into daily race rows
   → synthesize_daily_from_additions  (pre-2016 race-only daily stubs)
 ```
 
-Autopop runs **after** adjustments so event-normalization can match events that were set via the changes sheet. Adjustment-sourced surfaces are preserved during the surface refresh. The historical override fills `location` only where it's currently blank so freeze-time hill-loop synthesis (`powerline west`, `rollercoaster`, …) survives the catch-all entry. Synthesize runs last so its rows pick up the same canonical city_state/surface as `races.csv`.
+Autopop runs **after** adjustments so event-normalization can match events that were set via the changes sheet. Adjustment-sourced surfaces are preserved during the surface refresh. The historical override fills `location` where it's blank OR where an earlier historical entry set it (last-wins among historical entries, so a narrow trip entry like `Nashville`/`Geneva` overrides the broad `2016-17 → education hill` catch-all within its window) — but never over a parser-set route, so freeze-time hill-loop synthesis (`powerline west`, `rollercoaster`, …) survives. Synthesize runs last so its rows pick up the same canonical city_state/surface as `races.csv`.
 
 ## Race classification rules
 
@@ -119,7 +119,7 @@ Matchers: `event_contains`, `event_endswith`, `event_regex`. Targets: `infer_loc
 
 Single CSV with `# section: NAME key=val` markers between seven blocks: `current_log` (year=YYYY), `changes`, `additions`, `locations`, `hills`, `coordinates`, `historical`. Read with `snapshot.read_snapshot()`.
 
-`historical` schema: `city_state, min_hist, max_hist, log_location` (last column optional). Two roles: (a) seed cities on the world map that have no daily rows (Sapporo, JP); (b) override `city_state` (always) and `location` (only when blank) on non-race daily rows whose dates fall in the range. Multiple rows per city express disjoint visit windows; entries are applied in row order with last-wins on overlapping ranges. This replaces the legacy date-range branch of `infer_2016_2017_location`.
+`historical` schema: `city_state, min_hist, max_hist, log_location` (last column optional). Two roles: (a) seed cities on the world map that have no daily rows (Sapporo, JP); (b) override `city_state` (always) and `location` (where blank, or where a prior historical entry set it — never over a parser-set route) on non-race daily rows whose dates fall in the range. Multiple rows per city express disjoint visit windows; entries are applied in row order with last-wins on overlapping ranges (for both `city_state` and `log_location`). This replaces the legacy date-range branch of `infer_2016_2017_location`.
 
 `coordinates` schema: `city_state, latitude, longitude` — overrides applied on top of the Nominatim cache so geocoding fixes are reproducible from source.
 

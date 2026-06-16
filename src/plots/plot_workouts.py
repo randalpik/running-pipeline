@@ -38,7 +38,7 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             yearly_x_axis_kwargs, nice_time_ticks)
 
 
-OUTPUT_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_HTML    = str(OUTPUT_DIR / 'workouts.html')
 TRACK_CSV   = DATA_DIR / 'training_quality_track.csv'
 HILL_MODEL_CSV = DATA_DIR / 'hill_model.csv'
@@ -152,12 +152,13 @@ def workout_hover(r, single_type=False):
     p5k_disp = r.get('p5k_display_min', r['p5k_min'])
     p5k_line = (f"<b>5K-equiv:</b> {fmt_min(p5k_disp)}/mi   "
                 f"<b>CS 5K:</b> {fmt_min(r['p5k_cs_min'])}/mi")
-    temp_line = f"<b>Temp:</b> {r['temp_c']:.0f}°C"
+    temp_line = (f"<b>Temp:</b> {r['temp_c']:.0f}°C"
+                 if pd.notna(r.get('temp_c')) else '')
     parts = [f"{title}{xc_note}", body, temp_line, p5k_line]
     excl = r.get('tq_excluded_line')
     if isinstance(excl, str) and excl:
         parts.append(excl)
-    return "<br>".join(parts)
+    return "<br>".join(p for p in parts if p)
 
 
 def excluded_line(note, reason=None):
@@ -189,13 +190,17 @@ def hill_cont_hover(r):
     measured = r.get('hill_measured_line')
     if isinstance(measured, str) and measured:
         body += f"<br>{measured}"
+    temp_line = (f"<b>Temp:</b> {r['temp_c']:.0f}°C"
+                 if pd.notna(r.get('temp_c')) else '')
     parts = [
-        title,
-        body,
-        f"<b>Temp:</b> {r['temp_c']:.0f}°C",
-        f"<b>Actual pace:</b> {sec_to_mss(r['actual_pace_s'])}/mi",
-        f"<b>5K-equiv:</b> {fmt_min(r['p5k_display_min'])}/mi   "
-        f"<b>CS 5K:</b> {fmt_min(r['p5k_cs_min'])}/mi",
+        p for p in [
+            title,
+            body,
+            temp_line,
+            f"<b>Actual pace:</b> {sec_to_mss(r['actual_pace_s'])}/mi",
+            f"<b>5K-equiv:</b> {fmt_min(r['p5k_display_min'])}/mi   "
+            f"<b>CS 5K:</b> {fmt_min(r['p5k_cs_min'])}/mi",
+        ] if p
     ]
     # Exclusion tags, same convention as flat workouts: category flags come
     # straight off excluded_reason; Training's prunes (outlier / easy
@@ -226,8 +231,9 @@ def hill_rep_hover(r):
     elev = r.get('total_elev_ft')
     if pd.notna(elev):
         body += f", {int(round(float(elev)))} ft gained"
-    temp_line = f"<b>Temp:</b> {r['temp_c']:.0f}°C"
-    parts = [title, body, temp_line]
+    temp_line = (f"<b>Temp:</b> {r['temp_c']:.0f}°C"
+                 if pd.notna(r.get('temp_c')) else '')
+    parts = [p for p in [title, body, temp_line] if p]
     # Hill reps never feed Training (no CS projection), so the snow tag is a
     # plain condition note rather than an exclusion line.
     if r.get('excluded_reason') == 'snow':

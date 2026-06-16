@@ -24,8 +24,8 @@ from datetime import date
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, DEBUG_DIR
 from src.shared.cs_projection import cp3_implied_cs
-from src.shared.workouts import (RECON_TAU_S, WORKOUT_VMAX_MPS, dp3_at_date,
-                                 watch_log_demotions)
+from src.shared.workouts import (RECON_TAU_S, dp3_at_date, watch_log_demotions,
+                                 workout_vmax)
 
 MILE_M = 1609.344
 
@@ -180,7 +180,7 @@ def _connected_core(dists, times, rests, dp3=None):
     if dp3 is None or len(dists) < 2:
         return d_eff, d_eff * t_total / dists.sum()
 
-    vmax = WORKOUT_VMAX_MPS
+    vmax = workout_vmax()
     v = dists / times                                    # per-rep speeds
     t_corr = times.copy()
     for _ in range(20):

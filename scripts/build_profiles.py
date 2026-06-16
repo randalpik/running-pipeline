@@ -218,6 +218,14 @@ def _race_additions(cfg):
 
 
 def build_plots(profile, env, *, strict):
+    # Ensure the (possibly nested) profile output dir exists before any plot
+    # runs. A non-default profile writes to output/profiles/<id>/, whose parent
+    # output/profiles/ doesn't exist on a fresh checkout — and the first plot
+    # (plot_training_quality) creates OUTPUT_DIR without parents, so it would
+    # FileNotFoundError and, via run_plots.sh --keep-going, silently drop the
+    # Training tab (and Workouts with it, since plot_workouts needs TQ's track
+    # CSV). Creating it here guarantees the dir regardless of plot order.
+    profile.output_dir.mkdir(parents=True, exist_ok=True)
     cmd = ["./scripts/run_plots.sh", "--no-shell"]
     if not strict:
         cmd.append("--keep-going")

@@ -384,12 +384,12 @@ def _invert_projection(make_efforts, t5k_target, dp3, lo=200.0, hi=600.0):
     June 2026: 'I assumed those were aligned'). Bisection; the projection
     is monotone in pace."""
     def t5k_of(pace):
-        from src.shared.workouts import WORKOUT_VMAX_MPS
+        from src.shared.workouts import workout_vmax
         d_eff, t_eff = make_efforts(pace)
         return float(cp3_time(5000.0,
                               cp3_implied_cs(d_eff, t_eff, dp3,
-                                             WORKOUT_VMAX_MPS),
-                              dp3, WORKOUT_VMAX_MPS))
+                                             workout_vmax()),
+                              dp3, workout_vmax()))
     for _ in range(60):
         mid = (lo + hi) / 2
         if t5k_of(mid) < t5k_target:
@@ -409,12 +409,12 @@ def compute_workout_predictions(daily_summary, front_med,
     predicted pace would plot exactly ON the frontier. No empirical
     residual offsets anywhere."""
     from src.parsers.parse_workouts import _connected_core, _cf_structure
-    from src.shared.workouts import WORKOUT_VMAX_MPS
+    from src.shared.workouts import workout_vmax
     latest = daily_summary.iloc[-1]
     # Workout predictions invert the TQ corpus machinery, so they use the
     # WORKOUT-side v_max/D′₃ (a measurement calibration), not the race edges.
     dp3 = float(cp3_dprime(latest['dp_med'], latest['cs_mps_med'],
-                           WORKOUT_VMAX_MPS))
+                           workout_vmax()))
     t5k_front = (float(front_med['frontier_pace_min'].iloc[-1])
                  * 60.0 * 5000.0 / 1609.344)
 
@@ -634,7 +634,7 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
 
 # ----- main -----
 def main():
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     now_utc = dt.datetime.now(dt.timezone.utc)
 
     daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])

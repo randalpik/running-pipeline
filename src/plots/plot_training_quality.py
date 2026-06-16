@@ -49,7 +49,7 @@ _PLOTS_DIR = Path(__file__).resolve().parent
 _TQ_JS = _PLOTS_DIR / 'plot_training_quality.js'
 
 
-OUTPUT_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_HTML = str(OUTPUT_DIR / 'training_quality.html')
 TRACK_CSV = DATA_DIR / 'training_quality_track.csv'
 
@@ -146,6 +146,17 @@ def workout_hover(r, single_type=False):
         body = f"{rep_count} × {rep_dist}m @ {sec_to_mss(pace)}/mi"
     if pd.notna(r['rest_per_mile']) and r['rest_per_mile'] > 0:
         body += f", rest {sec_to_mss(r['rest_per_mile'])}/mi"
+    # Watch-measured rep decomposition (parity with the Workouts plot): the
+    # per-rep "Watch:" line — the actual extracted reps for watch-only days,
+    # where the structure headline above is only the synthesized summary.
+    measured = r.get('measured_line')
+    if isinstance(measured, str) and measured:
+        body += f"<br>{measured}"
+        wpr, qp = r.get('watch_pace_raw'), r.get('pace_per_mile')
+        if pd.notna(wpr) and pd.notna(qp) and wpr > 0:
+            pct = (qp / wpr - 1.0) * 100.0
+            if abs(pct) >= 0.05:
+                body += f"<br><b>Watch adj:</b> {pct:+.1f}%"
     parts = [
         f"<b>{title}</b>{xc_note}",
         body,
@@ -235,6 +246,15 @@ def main():
     workouts  = workouts[workouts['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
     long_runs = long_runs[long_runs['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
     hills     = hills[hills['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
+
+    # Watch-measured rep decomposition for the workout hover (parity with the
+    # Workouts plot). measured_lines() already skips mismatch-demoted dates, and
+    # we attach AFTER the exclusion drop, so no rejected day gets a Watch line.
+    from src.plots.plot_workouts import measured_lines
+    _mlines = measured_lines()
+    if _mlines:
+        workouts['measured_line'] = (
+            workouts['date'].dt.date.astype(str).map(_mlines))
 
     # Long-run model, WITHOUT its intercept (Max, June 2026): the projection
     # itself is race-equivalent (β_long un-bias + watch/rule corrections in

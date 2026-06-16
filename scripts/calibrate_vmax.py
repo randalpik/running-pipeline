@@ -15,7 +15,7 @@ the profile's own corpus and audits Max's two hard invariants:
 The frontier is the standard demo set (time ≥ 120 s — 800s included and
 allowed to bind; Max, June 2026). The evidence envelope is solved on the
 400 corpus, the only shorts that are NOT demos, so the solve is not
-circular. The workout accumulator's v_max (workouts.WORKOUT_VMAX_MPS) is
+circular. The workout accumulator's v_max (workouts.workout_vmax()) is
 a separate measurement calibration and is NOT derived here.
 
 Usage: python scripts/calibrate_vmax.py     (uses data/ artifacts)

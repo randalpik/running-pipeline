@@ -11,10 +11,15 @@
 // Hidden points get y=null + opacity=0 so hover hit-testing skips them
 // AND the rolling-mean trend ignores them.
 (function () {
-  // ORDER MUST MATCH customdata channel order in Python
+  // ORDER MUST MATCH customdata channel order in Python (channels 0-7)
   var FACTOR_ORDER = ['temp', 'elevation', 'terrain', 'altitude',
                       'recent_effort', 'time_of_day', 'era', 'wind'];
   var ERA_INDEX = FACTOR_ORDER.indexOf('era');
+  // Channel 8: mixed/trail descent-braking refund — an elevation×terrain
+  // interaction with no checkbox of its own. Applied only when BOTH the
+  // Elevation and Terrain toggles are on (it exists only because a route
+  // both descends and is rough, so normalizing it requires removing both).
+  var TERRAIN_DESCENT_INDEX = 8;
 
   var TREND_SIGMA_MS = window.__PLOT_TREND_SIGMA_DAYS * 86400000;
   var TREND_TRUNC_MS = 4 * TREND_SIGMA_MS;  // truncate kernel at 4σ
@@ -117,6 +122,11 @@
           adjPace += c[j];
           adjResid += c[j];
         }
+      }
+      // Descent-braking refund: gated on Elevation AND Terrain both on.
+      if (checked['elevation'] && checked['terrain']) {
+        adjPace += c[TERRAIN_DESCENT_INDEX];
+        adjResid += c[TERRAIN_DESCENT_INDEX];
       }
       newPace[i] = rawPace[i] - adjPace;
       newResid[i] = rawResid[i] - adjResid;

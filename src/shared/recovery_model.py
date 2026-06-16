@@ -1187,23 +1187,30 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
     # Wind cost (s/mi); 0 where no watch wind reading exists or on calm days.
     rec['contrib_wind'] = wind_off
 
-    # Physical route cost, split into 3 independently-toggleable channels:
+    # Physical route cost, split into independently-toggleable channels:
     #   elevation = NET grade at the paved/full-refund baseline,
     #               c_up·(gain−loss) — ZERO for loops, net up/down for
     #               point-to-point.
-    #   terrain   = paved-vs-not: flat-footing (is_offroad β) + the refund
-    #               asymmetry (elev_cost − paved-equivalent) — zero on paved,
-    #               the mixed downhill-braking penalty (scales with descent)
-    #               on mixed/trail.
+    #   terrain   = paved-vs-not FLAT-footing (is_offroad β) — zero on paved,
+    #               the flat surface penalty on mixed/trail.
+    #   terrain_descent = the refund asymmetry (elev_cost − paved-equivalent):
+    #               the mixed/trail downhill-braking penalty, which SCALES with
+    #               descent. It's an elevation×terrain interaction — it exists
+    #               only because the route both descends AND is rough — so it is
+    #               applied only when BOTH the Elevation and Terrain toggles are
+    #               on (gated in make_recovery_plots.js), not as its own
+    #               checkbox. Folded into contrib_route below so the pinned
+    #               physical offset (wind_beta target) stays complete.
     #   altitude  = the altitude penalty.
     paved_equiv = elevation_cost(rec['elev_gain_pm'].fillna(0).to_numpy(),
                                  rec['elev_loss_pm'].fillna(0).to_numpy(),
                                  np.full(len(rec), 'paved'))
     rec['contrib_elevation'] = paved_equiv
-    rec['contrib_terrain'] = ((rec['elev_cost'].to_numpy() - paved_equiv)
-                              + betas['is_offroad'] * rec['is_offroad'].fillna(0))
+    rec['contrib_terrain'] = betas['is_offroad'] * rec['is_offroad'].fillna(0)
+    rec['contrib_terrain_descent'] = rec['elev_cost'].to_numpy() - paved_equiv
     rec['contrib_altitude'] = betas['alt_kft'] * rec['alt_kft'].fillna(0)
     rec['contrib_route'] = (rec['contrib_elevation'] + rec['contrib_terrain']
+                            + rec['contrib_terrain_descent']
                             + rec['contrib_altitude'])
 
     # Era contribution centered on global mean
