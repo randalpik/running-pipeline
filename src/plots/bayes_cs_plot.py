@@ -523,7 +523,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         title_slug=f'cs_timeline{suffix}',
         page_title='CS fitness',
         title='Fitness trend as Critical Speed over time',
-        subtitle='Posterior median and credible-interval ribbons from Bayesian latent-process model analysis',
+        subtitle='Posterior median and 5K prediction from Bayesian latent-process model analysis, compared to actual performance',
         cursor_tooltip=CursorTooltip(
             payload=payload,
             build_js=build_js,

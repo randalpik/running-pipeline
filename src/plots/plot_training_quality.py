@@ -1020,8 +1020,8 @@ function buildTooltip(day, isSnap, pointHtml) {
         fig, OUT_HTML,
         title_slug='training_quality',
         page_title='Training quality',
-        title='Training quality vs. observed race fitness',
-        subtitle='5K fitness trend across normalized training data compared to race-derived baseline',
+        title='Training quality vs. observed fitness',
+        subtitle='5K fitness trend across normalized training data compared to performance-derived baseline and frontier',
         cursor_tooltip=CursorTooltip(
             payload=payload,
             build_js=build_js,

@@ -46,9 +46,8 @@ import numpy as np
 import pandas as pd
 
 from src.shared.paths import DATA_DIR
-from src.shared.cs_projection import (_beta_long_factor, cp3_implied_cs,
-                                      cp3_time, project_races_to_5k_pace,
-                                      vmax_predict)
+from src.shared.cs_projection import (project_races_to_5k_pace,
+                                      pace5k_series_to_anchor)
 
 # FORWARD: first-order relaxation into the floor — excess decays at a rate
 # proportional to its current distance from the reference line. tau from
@@ -160,13 +159,8 @@ def frontier_at_anchor(frontier, daily_summary, anchor_m, beta_long, d_thresh):
     prediction-edge v_max (conservative-low: short anchors never get a
     time faster than the demonstrated capability warrants).
     """
-    vmax = vmax_predict()
-    dp3 = daily_summary['dp3_pred_med'].to_numpy(float)
-    t5k_f = (frontier['frontier_pace_min'].to_numpy(float)
-             * 60.0 * 5000.0 / 1609.344)
-    cs_mps_f = cp3_implied_cs(5000.0, t5k_f, dp3, vmax)
-    beta_anchor = _beta_long_factor(anchor_m, beta_long, d_thresh)
-    return cp3_time(anchor_m, cs_mps_f, dp3, vmax) * beta_anchor
+    return pace5k_series_to_anchor(frontier['frontier_pace_min'].to_numpy(float),
+                                   daily_summary, anchor_m, beta_long, d_thresh)
 
 
 def build_frontier_band(demos, grid_dates, daily_summary):

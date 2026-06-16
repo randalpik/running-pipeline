@@ -1069,7 +1069,7 @@ def main():
         title_slug='qualitative_trends',
         page_title='Misc. Trends',
         title='Miscellaneous Trends',
-        subtitle='Weather &amp; training conditions — moving-average trends '
+        subtitle='Weather and other daily conditions as moving-average trends '
                  'with rolling min-max envelopes',
         overlay_html=toggle + '\n' + globals_html + '\n' + insets,
         overlay_js_files=[str(sib)],

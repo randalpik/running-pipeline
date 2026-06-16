@@ -398,6 +398,27 @@ def cs_line_at_anchor(daily_summary, anchor_dist_m, beta_long, d_thresh_long):
                     vmax_predict()) * beta_anchor
 
 
+def pace5k_series_to_anchor(p5k_min, daily_summary, anchor_dist_m,
+                            beta_long, d_thresh_long):
+    """Project an arbitrary 5K-equivalent pace series (min/mi, aligned to
+    daily_summary) to total time (s) at anchor_dist_m via the CP3
+    prediction-edge curve: back out the implied CS at each date from the 5K
+    pace against D′₃(date), then forward-solve the anchor time with the
+    β_long factor.
+
+    Generalizes cs_line_at_anchor to any 5K-pace floor (e.g. the blended
+    hiatus-floor + CS-implied line the race plots draw). For a pace series
+    that equals the model's own p5k_implied_min, the result matches
+    cs_line_at_anchor exactly (the D′₃ bridge preserves the 5K solve).
+    Forward direction → prediction edge."""
+    vmax = vmax_predict()
+    dp3 = daily_summary['dp3_pred_med'].to_numpy(float)
+    t5k = np.asarray(p5k_min, float) * 60.0 * 5000.0 / 1609.344
+    cs_mps = cp3_implied_cs(5000.0, t5k, dp3, vmax)
+    beta_anchor = _beta_long_factor(anchor_dist_m, beta_long, d_thresh_long)
+    return cp3_time(anchor_dist_m, cs_mps, dp3, vmax) * beta_anchor
+
+
 def cubic_at_anchor(daily_summary, cubic_coefs, t0, handdrawn_start, handdrawn_end,
                      anchor_dist_m, beta_long, d_thresh_long):
     """Convert a hand-drawn 5K-equiv pace cubic into time at anchor_dist_m.
