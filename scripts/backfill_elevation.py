@@ -137,16 +137,18 @@ def augment_race_dem(meas, races, ids_by_date, sleep_s):
     return n
 
 
-def augment_long_dem(meas, ids_by_date):
-    """Fill DEM gain/loss/net/mean for long-run rows from the day's pooled GPS
-    track (see dem_elevation.measure_run_elevation). Long runs are loops, so the
-    barometric net carries a phantom morning-drift descent that DEM removes —
-    same fix as races, applied to the whole-day run rather than a single
-    race activity. Idempotent: only rows missing dem_gain_ft are computed, so a
-    re-run is a cheap cache-served top-up. Returns the count newly computed."""
+def augment_run_dem(meas, ids_by_date, run_type):
+    """Fill DEM gain/loss/net/mean for ``run_type`` (long/recovery) rows from the
+    day's pooled GPS track (see dem_elevation.measure_run_elevation). Training
+    runs are loops, so the barometric net carries a phantom morning-drift descent
+    that DEM removes — same fix as races, applied to the whole-day run rather than
+    a single race activity. GPS-corrupt days (false fix / dead-zone) return no DEM
+    via the track-quality gate and stay on barometric. Idempotent: only rows
+    missing dem_gain_ft are computed, so a re-run is a cheap cache-served top-up.
+    Returns the count newly computed."""
     if 'run_type' not in meas.columns:
         return 0
-    need = meas[(meas['run_type'] == 'long') & meas['dem_gain_ft'].isna()]
+    need = meas[(meas['run_type'] == run_type) & meas['dem_gain_ft'].isna()]
     if need.empty:
         return 0
     cache = DEM._load_cache()
@@ -171,6 +173,35 @@ def augment_long_dem(meas, ids_by_date):
             meas.at[i, k] = v
         n += 1
     DEM._save_cache(cache)
+    return n
+
+
+def regate_dem(meas, ids_by_date):
+    """Clear dem_* on long/recovery days whose pooled GPS track now fails the
+    quality gates (dem_elevation.track_ok) — chiefly rows filled before the gate
+    existed. The day falls back to barometric in per_run_elevation. Cheap:
+    track_ok is stream arithmetic, no DEM recompute. (Races re-gate through
+    augment_race_dem's gated measurement.) Returns the count cleared."""
+    if 'dem_gain_ft' not in meas.columns or 'run_type' not in meas.columns:
+        return 0
+    cols = ['dem_gain_ft', 'dem_loss_ft', 'dem_net_ft', 'dem_mean_elev_ft',
+            'dem_n_pts']
+    tgt = meas[meas['run_type'].isin(['long', 'recovery'])
+               & meas['dem_gain_ft'].notna()]
+    n = 0
+    for i, row in tgt.iterrows():
+        recs = []
+        for lid in ids_by_date.get(row['date'], []):
+            p = DETAILS / f'{lid}.json'
+            if p.exists():
+                rec = json.loads(p.read_text())
+                if rec.get('rich') == 2:
+                    recs.append(rec)
+        if recs and any(not DEM.track_ok(rec) for rec in recs):
+            for c in cols:
+                if c in meas.columns:
+                    meas.at[i, c] = float('nan')
+            n += 1
     return n
 
 
@@ -276,10 +307,16 @@ def main():
         n_dem = augment_race_dem(meas, races, ids_by_date, args.sleep)
         print(f"[elevation] DEM race-elevation: {n_dem} newly computed "
               f"(GPS-track lookup; barometric net is per-race noise)")
-    if 'long' in types and len(meas):
-        n_dem = augment_long_dem(meas, ids_by_date)
-        print(f"[elevation] DEM long-run elevation: {n_dem} newly computed "
-              f"(GPS-track lookup; barometric net is morning-drift phantom)")
+    for rt in ('long', 'recovery'):
+        if rt in types and len(meas):
+            n_dem = augment_run_dem(meas, ids_by_date, rt)
+            print(f"[elevation] DEM {rt}-run elevation: {n_dem} newly computed "
+                  f"(GPS-track lookup; barometric net is morning-drift phantom)")
+    if len(meas):
+        n_clr = regate_dem(meas, ids_by_date)
+        if n_clr:
+            print(f"[elevation] DEM re-gate: cleared {n_clr} GPS-corrupt "
+                  f"long/recovery days (fall back to barometric)")
     if len(meas):
         meas = meas.sort_values('date').reset_index(drop=True)
         meas.to_csv(MEAS_OUT, index=False)

@@ -601,19 +601,19 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
   <div class="dash-main">
 
     <section class="dash-section" id="sec-stats">
-      <h2 title="Training streak and lifetime / projected mileage totals.">Stats</h2>
+      <h2>Stats</h2>
       <div class="kv">
 {stats_html}
       </div>
     </section>
 
     <section class="dash-section" id="sec-prs">
-      <h2 title="Fastest verified time at each distance (best per-mile pace).">Personal Records</h2>
+      <h2 title="Fastest time at each distance in an official race.">Personal Records</h2>
       <table class="dash">
         <thead><tr>
           <th>Distance</th>
-          <th class="num" title="Personal record — fastest verified time at this distance.">PR</th>
-          <th class="num" title="Date the PR was set.">Date</th>
+          <th class="num">PR</th>
+          <th class="num">Date</th>
           <th>Event</th><th>Location</th>
         </tr></thead>
         <tbody>
@@ -627,7 +627,7 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
       <table class="dash">
         <thead><tr>
           <th>Distance</th>
-          <th class="num" title="Predicted time, read directly off the current performance frontier.">Prediction</th>
+          <th class="num">Prediction</th>
           <th class="num" title="95% credible interval (±), the frontier swept across the CS uncertainty band.">95% CrI</th>
         </tr></thead>
         <tbody>
