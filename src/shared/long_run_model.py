@@ -199,11 +199,20 @@ def fit_long_run_model(lr_in, quality_dates=None, fatigue_ratio=None):
     if quality_dates is None:
         quality_dates = load_quality_dates()
     lr_in = add_quality_features(lr_in, quality_dates)
-    # Missing temp = reference temp (contribution 0) so no row drops out of
-    # the fit for lacking a thermometer reading. Apparent ("feels-like") temp —
-    # humidity folded in via the heat index, matching the recovery encoding the
-    # temp beta was fit on (felt-°C units).
+    # One-sided heat hinge max(0, air_temp − 6C) — the SAME shape recovery
+    # uses, with a free (steeper) slope here: heat hurts long efforts ~1.7x,
+    # and the warm-side penalty is drift-stable while the old symmetric form's
+    # cold arm was a fitness-season confound. Missing temp -> 0 contribution so
+    # no row drops for lacking a thermometer reading.
     lr_in['temp_centered'] = temp_centered_feature(lr_in).fillna(0.0)
+    # Center on the median hinge (typical-day reference, like wind and the
+    # recovery model) so the temperature ADJUSTMENT is symmetric around a
+    # normal day rather than one-directional off the cold floor. The slope is
+    # unchanged (centering shifts only the intercept). TQ does not apply the
+    # intercept, so this re-references the displayed long-run level to a typical
+    # day; the internal ``corrected`` value is invariant.
+    temp_ref = float(lr_in['temp_centered'].median())
+    lr_in['temp_centered'] = lr_in['temp_centered'] - temp_ref
     # Combined race-fatigue regressor: one fitted scale, marathon/short
     # contrast pinned from the recovery fit (see module docstring).
     if fatigue_ratio is None:
@@ -289,5 +298,6 @@ def fit_long_run_model(lr_in, quality_dates=None, fatigue_ratio=None):
         rsquared=1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan'),
         resid_sd=float(np.sqrt(ss_res / (n_kept - p))) if n_kept > p else float('nan'),
         n_kept=n_kept,
+        temp_ref=temp_ref,
     )
     return lr_in, fit, qualifying_routes

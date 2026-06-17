@@ -224,7 +224,8 @@ def main():
     if len(lr_in) >= MIN_COV_N:
         quality_dates = load_quality_dates()
         _, lr_fit, _ = fit_long_run_model(lr_in.copy(), quality_dates)
-        state_adj = (transferable_contributions(lr, lr_fit.cov_coefs, quality_dates)
+        state_adj = (transferable_contributions(lr, lr_fit.cov_coefs, quality_dates,
+                                                 lr_fit.temp_ref)
                      if lr_fit.cov_coefs else np.zeros(len(lr)))
         adj = phys_adj + state_adj
         # Omit a dead checkbox (profile where every adjustment is ~0).
@@ -398,10 +399,6 @@ def main():
             widgets.divider()
             + widgets.checkbox_rows([('tags', 'Show tags')],
                                     data_attr='lrtags', checked=False)
-            + widgets.subtitle('Halo rings: snow and partner-paced runs '
-                               '(excluded from Training), watch-enriched, '
-                               'mislogged-route corrections, and points the '
-                               'Training fit pruned as outliers.')
         )
     norm_section = ''
     if norm_adj is not None:

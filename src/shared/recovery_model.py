@@ -8,17 +8,21 @@ be stale or missing — an import is build-order-independent. Same precedent as
 
 Model (fit on the era-detrended residual = pace − CS − era_trend):
 
-  residual_detrended ~ β_temp · temp_centered
+  residual_detrended ~ β_temp · temp_heat_hinge
                      + β_marathon · fatigue_marathon
                      + β_race    · fatigue_race_short
                      + β_tod     · tod_is_pm
                      + (pinned) is_offroad·β + alt_kft·β + grade-aware elev_cost
                      + (pinned) wind_mph · β_wind
 
-``temp_centered`` is APPARENT ("feels-like") temperature — humidity folded in
-via the NWS heat index (``temp_centered_feature`` / ``apparent_temp_c``),
-centered at TEMP_REFERENCE_C. Below 80°F and where humidity is missing it is
-plain air temp, so humidity only moves hot-humid days. Wind enters as a pooled,
+The temperature term (``temp_centered_feature``, key still ``temp_centered``)
+is a one-sided heat hinge ``max(0, air_temp − TEMP_HEAT_ONSET_C)``: cold
+contributes zero, only heat above ~6°C slows pace. It replaced a symmetric
+apparent-temp-centered-at-12 term (June 2026) whose sub-12°C arm credited a
+phantom cold speedup mirroring the heat penalty. Long runs reuse the same SHAPE
+with a free (steeper) slope. Humidity was tested as a separate regressor and
+dropped — weak, and the heat index (its physical encoding) never beat plain air
+temp, so this is air temperature, not feels-like. Wind enters as a pooled,
 pinned per-mph cost (``wind_beta``) applied where a watch wind reading exists —
 both estimated on the watch-enriched subset but applied as fixed offsets so the
 main fit keeps the full corpus (June 2026).
@@ -96,6 +100,11 @@ OUTLIER_MIN_NEIGHBORS      = 5
 
 # ---------- model parameters ----------
 TEMP_REFERENCE_C       = 12.0
+# Heat-onset threshold for the one-sided temperature hinge (June 2026). Below
+# this, temperature contributes zero; above it, a heat penalty accrues. Pinned
+# from 2356 well-normalized recovery runs (flat cold plateau, monotonic rise
+# from ~6C). Recovery and long runs share this SHAPE; only the slope differs.
+TEMP_HEAT_ONSET_C      = 6.0
 # Wind enters as a pooled, pinned per-mph cost (wind_beta) applied symmetrically
 # around the MEDIAN observed recovery wind (wind_reference_mph): unlogged days
 # are filled with that median (a neutral, zero-offset assumption — not dead
@@ -151,19 +160,28 @@ def apparent_temp_c(temp_c, humidity_pct):
 
 
 def temp_centered_feature(df):
-    """Apparent-temperature feature centered at ``TEMP_REFERENCE_C``.
+    """One-sided heat hinge: ``max(0, air_temp_C - TEMP_HEAT_ONSET_C)``.
 
-    The single place temperature is encoded for the model — humidity is folded
-    in here via the heat index, so every consumer (recovery fit, transferable
-    contributions, the physical-betas pool, the long-run model) sees felt
-    temperature in one consistent unit. Preserves NaN where ``temp_c`` is NaN;
-    callers apply ``.fillna(0)`` where they want a zero contribution.
+    The single place temperature is encoded for the model — every consumer
+    (recovery fit, transferable contributions, the physical-betas pool, the
+    long-run model) sees the same one-sided heat term, so recovery and long
+    runs share the SHAPE and differ only in fitted slope.
+
+    Replaced the old symmetric apparent-temp-centered-at-12 form (June 2026).
+    That form was bidirectional: every sub-12C day was credited with a speedup
+    mirroring the heat penalty — a phantom cold benefit (it predicted ~-8 s/mi
+    at -19C where the data is a flat ~-2). The true recovery shape is a flat
+    cold plateau and a monotonic heat rise from ~6C, pinned from 2356
+    well-normalized runs. Humidity was tested as a separate term and dropped
+    (weak, undefendable; the heat index — its physical encoding — never beat
+    plain air temp), so this is air temperature, not feels-like.
+
+    Preserves NaN where ``temp_c`` is NaN; callers ``.fillna(0)`` for a zero
+    (sub-onset) contribution. The column/key name ``temp_centered`` is retained
+    to limit churn — it is now a hinge, not a centered value.
     """
-    appt = apparent_temp_c(
-        df['temp_c'].to_numpy(dtype=float),
-        df['humidity_pct'].to_numpy(dtype=float)
-        if 'humidity_pct' in df.columns else None)
-    return pd.Series(appt, index=df.index) - TEMP_REFERENCE_C
+    t = pd.to_numeric(df['temp_c'], errors='coerce').to_numpy(dtype=float)
+    return pd.Series(np.maximum(0.0, t - TEMP_HEAT_ONSET_C), index=df.index)
 
 
 # ---------- watch / route-rule distance corrections ----------
@@ -691,17 +709,23 @@ def tod_is_pm(df):
     return tod_clean.isin(TOD_PM_VALUES).astype(float)
 
 
-def transferable_contributions(df, betas, quality_dates):
+def transferable_contributions(df, betas, quality_dates, temp_ref=0.0):
     """Per-row modeled pace contribution (sec/mi) of the transferable
     factors — temperature, recent-race fatigue, time of day — for any
     daily-frame subset (e.g. long runs). Missing temp/TOD contribute 0,
     as does any factor whose beta key is absent from ``betas`` (the TQ
     long-run model passes a dict without ``tod_is_pm``, so TOD drops out).
     Subtracting the result from observed pace normalizes those factors out.
+
+    ``temp_ref`` is the median hinge value the temperature slope was centered
+    on (the fit's ``temp_ref``); subtracting it references the temperature
+    adjustment to a typical day rather than the cold floor of the hinge, so
+    normalizing temp doesn't move every run one way. Pass the corresponding
+    fit's ``temp_ref`` so application matches how the slope was centered.
     """
     df = add_quality_features(df, quality_dates)
     contrib = betas.get('temp_centered', 0.0) * (
-        temp_centered_feature(df).fillna(0.0))
+        temp_centered_feature(df).fillna(0.0) - temp_ref)
     for cat in QUALITY_CATS:
         contrib = contrib + betas.get(f'fat_{cat}', 0.0) * df[f'fat_{cat}']
     contrib = contrib + betas.get('tod_is_pm', 0.0) * tod_is_pm(df)
@@ -981,10 +1005,9 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
                   f'{len(moved)} moved rows)')
 
     # Features (sleep_centered and miles_centered are intentionally NOT computed)
-    # Temperature is encoded as apparent ("feels-like") temp — humidity folded
-    # in via the heat index (temp_centered_feature). Below 80°F and where
-    # humidity is missing this is plain air temp, so the change is confined to
-    # hot-humid days.
+    # Temperature: one-sided heat hinge max(0, air_temp - 6C) — see
+    # temp_centered_feature. Cold contributes zero; only heat above ~6C slows
+    # recovery pace. Slope is fit below; long runs reuse the same shape.
     rec['temp_centered'] = temp_centered_feature(rec)
     rec['residual_raw'] = rec['pace_for_fit'] - rec['cs_pace_sec']
 
@@ -1250,7 +1273,16 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
               f'at Magnolia)')
 
     # ---------- per-point contributions ----------
-    rec['contrib_temp'] = betas['temp_centered'] * rec['temp_centered'].fillna(0)
+    # Reference the temperature ADJUSTMENT to the median clean-day hinge (like
+    # wind around its median): the one-sided hinge is >= 0 everywhere, so an
+    # uncentered contribution would move EVERY run one way when normalized
+    # (temp touches every run, unlike altitude/footing). Centering makes hot
+    # days move faster and cool days slower, the median day unchanged. This
+    # re-references only the displayed/applied contribution — the fitted slope
+    # betas['temp_centered'] is untouched (centering shifts the intercept only).
+    temp_ref = float(rec.loc[~rec['is_pruned'], 'temp_centered'].median())
+    rec['contrib_temp'] = betas['temp_centered'] * (
+        rec['temp_centered'].fillna(0) - temp_ref)
     rec['contrib_quality'] = sum(
         betas[f'fat_{c}'] * rec[f'fat_{c}'].fillna(0) for c in QUALITY_CATS)
     rec['contrib_tod'] = betas['tod_is_pm'] * rec['tod_is_pm'].fillna(0)

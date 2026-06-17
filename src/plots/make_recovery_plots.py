@@ -27,17 +27,21 @@ CS reference.
 
 Per-day factors are fit via OLS on the era-detrended residual:
 
-  residual_detrended ~ β_temp · temp_centered
+  residual_detrended ~ β_temp · temp_heat_hinge
                      + β_marathon · fatigue_marathon
                      + β_race    · fatigue_race_short
                      + β_tod     · tod_is_pm
                      + (pinned) footing + altitude + grade-aware elevation
                      + (pinned) wind_mph · β_wind
 
-temp_centered is apparent ("feels-like") temperature — humidity folded in via
-the heat index (see recovery_model.apparent_temp_c). Wind is a pinned per-mph
-cost applied where a watch wind reading exists. See the model module for the
-pooled/pinned mechanics.
+The temperature term is a one-sided heat hinge, max(0, air_temp − 6°C): cold
+contributes zero, only heat above ~6°C slows recovery (see
+recovery_model.temp_centered_feature; long runs reuse the same shape with a
+free slope). It replaced a symmetric apparent-temp term whose sub-12°C arm
+credited a phantom cold speedup. Humidity was tested as a separate regressor
+and dropped (weak; the heat index never beat plain air temp). Wind is a pinned
+per-mph cost applied where a watch wind reading exists. See the model module
+for the pooled/pinned mechanics.
 
 Sleep cycles and recovery distance were tested in earlier model versions
 and produced near-zero coefficients with no useful explanatory power. They
@@ -119,9 +123,9 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
 from src.plotting import widgets
 from src.shared.paths import DEBUG_DIR
 from src.shared.cs_projection import load_cs_outputs
-from src.shared.recovery_model import (fit_recovery_model, TEMP_REFERENCE_C,
+from src.shared.recovery_model import (fit_recovery_model, TEMP_HEAT_ONSET_C,
                                        FATIGUE_TAU_DAYS, MIN_ROUTE_N,
-                                       QUALITY_CATS)
+                                       QUALITY_CATS, ALTITUDE_THRESHOLD_KFT)
 
 _PLOTS_DIR = Path(__file__).resolve().parent
 _RECOVERY_JS = _PLOTS_DIR / 'make_recovery_plots.js'
@@ -254,13 +258,7 @@ def main():
                 f"<b>Logged:</b> {sec_to_mss(logged_pace)}/mi  "
                 f"({row['miles']:.1f} mi){pause}")
         if pd.notna(row.get('temp_c')):
-            temp_line = f"Temp: {row['temp_c']:.0f}°C"
-            feels = row.get('temp_centered')
-            if pd.notna(feels):
-                feels_c = feels + TEMP_REFERENCE_C
-                if abs(feels_c - row['temp_c']) >= 0.5:
-                    temp_line += f" (feels {feels_c:.0f}°C)"
-            parts.append(temp_line)
+            parts.append(f"Temp: {row['temp_c']:.0f}°C")
         if pd.notna(row.get('wind_mph')):
             parts.append(f"Wind: {row['wind_mph']:.0f} mph")
         loc = row.get('location')
@@ -769,15 +767,32 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
     if av.get('era', True):
         detail_rows.append(widgets.detail_row(
             'Era trend',
-            f'residual panel only; centers around {global_mean_residual:+.0f} s/mi'))
+            f': flattens year-over-year changes, on residual panel only'))
     if av.get('temp', True):
         detail_rows.append(widgets.detail_row(
             'Temperature',
-            f'β = {betas["temp_centered"]:+.2f} sec/mi per °C felt '
-            f'(heat index) from {int(TEMP_REFERENCE_C)}°C'))
+            f': β = {betas["temp_centered"]:+.2f} s/mi per °C above '
+            f'{int(TEMP_HEAT_ONSET_C)}°C (heat only; cold = 0)'))
+    if av.get('elevation', True):
+        from src.shared.elevation_cost import CLIMB_COST
+        detail_rows.append(widgets.detail_row(
+            'Elevation',
+            f': β = {CLIMB_COST["paved"]:.2f} s/mi per ft/mi net gain'))
+    if av.get('terrain', True):
+        from src.shared.elevation_cost import CLIMB_COST, REFUND_RECOVERY
+        detail_rows.append(widgets.detail_row(
+            'Off-road',
+            f': β = {betas.get("is_offroad", 0):+.1f} s/mi, '
+            f': descent refunds {REFUND_RECOVERY["mixed"]:.0%} of ascent effort, vs '
+            f'{REFUND_RECOVERY["paved"]:.0%} on pavement (applies only with Elevation also on)'))
+    if av.get('altitude', True):
+        detail_rows.append(widgets.detail_row(
+            'Altitude',
+            f': β = {betas.get("alt_kft", 0):+.2f} s/mi per 1000 ft above '
+            f'{ALTITUDE_THRESHOLD_KFT:.0f}k'))
     if av.get('recent_effort', True):
         detail_rows.append(widgets.detail_row(
-            'Recent race',
+            'Recent race ',
             f'(exponential decay): marathon {q_betas[0]:+.1f} '
             f'(τ={FATIGUE_TAU_DAYS["marathon"]:.0f}d), '
             f'short race {q_betas[1]:+.1f} '
@@ -785,41 +800,18 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
     if av.get('time_of_day', True):
         detail_rows.append(widgets.detail_row(
             'Time of day',
-            f'β = {betas["tod_is_pm"]:+.2f} sec/mi for afternoon/late '
+            f': β = {betas["tod_is_pm"]:+.2f} s/mi for afternoon/late '
             '(vs early/morning)'))
-    if av.get('elevation', True):
-        from src.shared.elevation_cost import CLIMB_COST
-        detail_rows.append(widgets.detail_row(
-            'Elevation (net)',
-            f'climb {CLIMB_COST["paved"]:.2f} s/mi per ft/mi · net gain−loss; '
-            'zero on loops, applies on point-to-point'))
-    if av.get('terrain', True):
-        from src.shared.elevation_cost import CLIMB_COST, REFUND_RECOVERY
-        detail_rows.append(widgets.detail_row(
-            'Terrain',
-            f'off-road footing {betas.get("is_offroad", 0):+.1f} s/mi flat; '
-            f'mixed/trail descent-braking (refund {REFUND_RECOVERY["mixed"]:.0%} '
-            f'vs paved {REFUND_RECOVERY["paved"]:.0%}, scales with descent) '
-            f'applies only with Elevation also on'))
-    if av.get('altitude', True):
-        detail_rows.append(widgets.detail_row(
-            'Altitude',
-            f'{betas.get("alt_kft", 0):+.2f} s/mi per 1000 ft '
-            f'({betas.get("alt_kft", 0) * 5.4:+.1f} at Boulder)'))
     if av.get('wind', True):
         detail_rows.append(widgets.detail_row(
             'Wind',
-            f'β = {betas.get("wind_mph", 0):+.2f} sec/mi per mph '
-            f'({betas.get("wind_mph", 0) * 15:+.1f} at 15 mph; '
-            'watch-measured days only)'))
+            f': β = {betas.get("wind_mph", 0):+.2f} sec/mi per mph '))
 
     details_body = (
         ''.join(detail_rows)
         + widgets.noteworthy(
-            'Sleep cycles, run distance, shoes and rain were tested and '
-            'excluded as non-factors; humidity enters via the heat-index '
-            'temperature. Non-race quality efforts were also found to have no '
-            'detectable next-day pace effect.')
+            'Sleep cycles, run distance, shoes, weather and humidity were tested and '
+            'excluded as non-factors.')
     )
 
     parts = []

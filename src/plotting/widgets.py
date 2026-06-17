@@ -227,10 +227,10 @@ def stats_footer(lines: Sequence[str]) -> str:
 def detail_row(label: str, value: str) -> str:
     """Label/value pair inside a sidebar ``<details>`` block.
 
-    Renders ``<b>{label}:</b> {value}`` — both passed through as HTML
+    Renders ``<b>{label}</b> {value}`` — both passed through as HTML
     so callers can include subscripts, math symbols, etc.
     """
-    return f'<div class="rp-detail-row"><b>{label}:</b> {value}</div>'
+    return f'<div class="rp-detail-row"><b>{label}</b>{value}</div>'
 
 
 def noteworthy(text: str) -> str:

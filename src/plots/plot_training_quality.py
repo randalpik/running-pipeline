@@ -966,19 +966,21 @@ function buildTooltip(day, isSnap, pointHtml) {
     # project_long_runs, so already in raw_resid) and TRAINING STATE
     # (temp/fatigue, fit here, applied via model_adj). The effort level
     # (intercept) is fit but NEVER subtracted (see the model block in main).
-    from src.shared.recovery_model import physical_route_betas
+    from src.shared.recovery_model import (physical_route_betas,
+                                            ALTITUDE_THRESHOLD_KFT)
     from src.shared.elevation_cost import CLIMB_COST, REFUND_RECOVERY
     pb = physical_route_betas()
     phys_rows = [
-        ('elevation, per ft/mi↑',
-         f'{CLIMB_COST["paved"]:.2f}–{CLIMB_COST["mixed"]:.2f}'),
+        ('elevation, per ft/mi↑ (paved/trail)',
+         f'{CLIMB_COST["paved"]:.2f}/{CLIMB_COST["mixed"]:.2f}'),
         ('off-road footing', f'{pb["is_offroad"]:+.1f}'),
-        ('altitude, per 1000ft', f'{pb["alt_kft"]:+.2f}'),
+        (f'altitude, per 1000 ft above {ALTITUDE_THRESHOLD_KFT:.0f}k',
+         f'{pb["alt_kft"]:+.2f}'),
     ]
     state_rows = []
     if lr_fit.cov_coefs:
         state_rows = [
-            ('temp, per °C felt (ref 12)',
+            ('temp, per °C above 6 (heat only)',
              f'{lr_fit.cov_coefs["temp_centered"]:+.2f}'),
             ('marathon fatigue, peak',
              f'{lr_fit.cov_coefs["fat_marathon"]:+.1f}'),
@@ -991,20 +993,19 @@ function buildTooltip(day, isSnap, pointHtml) {
         body = (
             widgets.title('Long-run adjustments (sec/mi)')
             + widgets.subtitle(
-                'Subtracted to reach each run\'s flat / sea-level '
-                'race-equivalent; the effort level (intercept '
-                f'{lr_fit.intercept:+.0f}) is never applied.')
+                'Subtracted to reach each run\'s flat sea-level '
+                'race-equivalent pace')
             + widgets.divider()
-            + widgets.subtitle('Physical route — per-run measured grade '
-                               f'(descent refunds {REFUND_RECOVERY["paved"]:.0%} '
-                               f'paved / {REFUND_RECOVERY["mixed"]:.0%} off-road); '
-                               'footing + altitude pinned from recovery+long')
+            + widgets.subtitle('Physical route: '
+                               f'descent refunds {REFUND_RECOVERY["paved"]:.0%} '
+                               f'of ascent effort on pavement, {REFUND_RECOVERY["mixed"]:.0%} off-road '
+                               '(factors pinned from recovery and long run data)')
             + widgets.table(('Term', 's/mi'), phys_rows, align=('left', 'right'))
         )
         if state_rows:
             body += (
                 widgets.divider()
-                + widgets.subtitle('Training state — fit on long runs')
+                + widgets.subtitle('Training state (fit on long runs)')
                 + widgets.table(('Term', 'β'), state_rows,
                                 align=('left', 'right'))
             )
