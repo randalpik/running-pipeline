@@ -24,8 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, DEBUG_DIR
 from src.shared.workouts import (_connected_core, dp3_at_date,
                                  watch_log_demotions)
-
-MILE_M = 1609.344
+from src.shared.units import METERS_PER_MILE as MILE_M
 
 # ---------- regex for explicit Nx shapes ----------
 # Variant A (pre-March 2016): Nx<dist>[tirf]/<rest>s@<pace>  -- pace per-rep, rest per-rep

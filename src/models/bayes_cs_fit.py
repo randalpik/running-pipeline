@@ -48,6 +48,7 @@ import arviz as az
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, DEBUG_DIR
+from src.shared.units import METERS_PER_MILE
 from src.shared.plot_window import pad_range
 from src.shared.recovery_model import race_physical_correction
 
@@ -178,7 +179,7 @@ def derive_exclusions(elig, xc_correction=0.06,
         if d < 25000: return 'HM'
         return 'Marathon'
     df['band'] = df['distance_m'].apply(band)
-    df['log_pace'] = np.log(df['time_sec_corr'] / (df['distance_m'] / 1609.344))
+    df['log_pace'] = np.log(df['time_sec_corr'] / (df['distance_m'] / METERS_PER_MILE))
 
     # ---- Tier 1: Marathon + HM, symmetric ±window_years same-band median ----
     df['t1_resid_sec'] = np.nan
@@ -311,8 +312,9 @@ def main():
                    help='Suffix for output filenames (e.g. "v4a") to keep '
                         'experiments separate')
     p.add_argument('--workout-obs', default='',
-                   help='EXPERIMENTAL (cs-workout-enrichment spike, June '
-                        '2026): path to a CSV of near-race training '
+                   help='EXPERIMENTAL, default off (workout-enrichment of the '
+                        'CS likelihood was halted on level-bias — see '
+                        'docs/cs-model-reference.md): path to a CSV of near-race training '
                         'observations with columns date, t5k_sec, dp_fixed_m, '
                         'sigma_obs. Each row enters the likelihood as a '
                         '5K-equivalent effort at its date: '
@@ -388,7 +390,7 @@ def main():
     # ---------- physical route correction (grade + footing + altitude) ----------
     # Convert each watch-covered race to its flat / sea-level / smooth-equivalent
     # TIME before it enters the likelihood, so CS measures fitness not the
-    # course (docs/watch-stream-enrichment-plan.md §B). MUST match the same
+    # course (docs/cs-model-reference.md "Race physical correction"). MUST match the same
     # helper in cs_projection (the displayed diamonds) and derive_exclusions.
     # Net-downhill races get time ADDED (Boston discounted); net-uphill /
     # altitude races credited faster. Subtracted BEFORE the β_long un-bias.
@@ -587,7 +589,7 @@ def main():
                  prior_pred.prior['log_cs_dev'].values +
                  prior_pred.prior['mu_cs'].values[..., None])
     cs_pp = np.exp(log_cs_pp)
-    pace_pp = 1609.344 / cs_pp / 60
+    pace_pp = METERS_PER_MILE / cs_pp / 60
     print(f"  Prior CS pace (min/mi): "
           f"5%={np.percentile(pace_pp,5):.2f}  median={np.median(pace_pp):.2f}  "
           f"95%={np.percentile(pace_pp,95):.2f}")
@@ -675,8 +677,8 @@ def main():
     # Trend-only (mu_cs + slow component) for separate visualization/diagnostic
     cs_trend_flat = np.exp((mu_cs_post + log_cs_trend_post)).reshape(-1, n_grid)
     dp_flat = np.exp(log_dp_post).reshape(-1, n_grid)
-    pace_flat = 1609.344 / cs_flat / 60
-    pace_trend_flat = 1609.344 / cs_trend_flat / 60
+    pace_flat = METERS_PER_MILE / cs_flat / 60
+    pace_trend_flat = METERS_PER_MILE / cs_trend_flat / 60
 
     summary_rows = []
     for i, gd in enumerate(grid_dates):
@@ -722,7 +724,7 @@ def main():
             'surface': elig['surface'].values if 'surface' in elig.columns else [''] * len(elig),
             'predicted_sec': pred_t,
             'pct_resid': pct_resid,
-            'cs_pace_med_at_race': 1609.344 / cs_at_race_med / 60,
+            'cs_pace_med_at_race': METERS_PER_MILE / cs_at_race_med / 60,
             'dp_med_at_race': dp_at_race_med,
             'event': elig['event'].values if 'event' in elig.columns else [''] * len(elig),
         })

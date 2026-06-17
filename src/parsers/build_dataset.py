@@ -38,6 +38,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR
+from src.shared.units import METERS_PER_MILE
 
 from running_log_parser import (
     DAILY_COLUMNS,
@@ -581,7 +582,7 @@ def main():
             primary = primary.iloc[0]
             total_dist_m = float(grp["distance_m"].sum())
             total_time_sec = float(grp["time_sec"].sum())
-            miles = total_dist_m / 1609.344
+            miles = total_dist_m / METERS_PER_MILE
             minutes = total_time_sec / 60.0
             pace_sec_per_mi = (total_time_sec / miles) if miles > 0 else None
             d = pd.to_datetime(date_str).date()

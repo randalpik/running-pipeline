@@ -109,9 +109,8 @@ consumed via `fit_recovery_model(pin_physical=True)`.
 
 ### Physical route model (June 2026 — replaced per-route dummies)
 
-The watch-stream enrichment work (`docs/watch-stream-enrichment-plan.md`,
-now complete) retired the per-route dummies in favour of a **physical,
-era-free** route model. The route's pace cost is no longer a hand-set
+The watch-stream enrichment work retired the per-route dummies in favour of
+a **physical, era-free** route model. The route's pace cost is no longer a hand-set
 `elev_per_mile × constant` or a fitted per-location offset — it decomposes
 into three physical channels that apply identically across eras (off-road
 routes cluster early/sea-level, paved/altitude in the Boulder era, so the

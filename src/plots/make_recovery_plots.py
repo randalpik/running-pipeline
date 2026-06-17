@@ -109,7 +109,7 @@ from plotly.subplots import make_subplots
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import daily_floor, axis_pad_entry
+from src.shared.plot_window import clip_to_daily_floor, axis_pad_entry
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             sec_to_mss, FG, route_label, marker_half_px,
                             CS_LINE, CS_LINE_WIDTH, TREND_LINE, TREND_WIDTH,
@@ -177,7 +177,7 @@ def main():
     daily = daily.sort_values('date').reset_index(drop=True)
     # Drop the pre-2016 race-addition stubs the world map uses; recovery
     # plots stay anchored to the 2016+ logging era.
-    daily = daily[daily['date'] >= daily_floor()].reset_index(drop=True)
+    daily = clip_to_daily_floor(daily).reset_index(drop=True)
 
     print(f'Loading races.csv from {args.races}...')
     races = pd.read_csv(args.races, parse_dates=['date'])

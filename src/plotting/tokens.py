@@ -35,9 +35,9 @@ SURFACES = {
 
 # --- Training-quality categories (separate semantic axis from surfaces;
 #     do not unify with SURFACES). Palette mirrors the conditional-formatting
-#     scheme of the source running log (running_log_2025_cf.json) so plot and
-#     spreadsheet read consistently. Long runs and hills each share one color
-#     since the plot uses a single combined trace for each. ---
+#     (CF) scheme of the source running log so plot and spreadsheet read
+#     consistently. Long runs and hills each share one color since the plot
+#     uses a single combined trace for each. ---
 CAT_COLORS = {
     # Tuned for visibility on the dark plot background (#1a1a1a) while still
     # tracking the log's CF hue families (yellow→tempo, gold→interval,
@@ -51,6 +51,31 @@ CAT_COLORS = {
     'long':               '#674EA7',  # deep purple (CF purple family)
     'hill_cont':          '#3D85C6',  # saturated medium blue (CF light blue → vivid)
     'hill_rep':           '#1ABC9C',  # vivid teal (CF muted teal #A2C4C9 → vivid)
+}
+
+# --- Qualitative-trends weather/conditions tag colors. The raw hexes are the
+#     conditional-formatting cell tints from the source running log, kept here
+#     as the single re-skin point. The Weather panel remaps the light
+#     cloud-family tints to dark-legible
+#     tones at plot time (see plot_qualitative_trends.wcolor); the Conditions
+#     panel uses these directly for marker rings. ---
+WEATHER_CF_COLORS = {
+    'clear':      '#CFE2F3',
+    'cloudy':     '#CCCCCC',
+    'overcast':   '#999999',
+    'foggy':      '#EFEFEF',
+    'light rain': '#6D9EEB',
+    'heavy rain': '#1155CC',
+    'flurries':   '#B4A7D6',
+    'inside':     '#B6D7A8',
+    'smoky':      '#E1D7C5',
+}
+CONDITIONS_CF_COLORS = {
+    'wet':    '#6D9EEB',
+    'muddy':  '#A36F06',
+    'snow':   '#D9D2E9',
+    'icy':    '#CFE2F3',
+    'inside': '#B6D7A8',
 }
 
 

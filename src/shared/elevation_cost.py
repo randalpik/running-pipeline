@@ -1,5 +1,5 @@
 """Physical elevation cost for route normalization (June 2026, watch
-enrichment — docs/watch-stream-enrichment-plan.md thread 1).
+enrichment — docs/route-normalization-reference.md, the elevation engine).
 
 Replaces per-route dummy betas with a physical, era-free route cost:
 ``cost = c_up·gain − refund·c_up·loss`` (s/mi), with terrain-specific

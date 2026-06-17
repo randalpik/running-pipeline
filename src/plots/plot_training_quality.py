@@ -19,7 +19,7 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import daily_floor
+from src.shared.plot_window import daily_floor, clip_to_daily_floor
 from src.shared.workouts import (
     load_cs, add_cs,
     project_workouts, project_long_runs, project_hill_continuous,
@@ -593,7 +593,7 @@ def main():
     corpus_demos = corpus.rename(columns={'p5k_corr_min': 'pace_min'})
     demos = standard_demos(daily_summary, beta_long, d_thresh, xc_corr,
                            corpus=corpus_demos)
-    front_plot = daily_summary[daily_summary['date'] >= daily_floor()].copy()
+    front_plot = clip_to_daily_floor(daily_summary).copy()
     frontier, _ = build_frontier(demos, pd.DatetimeIndex(front_plot['date']),
                                  front_plot['p5k_implied_min'])
     print(f'Frontier: computed over {len(front_plot)} daily points')
@@ -613,7 +613,7 @@ def main():
 
     fig = go.Figure()
 
-    cs_plot = cs[cs['date'] >= daily_floor()]
+    cs_plot = clip_to_daily_floor(cs)
     cs_raw  = _y_safe(cs_plot['p5k_implied_min'].values)
     cs_norm = [0.0] * len(cs_plot)
     fig.add_trace(go.Scatter(

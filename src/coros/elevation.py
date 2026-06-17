@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 from src.shared.hill_model import minetti_cost, FT_PER_M
+from src.shared.units import METERS_PER_MILE
 
 GRID_M = 10.0      # even-distance resample step (m)
 SMOOTH_M = 120.0   # altitude smoothing window (m of distance). Validated
@@ -107,7 +108,7 @@ def mile_splits(pts, k):
     if len(pts) < 3:
         return []
     t = np.array([p[0] for p in pts])
-    d = np.array([p[1] for p in pts]) * k / 1609.344  # corrected miles
+    d = np.array([p[1] for p in pts]) * k / METERS_PER_MILE  # corrected miles
     a = np.array([p[2] for p in pts])
     out = []
     last = int(np.floor(d[-1]))
@@ -120,7 +121,7 @@ def mile_splits(pts, k):
         if covered <= 0:
             continue
         mov = _moving_time(t[m])
-        g, l = gain_loss_ft(seg_d * 1609.344, a[m])
+        g, l = gain_loss_ft(seg_d * METERS_PER_MILE, a[m])
         out.append({'mile': mi,
                     'pace_s': round(mov / covered, 1),
                     'gain_ft': round(g, 1),

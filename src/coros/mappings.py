@@ -23,7 +23,7 @@ WEATHER_DIV = 10.0        # temperature/humidity/windDirection (raw/10)
 KMH_TO_MPH = 0.6213712
 TZ_UNIT_MIN = 15          # `timezone` is in quarter-hours
 
-METERS_PER_MILE = 1609.344
+from src.shared.units import METERS_PER_MILE  # re-exported (M.METERS_PER_MILE)
 SEC_PER_KM_TO_SEC_PER_MILE = METERS_PER_MILE / 1000.0  # avgPace is sec/km
 
 # ---- excluded activities ----

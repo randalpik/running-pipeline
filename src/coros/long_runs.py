@@ -58,8 +58,7 @@ import pandas as pd
 from src.shared.paths import DATA_DIR
 from src.shared.recovery_model import STRIDE_SUFFIX_RX
 from src.shared.workouts import RECON_TAU_S
-
-MILE_M = 1609.344
+from src.shared.units import METERS_PER_MILE as MILE_M
 
 STALL_SPEED_MPS = 0.5   # below this = standing (walking is ~1.2 m/s)
 STALL_MIN_S = 15.0      # minimum standstill to count (GPS jitter floor)

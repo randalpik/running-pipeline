@@ -121,8 +121,10 @@ short durations by a finite top speed v_max. **v_max is an uncertainty
 interval, two conservative edges per profile** (cs_projection registry;
 Max: evidence 9.5 / prediction 8.3, derived by scripts/calibrate_vmax.py
 from his own corpus — the 400-corpus sprint-credit envelope and the
-PR-sweep bounds respectively; rationale and trade-offs in
-short-effort-unification-plan.md "Outcome"). Reading a race as evidence
+PR-sweep bounds respectively). CP3 replaced two disconnected short-effort
+corrections (the race-side β_short knob and the workout-side g(d)) with one
+effort-aware anaerobic term, so a 400m race and a 400m rep now analyze
+identically. Reading a race as evidence
 uses the HIGH edge (short diamonds conservative — every 400 ever raced
 sits at/behind the frontier by construction); forward solves (dashboard
 predictions, lines-at-anchor) use the LOW edge (400/800 predictions never
@@ -234,9 +236,22 @@ days after a binding HM); on the floor the band equals the CS CrI. Inputs: race 
 `data/training_quality_corpus.csv` (kept TQ corpus, persisted by
 plot_training_quality.py — which therefore runs BEFORE bayes_cs_plot in
 run_plots.sh). Frontier lives in 5K-equivalent pace space (diamond space),
-not asymptotic-CS space. History of the design — including why feeding
-workouts into the CS likelihood itself was tested and rejected — in
-[cs-workout-enrichment-spike-report.md](cs-workout-enrichment-spike-report.md).
+not asymptotic-CS space.
+
+**Why the frontier and not workout-enrichment of the fit (guardrail).** An
+earlier line of work tried feeding near-race training observations into the
+CS *likelihood* itself. It was halted at validation: the in-band efforts
+carry a one-sided sub-max effort bias (~+2.7 s/mi, era-modulated) that a
+symmetric selection band cannot remove, so on a hold-out (2019-06→2020-12
+races removed, workouts filling the gap) enrichment made held-out race
+predictions *worse* (mean |err| 2.49% → 3.26%). Probabilistic one-sided
+variants (ExGaussian / Tobit / latent-slack / quantile delta-fits) all
+collapsed to "wide symmetric noise" whenever the noise was estimable. The
+reframing that shipped: workouts are PROOF of capability, not noisy
+observations of it — hence the deterministic frontier above (no posterior,
+no CI). `bayes_cs_fit.py --workout-obs` survives as a flag-gated, default-off
+relic. **Do not re-open likelihood enrichment without addressing the
+level-bias finding.**
 
 ### Gridlines: yearly. Y-axis range: 4:30 to 8:00 min/mi
 
@@ -444,8 +459,7 @@ watch coverage**: the categorical regression stays closed, but a per-run
 measured correction now corrects each watch-covered race's TIME for grade +
 off-road footing + altitude to its flat / sea-level / smooth-equivalent
 BEFORE it informs CS, so the demonstrated-capability frontier measures
-fitness, not the course. Full design + handoff: watch-stream-enrichment-plan.md
-"B. Race CS — SHIPPED". (Engine: the `elevation_cost` cost model,
+fitness, not the course. (Engine: the `elevation_cost` cost model,
 `physical_route_betas`, the altitude threshold curve, the DEM mechanics —
 → see route-normalization-reference.md (elevation engine).)
 

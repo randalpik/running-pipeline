@@ -40,8 +40,7 @@ import numpy as np
 import pandas as pd
 
 from src.shared.long_run_model import PRUNE_SIGMA
-
-FT_PER_M = 0.3048
+from src.shared.units import FT_PER_M  # re-exported: existing importers read it here
 
 
 def minetti_cost(i):

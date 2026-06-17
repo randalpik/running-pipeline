@@ -27,7 +27,8 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import daily_floor
+from src.shared.units import FT_PER_M
+from src.shared.plot_window import daily_floor, clip_to_daily_floor
 from src.shared.workouts import (
     load_cs, watch_log_demotions,
     project_workouts, project_hill_continuous, project_hill_reps,
@@ -320,7 +321,7 @@ def hill_rep_measured_lines():
         total_dist = float(day['dist_m'].sum())
         # average grade over the whole block = total rise / total run; gain is
         # feet, distance metres, so rise back to metres via FT_PER_M (0.3048).
-        avg_grade = (total_gain * 0.3048 / total_dist * 100) if total_dist else 0.0
+        avg_grade = (total_gain * FT_PER_M / total_dist * 100) if total_dist else 0.0
         parts = [f"{int(round(r['dist_m']))}m/+{int(round(r['gain_ft']))}ft"
                  for _, r in day.iterrows()]
         lines[date] = {
@@ -472,7 +473,7 @@ def main():
     fig = go.Figure()
 
     # Gold CS-implied 5K reference curve (same color/style as other tabs).
-    cs_plot = cs[cs['date'] >= daily_floor()]
+    cs_plot = clip_to_daily_floor(cs)
     fig.add_trace(go.Scatter(
         x=cs_plot['date'], y=_y_safe(cs_plot['p5k_implied_min'].values),
         mode='lines', name='CS-implied 5K',
@@ -484,7 +485,7 @@ def main():
     # construction as Fitness (src/shared/performance_frontier.py; corpus
     # artifact written by plot_training_quality, which runs earlier).
     daily_summary, _beta_long, _d_thresh, _xc = load_cs_outputs(str(DATA_DIR))
-    front_plot = daily_summary[daily_summary['date'] >= daily_floor()].copy()
+    front_plot = clip_to_daily_floor(daily_summary).copy()
     front_demos = standard_demos(daily_summary, _beta_long, _d_thresh, _xc)
     frontier, _ = build_frontier(front_demos, pd.DatetimeIndex(front_plot['date']),
                                  front_plot['p5k_implied_min'])

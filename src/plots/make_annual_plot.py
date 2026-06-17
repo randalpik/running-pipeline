@@ -33,7 +33,8 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import daily_floor
+from src.shared.units import METERS_PER_MILE
+from src.shared.plot_window import clip_to_daily_floor
 from src.shared.effective_mileage import effective_daily_miles
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                           FG_DIM, GRID)
@@ -165,7 +166,7 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
 
     df = pd.read_csv(args.daily, parse_dates=['date'])
-    df = df[df['date'] >= daily_floor()].copy()
+    df = clip_to_daily_floor(df).copy()
     df = df.dropna(subset=['miles'])
     df['date'] = df['date'].dt.normalize()
     # Source of truth: watch/route distance-corrected mileage (decrease-only;
@@ -179,12 +180,12 @@ def main():
     # Race days with no daily row (sparse profiles: a race logged via
     # additions may never get a daily entry) still count toward the year's
     # totals — same miles convention as the pre-2016 daily stubs
-    # (distance_m / 1609.344). Restricted to years daily already covers so
+    # (distance_m / METERS_PER_MILE). Restricted to years daily already covers so
     # race-only years don't sprout traces.
     if os.path.exists(args.races):
         races = pd.read_csv(args.races, parse_dates=['date'])
         races['date'] = races['date'].dt.normalize()
-        race_miles = races.groupby('date')['distance_m'].sum() / 1609.344
+        race_miles = races.groupby('date')['distance_m'].sum() / METERS_PER_MILE
         race_only = race_miles[~race_miles.index.isin(miles_by_date.index)
                                & race_miles.index.year.isin(years)]
         if len(race_only):

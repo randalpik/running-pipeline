@@ -27,6 +27,17 @@ def daily_floor(daily=None) -> pd.Timestamp:
     return pd.Timestamp(src['date'].min())
 
 
+def clip_to_daily_floor(df, date_col: str = 'date', floor=None):
+    """Restrict ``df`` to rows on/after the daily plot floor — the
+    ``df[df['date'] >= daily_floor()]`` idiom shared across daily-centric
+    plots. Pass ``floor=`` to reuse an already-computed :func:`daily_floor`
+    (avoids re-reading daily.csv); callers needing an independent frame chain
+    ``.copy()`` on the result, exactly as before."""
+    if floor is None:
+        floor = daily_floor()
+    return df[df[date_col] >= floor]
+
+
 def pad_range(lo, hi, frac: float = 0.02):
     """Pad an [lo, hi] date range by a small fraction of its span on each side.
 

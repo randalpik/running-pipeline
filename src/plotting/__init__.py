@@ -5,7 +5,7 @@ from . import tokens
 from .tokens import (
     BG, FG, FG_SOFT, FG_DIM, FG_MUTE, GRID, GRID_FAINT, PANEL_BG, TOOLTIP_BG, BORDER,
     CS_LINE, CS_LINE_WIDTH, FRONTIER_LINE, TREND_LINE, TREND_WIDTH,
-    SURFACES, CAT_COLORS, TAG_COLORS, rgba,
+    SURFACES, CAT_COLORS, TAG_COLORS, WEATHER_CF_COLORS, CONDITIONS_CF_COLORS, rgba,
 )
 from .formatters import (sec_to_mss, sec_to_mss_full, signed_sec, fmt_min,
                          route_label, route_paren)
@@ -26,7 +26,7 @@ __all__ = [
     'BG', 'FG', 'FG_SOFT', 'FG_DIM', 'FG_MUTE', 'GRID', 'GRID_FAINT', 'PANEL_BG',
     'TOOLTIP_BG', 'BORDER',
     'CS_LINE', 'CS_LINE_WIDTH', 'FRONTIER_LINE', 'TREND_LINE', 'TREND_WIDTH',
-    'SURFACES', 'CAT_COLORS', 'TAG_COLORS',
+    'SURFACES', 'CAT_COLORS', 'TAG_COLORS', 'WEATHER_CF_COLORS', 'CONDITIONS_CF_COLORS',
     'sec_to_mss', 'sec_to_mss_full', 'signed_sec', 'fmt_min',
     'route_label', 'route_paren',
     'thin_yearly_ticks', 'yearly_x_axis_kwargs',

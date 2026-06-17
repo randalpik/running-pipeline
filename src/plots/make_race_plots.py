@@ -46,6 +46,7 @@ from plotly.subplots import make_subplots
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.shared.units import METERS_PER_MILE
 from src.shared.plot_window import data_span, axis_pad_entry
 from src.shared.cs_projection import (load_cs_outputs, project_races_to_5k_pace,
                                       pace5k_series_to_anchor)
@@ -75,15 +76,14 @@ DEFAULT_OUT    = str(OUTPUT_DIR)
 # 3-parameter curve, replacing the former β_short/d_thresh_short display
 # knobs. v_max is an uncertainty interval with one conservative edge per
 # direction (evidence-high for the race diamonds, prediction-low for the
-# CS-derived prediction line — see cs_projection's registry comment and
-# docs/short-effort-unification-plan.md).
+# CS-derived prediction line — see cs_projection's registry comment).
 
 
 # ---------- distance grouping for the 8-panel plot (8% tolerance, may leave races unmatched) ----------
 GROUPS = [
     ('400',      400),
     ('800',      800),
-    ('Mile',     1609.344),
+    ('Mile',     METERS_PER_MILE),
     ('3000m',    3000),
     ('5K',       5000),
     ('10K',      10000),
@@ -119,7 +119,7 @@ FILTER_BINS = [
     ('400m',     400),
     ('800m',     800),
     ('1500m',    1500),
-    ('Mile',     1609.344),
+    ('Mile',     METERS_PER_MILE),
     ('3000m',    3000),
     ('2 Mile',   3218.688),
     ('5K',       5000),
@@ -150,7 +150,7 @@ def friendly_distance(d):
     if d is None or pd.isna(d):
         return '—'
     d = float(d)
-    if abs(d - 1609.344) < 5 or d == 1609:
+    if abs(d - METERS_PER_MILE) < 5 or d == 1609:
         return '1 mile'
     if abs(d - 3218.688) < 5 or d == 3218:
         return '2 miles'
@@ -323,7 +323,7 @@ def fit_hiatus_floor(daily_summary, races_path=DEFAULT_RACES, *,
         return None, None, join
     first = early.sort_values('date').iloc[0]
     t0 = pd.Timestamp(first['date'])
-    P0 = float(first['time_sec']) / (5000.0 / 1609.344) / 60.0  # min/mi
+    P0 = float(first['time_sec']) / (5000.0 / METERS_PER_MILE) / 60.0  # min/mi
 
     dd = daily_summary['date']
     w = daily_summary[(dd >= join - pd.Timedelta(days=14))
@@ -414,7 +414,7 @@ def add_pr_overlay_filterable(fig, df, *, value_col='pace_norm_min',
     # Fatigued races compete again (June 2026): their exclusion was a
     # band-aid for the short-effort projection over-crediting fast 400s,
     # reverted once the CP3 unification landed — see
-    # docs/short-effort-unification-plan.md, gate 2.
+    # docs/cs-model-reference.md ("Projection method: CP3").
     surf_col = 'surface_plot' if 'surface_plot' in df.columns else 'surface'
     eligible = df[df[surf_col].apply(is_pr_eligible)]
     is_pr = compute_pr_mask(eligible, value_col=value_col, date_col=date_col)
@@ -963,7 +963,7 @@ function buildTooltip(day, isSnap, pointHtml, ctx) {
     return mn + ':' + (sc < 10 ? '0' : '') + sc;
   }
   function distLabel(m) {
-    if (Math.abs(m - 1609.344) < 5) return '1 mi';
+    if (Math.abs(m - METERS_PER_MILE) < 5) return '1 mi';
     if (Math.abs(m - 3218.688) < 5) return '2 mi';
     if (m >= 19410 && m <= 22785) return 'half marathon';
     if (m >= 38819 && m <= 45570) return 'marathon';

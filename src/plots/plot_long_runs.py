@@ -32,7 +32,8 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import daily_floor, axis_pad_entry
+from src.shared.units import METERS_PER_MILE
+from src.shared.plot_window import daily_floor, clip_to_daily_floor, axis_pad_entry
 from src.shared.workouts import load_cs, project_long_runs
 from src.shared.cs_projection import load_cs_outputs
 from src.shared.performance_frontier import (standard_demos, build_frontier,
@@ -174,7 +175,7 @@ def main():
     # CS reference curves at HM and marathon. cs_line_at_anchor returns total
     # time in seconds; convert to pace (min/mi) for display.
     daily_summary, beta_long, d_thresh, _ = load_cs_outputs(str(DATA_DIR), '')
-    daily_plot = daily_summary[daily_summary['date'] >= daily_floor()].copy()
+    daily_plot = clip_to_daily_floor(daily_summary).copy()
 
     hm_dist_m, mar_dist_m = 21097.5, 42195.0
 
@@ -187,8 +188,8 @@ def main():
                                  daily_plot['p5k_implied_min'])
     tf_hm  = frontier_at_anchor(frontier, daily_plot, hm_dist_m, beta_long, d_thresh)
     tf_mar = frontier_at_anchor(frontier, daily_plot, mar_dist_m, beta_long, d_thresh)
-    front_hm_pace_min  = tf_hm  / (hm_dist_m  / 1609.344) / 60.0
-    front_mar_pace_min = tf_mar / (mar_dist_m / 1609.344) / 60.0
+    front_hm_pace_min  = tf_hm  / (hm_dist_m  / METERS_PER_MILE) / 60.0
+    front_mar_pace_min = tf_mar / (mar_dist_m / METERS_PER_MILE) / 60.0
 
     pace_min = lr['recovery_pace_sec_per_mi'].astype(float) / 60.0
     miles    = lr['miles'].astype(float)

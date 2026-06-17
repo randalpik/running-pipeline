@@ -54,6 +54,7 @@ import numpy as np
 import pandas as pd
 
 from src.shared.paths import DATA_DIR
+from src.shared.units import METERS_PER_MILE
 from src.shared.elevation_cost import elevation_cost, paved_refund, REFUND_RECOVERY
 
 # ---------- conditions / pruning excluded from fit ----------
@@ -182,7 +183,7 @@ ELEV_MEASURED_PATH = DATA_DIR / 'elevation_measured.csv'
 ALT_DAILY_PATH = DATA_DIR / 'altitude_daily.csv'
 
 # Elevation-enrichment constants (June 2026, watch enrichment —
-# docs/watch-stream-enrichment-plan.md thread 1). The grade-cost model itself
+# docs/route-normalization-reference.md, the elevation engine). The grade-cost model itself
 # lives in shared.elevation_cost; here we keep only the per-run failure guard.
 ELEV_GUARD_FT_PER_MI = 100.0   # extreme watch-failure floor (see per_run_elevation)
 
@@ -248,13 +249,14 @@ MISLOGGED_ROUTES = (
 )
 
 
-def _load_calibration():
+def load_distance_calibration(path=REC_CAL_PATH):
     """(intercept_mi, slope) of the profile's log-vs-watch distance curve,
-    or None when the artifact is absent (no watch corpus). Duplicates
-    workouts._load_lr_calibration — that module imports this one."""
-    if not REC_CAL_PATH.exists():
+    or None when the artifact is absent (no watch corpus). THE single loader
+    for long_run_calibration.csv — shared by the recovery and long-run models
+    (workouts imports this one), which both read the same pooled curve."""
+    if not path.exists():
         return None
-    cal = pd.read_csv(REC_CAL_PATH)
+    cal = pd.read_csv(path)
     if cal.empty:
         return None
     r = cal.iloc[0]
@@ -310,7 +312,7 @@ def add_watch_corrections(rec):
     for col in ('corr_miles', 'corr_time_s', 'corr_pace_sec_per_mi', 'pause_s'):
         rec[col] = np.nan
 
-    cal = _load_calibration()
+    cal = load_distance_calibration()
     if cal is not None and REC_MEASURED_PATH.exists():
         c, m = cal
         try:
@@ -507,7 +509,7 @@ def _race_dem_elevation(races):
         return gain, loss, mean_kft, pd.Series(False, index=n)
     em = em[(em['run_type'] == 'race') & em['dem_gain_ft'].notna()].copy()
     em = em.drop_duplicates('date').set_index(em['date'].dt.date)
-    dist_mi = races['distance_m'].astype(float) / 1609.344
+    dist_mi = races['distance_m'].astype(float) / METERS_PER_MILE
     key = pd.to_datetime(races['date']).dt.date
     gain = key.map(em['dem_gain_ft']) / dist_mi
     loss = key.map(em['dem_loss_ft']) / dist_mi
@@ -605,7 +607,7 @@ def race_physical_correction(races, daily=None):
     alt_cost = pb['alt_kft'] * alt_eff
 
     total = grade + footing + alt_cost
-    dist_mi = df['distance_m'].astype(float).to_numpy() / 1609.344
+    dist_mi = df['distance_m'].astype(float).to_numpy() / METERS_PER_MILE
     out = pd.DataFrame({
         'grade_s_per_mi': grade,
         'footing_s_per_mi': footing,
@@ -708,6 +710,18 @@ def transferable_contributions(df, betas, quality_dates):
 
 # ---------- fit ----------
 
+
+def _degrade_warn(what, exc):
+    """Surface an UNEXPECTED failure in a pinned-beta estimator that is about to
+    fall back to a zero (no-op) correction. Missing input files are the expected
+    sparse-profile / CI-without-details case and are handled quietly by the
+    caller; everything else is printed so a silent zeroing of a physical
+    correction can't mask a regression (empty/short data is already guarded
+    before the math, so an exception reaching here is genuinely unexpected)."""
+    print(f'  WARNING: {what} failed ({type(exc).__name__}: {exc}); '
+          f'falling back to no correction')
+
+
 _PHYS_BETAS_CACHE: dict = {}
 
 
@@ -804,8 +818,10 @@ def physical_route_betas():
             cmap = dict(zip(['const'] + fit_cols, coef))
             out = {'is_offroad': float(cmap.get('is_offroad', 0.0)),
                    'alt_kft': float(cmap.get('alt_kft', 0.0))}
-    except Exception:
+    except FileNotFoundError:
         pass
+    except Exception as exc:
+        _degrade_warn('physical_route_betas', exc)
     _PHYS_BETAS_CACHE[key] = out
     return out
 
@@ -862,8 +878,10 @@ def wind_beta():
             coef, *_ = np.linalg.lstsq(X, s['target'].to_numpy(float),
                                        rcond=None)
             out = float(coef[-1])
-    except Exception:
+    except FileNotFoundError:
         pass
+    except Exception as exc:
+        _degrade_warn('wind_beta', exc)
     _WIND_BETA_CACHE[key] = out
     return out
 
@@ -892,8 +910,10 @@ def wind_reference_mph():
         w = daily.loc[daily['run_type'] == 'recovery', 'wind_mph'].dropna()
         if len(w):
             out = float(w.median())
-    except Exception:
+    except FileNotFoundError:
         pass
+    except Exception as exc:
+        _degrade_warn('wind_reference_mph', exc)
     _WIND_REF_CACHE[key] = out
     return out
 

@@ -60,6 +60,7 @@ from src.parsers.snapshot import (find_snapshot, read_snapshot,
                                   coord_overrides_from_sections)
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             FG, FG_DIM, GRID, widgets,
+                            WEATHER_CF_COLORS, CONDITIONS_CF_COLORS,
                             yearly_x_axis_kwargs)
 from src.plotting.raster import render_gradient_raster
 
@@ -67,8 +68,6 @@ from src.plotting.raster import render_gradient_raster
 DEFAULT_DAILY = str(DATA_DIR / 'daily.csv')
 DEFAULT_ALT = str(DATA_DIR / 'altitude_daily.csv')
 DEFAULT_TIME = str(DATA_DIR / 'time_daily.csv')
-DEFAULT_CF = str(Path(__file__).resolve().parents[2] / 'docs'
-                 / 'running_log_2025_cf.json')
 DEFAULT_OUT = str(OUTPUT_DIR)
 START_DATE = '2016-01-01'
 
@@ -641,10 +640,8 @@ def _prepare(args):
     os.makedirs(args.out_dir, exist_ok=True)
     start = args.start or str(daily_floor().date())
     full = load_series(args.daily, args.altitude, args.time, start)
-    with open(args.cf) as f:
-        cf = json.load(f)
-    weather_cf = cf['rules']['weather']
-    cond_cf = cf['rules']['conditions']
+    weather_cf = WEATHER_CF_COLORS
+    cond_cf = CONDITIONS_CF_COLORS
     # Older / variant log vocabulary that predates the CF palette keys (esp.
     # 2016, which logged 'clouds'/'drizzle'/'showers') -> nearest CF bin, so
     # those days color correctly instead of falling to the gray fallback.
@@ -986,7 +983,6 @@ def main():
     ap.add_argument('--daily', default=DEFAULT_DAILY)
     ap.add_argument('--altitude', default=DEFAULT_ALT)
     ap.add_argument('--time', default=DEFAULT_TIME)
-    ap.add_argument('--cf', default=DEFAULT_CF)
     ap.add_argument('--out-dir', default=DEFAULT_OUT)
     ap.add_argument('--start', default=None)
     ap.add_argument('--panel', default=None,

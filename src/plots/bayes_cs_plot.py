@@ -38,6 +38,7 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
+from src.shared.units import METERS_PER_MILE
 from src.shared.plot_window import data_span, first_race_date, axis_pad_entry
 from src.shared.cs_projection import load_cs_outputs, project_races_to_5k_pace
 from src.shared.performance_frontier import standard_demos, build_frontier_band
@@ -236,7 +237,7 @@ def main():
         ev = row.get('event') or '(no event)'
         if pd.isna(ev): ev = '(no event)'
         dist = float(row['distance_m'])
-        dist_mi = dist / 1609.344
+        dist_mi = dist / METERS_PER_MILE
         t_orig = float(row.get('time_sec_original', row['time_sec']))
         p_orig = row.get('pace_sec_per_mi_original',
                          row.get('pace_sec_per_mi'))
@@ -261,7 +262,7 @@ def main():
         # 5K-equiv (the diamond's y). Suppressed only when it would just echo
         # the actual time (a flat, uncorrected 5K — no XC, no route correction).
         equiv_pace_sec = float(row['pace_norm_min']) * 60
-        equiv_time_sec = equiv_pace_sec * 5000.0 / 1609.344
+        equiv_time_sec = equiv_pace_sec * 5000.0 / METERS_PER_MILE
         equiv_line = ''
         if (not is_5k) or is_xc or has_corr:
             equiv_line = (f"<div>5K-equiv: <b>{sec_to_mss(equiv_time_sec)}</b> "
@@ -343,7 +344,7 @@ def main():
         label = dict(FRONTIER_CATS).get(_disp_cat(row), str(row['src']).title())
         note = ' <span class="tt-mute">(sets the frontier)</span>' if row['binding'] else ''
         pace_sec = float(row['pace_min']) * 60
-        t5k_sec = pace_sec * 5000.0 / 1609.344
+        t5k_sec = pace_sec * 5000.0 / METERS_PER_MILE
         return (f"<div>{label}{note}</div>"
                 f"<div>{row['detail']}</div>"
                 f"<div>5K-equiv: <b>{sec_to_mss(t5k_sec)}</b> "

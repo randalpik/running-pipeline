@@ -46,6 +46,7 @@ import numpy as np
 import pandas as pd
 
 from src.shared.paths import DATA_DIR
+from src.shared.units import METERS_PER_MILE
 from src.shared.cs_projection import (project_races_to_5k_pace,
                                       pace5k_series_to_anchor)
 
@@ -175,9 +176,9 @@ def build_frontier_band(demos, grid_dates, daily_summary):
 
     def p5k_from_asym(pace_col):
         # 5K-implied pace from an asymptotic-CS pace column, holding dp_med:
-        # cs_mps = 1609.344/(pace*60); p5k = (5000-dp)/cs_mps /5000*1609.344/60
-        cs_mps = 1609.344 / (daily_summary[pace_col].to_numpy(float) * 60.0)
-        return (5000.0 - dp) / cs_mps / 5000.0 * 1609.344 / 60.0
+        # cs_mps = METERS_PER_MILE/(pace*60); p5k = (5000-dp)/cs_mps /5000*METERS_PER_MILE/60
+        cs_mps = METERS_PER_MILE / (daily_summary[pace_col].to_numpy(float) * 60.0)
+        return (5000.0 - dp) / cs_mps / 5000.0 * METERS_PER_MILE / 60.0
 
     med, demos_med = build_frontier(demos, grid_dates,
                                     daily_summary['p5k_implied_min'])

@@ -12,6 +12,8 @@ import re
 import os
 from datetime import date, timedelta
 
+from src.shared.units import METERS_PER_MILE
+
 
 # ---------- column schema per year era ----------
 
@@ -793,7 +795,7 @@ def build_race_segments(daily_rows):
         for i, race in enumerate(races):
             dist_m = race["distance_m"]
             time_sec = race["time_sec"]
-            miles_eq = dist_m / 1609.344
+            miles_eq = dist_m / METERS_PER_MILE
             pace = time_sec / miles_eq if (time_sec and miles_eq > 0) else None
             loc_surface = surface_from_location(g(row, "location"))
             out.append({
@@ -960,7 +962,7 @@ def apply_adjustments_from_df(races_df, changes_df):
             d = races_df.at[idx, "distance_m"]
             t = races_df.at[idx, "time_sec"]
             if d and t:
-                races_df.at[idx, "pace_sec_per_mi"] = t / (d / 1609.344)
+                races_df.at[idx, "pace_sec_per_mi"] = t / (d / METERS_PER_MILE)
         if note is not None and not pd.isna(note) and str(note).strip():
             existing = races_df.at[idx, "note"] if "note" in races_df.columns else None
             if existing and not pd.isna(existing) and str(existing).strip():
@@ -1058,7 +1060,7 @@ def ingest_additions_from_df(additions_df, source_label="snapshot:additions"):
         shoes = _get("shoes")
         note = _get("note")
 
-        miles_eq = dist_m / 1609.344
+        miles_eq = dist_m / METERS_PER_MILE
         pace = time_sec / miles_eq if miles_eq > 0 else None
         rows.append({
             "date": dt,

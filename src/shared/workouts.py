@@ -36,13 +36,15 @@ import numpy as np
 import pandas as pd
 
 from src.shared.paths import DATA_DIR
+from src.shared.units import METERS_PER_MILE
 from src.shared.hill_model import minetti_net_factor, minetti_cost, FT_PER_M
 from src.shared.cs_projection import cp3_dprime, cp3_implied_cs, cp3_time
 from src.shared.elevation_cost import (elevation_cost, paved_refund,
                                        REFUND_RECOVERY)
 from src.shared.recovery_model import (ADMITTED_PARTNERS, MISLOGGED_ROUTES,
                                        per_run_elevation, per_run_altitude,
-                                       physical_route_betas, altitude_regressor)
+                                       physical_route_betas, altitude_regressor,
+                                       load_distance_calibration)
 from src.parsers.snapshot import find_snapshot, read_snapshot
 
 
@@ -224,7 +226,7 @@ def _connected_core(dists, times, rests, dp3=None):
 # paces it scales ~4× — the race/rep invariant the distance-only form
 # violated. CF hard 500s at 5K effort now draw ≈+2 s/mi instead of g's
 # +10.3 (the documented structural compromise, resolved). See
-# docs/short-effort-unification-plan.md and [[project-workout-enrichment]].
+# docs/cs-model-reference.md ("Projection method: CP3").
 # Watch-vs-log disagreement gate (Max, June 2026): a large RAW watch-vs-log
 # pace gap means the watch data is wrong in some way (GPS error large enough
 # that the rep decomposition can't be trusted). The consequence is DEMOTION,
@@ -282,8 +284,6 @@ RUN_PACE_CEIL_S_PER_MI = 720.0   # 12:00/mi
 
 # ---------- long-run watch enrichment ----------
 LR_MEASURED_PATH = DATA_DIR / 'long_run_measured.csv'
-LR_CAL_PATH      = DATA_DIR / 'long_run_calibration.csv'
-
 # Route-era mislogged-distance rules: MISLOGGED_ROUTES now lives in
 # recovery_model.py (imported above) so the recovery fit can apply the same
 # rules to the routes' recovery rows without a circular import. The log
@@ -291,18 +291,6 @@ LR_CAL_PATH      = DATA_DIR / 'long_run_calibration.csv'
 # 2022-04-28 / 2022-05-13 on; see the constant's comment for the fitted
 # factors. Watch enrichment, when present, wins over the rule (it measures
 # the actual day; the rule is the route-era median).
-
-
-def _load_lr_calibration():
-    """(intercept_mi, slope) of the profile's log-vs-watch distance curve,
-    or None when the artifact is absent (no watch corpus)."""
-    if not LR_CAL_PATH.exists():
-        return None
-    cal = pd.read_csv(LR_CAL_PATH)
-    if cal.empty:
-        return None
-    r = cal.iloc[0]
-    return float(r['intercept_mi']), float(r['slope'])
 
 
 def _lr_watch_corrections(lr):
@@ -330,7 +318,7 @@ def _lr_watch_corrections(lr):
                 'watch_miles', 'watch_moving_s', 'pause_s', 'stall_s', 'n_segs'):
         lr[col] = np.nan
 
-    cal = _load_lr_calibration()
+    cal = load_distance_calibration()
     if cal is not None and LR_MEASURED_PATH.exists():
         c, m = cal
         meas = pd.read_csv(LR_MEASURED_PATH, parse_dates=['date'])
@@ -381,7 +369,7 @@ def _lr_watch_corrections(lr):
             lr.loc[hit, 'corr_time_s'] = mov_s
             lr.loc[hit, 'corr_pace_sec_per_mi'] = mov_s / corr_mi
             lr.loc[hit, 'd_eff_m'] = (sub['d_eff_frac'].to_numpy()
-                                      * corr_mi * 1609.344)
+                                      * corr_mi * METERS_PER_MILE)
             for col in ('watch_miles', 'watch_moving_s', 'pause_s',
                         'stall_s', 'n_segs'):
                 lr.loc[hit, col] = sub[col].to_numpy()
@@ -411,7 +399,7 @@ def load_cs():
     """
     cs = pd.read_csv(CS_PATH, parse_dates=['date']).sort_values('date').reset_index(drop=True)
     cs['t5k_pred_sec'] = (5000.0 - cs['dp_med']) / cs['cs_mps_med']
-    cs['p5k_implied_min'] = 1609.344 * cs['t5k_pred_sec'] / 5000.0 / 60.0
+    cs['p5k_implied_min'] = METERS_PER_MILE * cs['t5k_pred_sec'] / 5000.0 / 60.0
     epoch = cs['date'].min()
     cs['day'] = (cs['date'] - epoch).dt.days.astype(float)
     return cs, epoch
@@ -561,7 +549,7 @@ def project_workouts(cs, epoch):
     w = add_cs(w, cs, epoch)
     decay = np.maximum(np.exp(-w['rest_per_mile'] / TAU), DECAY_FLOOR)
     w['D_eff']    = w['rep_dist'] * (1 + (w['rep_count'] - 1) * decay)
-    w['t_eff']    = w['pace_per_mile'] * w['D_eff'] / 1609.344
+    w['t_eff']    = w['pace_per_mile'] * w['D_eff'] / METERS_PER_MILE
     # Watch-enriched days carry whole-workout D_eff/t_eff computed from the
     # measured per-rep structure (parse_workouts._measured_d_eff) — the
     # uniform effective-rep formula above mis-serves varied-length days
@@ -575,7 +563,7 @@ def project_workouts(cs, epoch):
     cs_imp = cp3_implied_cs(w['D_eff'], w['t_eff'], w['dp3_t'],
                             workout_vmax())
     w['t_5k_hyp'] = cp3_time(5000.0, cs_imp, w['dp3_t'], workout_vmax())
-    w['p5k_min']  = w['t_5k_hyp'] * 1609.344 / 5000 / 60.0
+    w['p5k_min']  = w['t_5k_hyp'] * METERS_PER_MILE / 5000 / 60.0
     w['raw_resid'] = (w['p5k_min'] - w['p5k_cs_min']) * 60
     w['category'] = w['type']
 
@@ -755,7 +743,7 @@ def project_long_runs(cs, epoch):
     per_run_elevation: a run with no measured grade (no watch, or the
     watch-failure guard) falls back to the route constant, then 0 — degrading
     to the prior behavior with no correction, never a crash (GHA has no
-    details cache; see watch-stream-enrichment-plan.md open items).
+    details cache).
     """
     d = pd.read_csv(DAILY_PATH, parse_dates=['date'])
     lr = _long_run_gated(d)
@@ -765,8 +753,8 @@ def project_long_runs(cs, epoch):
     lr['t_run'] = np.where(lr['corr_time_s'].notna(), lr['corr_time_s'],
                            lr['recovery_pace_sec_per_mi'] * lr['miles'])
     lr['d_m']   = np.where(lr['corr_miles'].notna(),
-                           lr['corr_miles'] * 1609.344,
-                           lr['miles'] * 1609.344)
+                           lr['corr_miles'] * METERS_PER_MILE,
+                           lr['miles'] * METERS_PER_MILE)
 
     # Physical grade cost (see docstring): price each run's measured per-mile
     # gain/loss through the shared engine and remove it from the run's TIME,
@@ -780,7 +768,7 @@ def project_long_runs(cs, epoch):
     # Effort = CS-implied pace at the run's own distance / run pace (1.0 =
     # racing this distance). Uncorrected pace by design — a second-order input
     # to the paved descent refund, one pass, not iterated.
-    t5k_cs = lr['p5k_cs_min'] * 60.0 * 5000.0 / 1609.344
+    t5k_cs = lr['p5k_cs_min'] * 60.0 * 5000.0 / METERS_PER_MILE
     cs_mps = cp3_implied_cs(5000.0, t5k_cs.to_numpy(), lr['dp3_t'],
                             workout_vmax())
     t_pred = cp3_time(lr['d_m'].to_numpy(float), cs_mps, lr['dp3_t'],
@@ -813,7 +801,7 @@ def project_long_runs(cs, epoch):
     lr['alt_cost_s_per_mi'] = pb['alt_kft'] * alt_eff
     phys_credit = (cost + lr['footing_cost_s_per_mi'].to_numpy()
                    + lr['alt_cost_s_per_mi'].to_numpy())
-    t_run_flat = lr['t_run'] - phys_credit * (lr['d_m'] / 1609.344)
+    t_run_flat = lr['t_run'] - phys_credit * (lr['d_m'] / METERS_PER_MILE)
 
     # Connected D_eff (watch days; full distance elsewhere) enters the
     # hyperbola the same way enriched workouts do: t_eff = D_eff / v with v
@@ -833,7 +821,7 @@ def project_long_runs(cs, epoch):
     t_eff = t_eff / beta
     cs_imp = cp3_implied_cs(d_eff, t_eff, lr['dp3_t'], workout_vmax())
     lr['t_5k_hyp'] = cp3_time(5000.0, cs_imp, lr['dp3_t'], workout_vmax())
-    lr['p5k_min']  = lr['t_5k_hyp'] * 1609.344 / 5000.0 / 60.0
+    lr['p5k_min']  = lr['t_5k_hyp'] * METERS_PER_MILE / 5000.0 / 60.0
     lr['raw_resid'] = (lr['p5k_min'] - lr['p5k_cs_min']) * 60
     return lr
 
@@ -884,7 +872,7 @@ def watch_log_demotions():
         qp = qp_map.get(date)
         if qp is None or pd.isna(qp) or qp <= 0:
             continue
-        watch_pace = day['time_s'].sum() / (day['dist_m'].sum() / 1609.344)
+        watch_pace = day['time_s'].sum() / (day['dist_m'].sum() / METERS_PER_MILE)
         if abs(watch_pace - qp) / len(day) > WATCH_LOG_MISMATCH_PER_REP_S:
             out.add(date)
     return out
@@ -987,9 +975,9 @@ def project_hill_continuous(cs, epoch):
     h = h.dropna(subset=['loop_distance_m']).copy()
 
     h['quality_dist_m'] = h['nreps'] * h['loop_distance_m']
-    h['actual_pace_s'] = (h['session_min'] * 60.0) / (h['quality_dist_m'] / 1609.344)
+    h['actual_pace_s'] = (h['session_min'] * 60.0) / (h['quality_dist_m'] / METERS_PER_MILE)
     h['d_m']     = h['quality_dist_m']
-    h['t_eff']   = h['actual_pace_s'] * h['d_m'] / 1609.344
+    h['t_eff']   = h['actual_pace_s'] * h['d_m'] / METERS_PER_MILE
 
     # Watch-measured override: exact moving seconds for the loop block
     # (reps.py extract_hill_day) replace the hand log's whole-minute session
@@ -1001,14 +989,14 @@ def project_hill_continuous(cs, epoch):
     has_watch = h['watch_t_eff'].notna()
     h.loc[has_watch, 't_eff'] = h.loc[has_watch, 'watch_t_eff']
     h.loc[has_watch, 'actual_pace_s'] = (h.loc[has_watch, 't_eff']
-                                         / (h.loc[has_watch, 'd_m'] / 1609.344))
+                                         / (h.loc[has_watch, 'd_m'] / METERS_PER_MILE))
     h['watch_measured'] = has_watch
 
     h = add_cs(h, cs, epoch)
     cs_imp = cp3_implied_cs(h['d_m'], h['t_eff'], h['dp3_t'],
                             workout_vmax())
     h['t_5k_hyp'] = cp3_time(5000.0, cs_imp, h['dp3_t'], workout_vmax())
-    h['p5k_min']  = h['t_5k_hyp'] * 1609.344 / 5000.0 / 60.0
+    h['p5k_min']  = h['t_5k_hyp'] * METERS_PER_MILE / 5000.0 / 60.0
     h['raw_resid'] = (h['p5k_min'] - h['p5k_cs_min']) * 60
     # Informational grouping only — corrections come from the hill model
     # (gain + terrain), never from per-loop categories.
@@ -1028,7 +1016,7 @@ def project_hill_continuous(cs, epoch):
     # Hill-model covariates: total gain per quality mile, and the binary
     # terrain class from the locations sheet (paved vs trail; anything
     # non-paved counts as trail).
-    h['ft_per_mi'] = h['ft_gained'] / (h['quality_dist_m'] / 1609.344)
+    h['ft_per_mi'] = h['ft_gained'] / (h['quality_dist_m'] / METERS_PER_MILE)
     terrain = h['loop'].map(lambda l: _meta(l, 'terrain_type'))
     h['is_trail'] = (terrain.astype(str).str.lower()
                      .map(lambda t: np.nan if t in ('nan', 'none', '')
@@ -1044,7 +1032,7 @@ def project_hill_continuous(cs, epoch):
     cs_imp_corr = cp3_implied_cs(h['d_m'], t_eff_corr, h['dp3_t'],
                                  workout_vmax())
     t5k_corr = cp3_time(5000.0, cs_imp_corr, h['dp3_t'], workout_vmax())
-    h['p5k_min_hillcorr'] = t5k_corr * 1609.344 / 5000.0 / 60.0
+    h['p5k_min_hillcorr'] = t5k_corr * METERS_PER_MILE / 5000.0 / 60.0
     h['minetti_resid'] = (h['p5k_min_hillcorr'] - h['p5k_cs_min']) * 60
 
     # Flag (don't drop) hybrids, snow, and loops the model can't cover.
@@ -1169,7 +1157,7 @@ def project_hill_reps(cs=None, epoch=None):
             dp3 = float(h.at[idx, 'dp3_t'])
             cs_imp = float(cp3_implied_cs(d_eff, t_eff, dp3, vmax))
             t5k = float(cp3_time(5000.0, cs_imp, dp3, vmax))
-            p5k = t5k * 1609.344 / 5000.0 / 60.0
+            p5k = t5k * METERS_PER_MILE / 5000.0 / 60.0
             h.at[idx, 'p5k_min'] = p5k
             h.at[idx, 'raw_resid'] = (p5k - h.at[idx, 'p5k_cs_min']) * 60.0
             h.at[idx, 'watch_measured'] = True

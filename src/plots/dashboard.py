@@ -32,7 +32,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import daily_floor
+from src.shared.units import METERS_PER_MILE
+from src.shared.plot_window import clip_to_daily_floor
 from src.shared.effective_mileage import effective_daily_miles
 from src.shared.workouts import (
     TAU,
@@ -54,7 +55,7 @@ FILTER_BINS = [
     ('400m',     400),
     ('800m',     800),
     ('1500m',    1500),
-    ('Mile',     1609.344),
+    ('Mile',     METERS_PER_MILE),
     ('3000m',    3000),
     ('2 Mile',   3218.688),
     ('5K',       5000),
@@ -72,7 +73,7 @@ SHOE_BLOCK_DIFF_RUNS = 14
 
 # Short distances are handled structurally by the CP3 projection layer
 # (cs_projection.cp3_*) — the former β_short stretch is gone; see
-# docs/short-effort-unification-plan.md.
+# docs/cs-model-reference.md ("Projection method: CP3").
 
 OUT_HTML = OUTPUT_DIR / 'dashboard.html'
 SCAFFOLD_DIR = Path(__file__).resolve().parents[1] / 'plotting' / '_scaffold'
@@ -196,7 +197,7 @@ def compute_stats(daily, races, now_utc):
     # PRE_2016_VERIFIED_MILES is a Max-specific hand-verified pre-2016 total
     # (his paper logs aren't in the CSV); it must not be added to other
     # profiles, whose data starts when their device history does.
-    since_2016 = daily[daily['date'] >= daily_floor()]
+    since_2016 = clip_to_daily_floor(daily)
     pre_floor_miles = (PRE_2016_VERIFIED_MILES
                        if os.environ.get('RP_PROFILE', 'max') == 'max' else 0)
     miles_logged = int(math.floor(since_2016['miles'].sum() + pre_floor_miles))
@@ -340,7 +341,7 @@ def compute_prs(races):
         # PR = lowest pace_sec_per_mi (faster = smaller = better).
         sub = sub.copy()
         sub['pace'] = sub['pace_sec_per_mi'].fillna(
-            sub['time_sec'] * 1609.344 / sub['distance_m'])
+            sub['time_sec'] * METERS_PER_MILE / sub['distance_m'])
         best = sub.sort_values('pace').iloc[0]
         out.append({
             'distance': name,
@@ -458,12 +459,12 @@ def compute_workout_predictions(daily_summary, front_med,
     dp3 = float(cp3_dprime(latest['dp_med'], latest['cs_mps_med'],
                            workout_vmax()))
     t5k_front = (float(front_med['frontier_pace_min'].iloc[-1])
-                 * 60.0 * 5000.0 / 1609.344)
+                 * 60.0 * 5000.0 / METERS_PER_MILE)
 
     # --- Intervals 6x1600m, 3:00 rest (actual seconds, connected core) ---
     def _intervals(pace):
         dists = [1600.0] * 6
-        times = [pace * 1600.0 / 1609.344] * 6
+        times = [pace * 1600.0 / METERS_PER_MILE] * 6
         rests = [180.0] * 5
         return _connected_core(dists, times, rests, dp3=dp3)
     pace_intervals = _invert_projection(_intervals, t5k_front, dp3)
@@ -504,7 +505,7 @@ def compute_workout_predictions(daily_summary, front_med,
         else:
             hi_d = mid
     d_long = (lo_d + hi_d) / 2
-    pace_long = target_long * 1609.344 / d_long
+    pace_long = target_long * METERS_PER_MILE / d_long
 
     return {
         'intervals_6x1600': pace_intervals,

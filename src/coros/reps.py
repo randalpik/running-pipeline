@@ -67,8 +67,7 @@ from src.coros.build_current_log import Activity
 from src.shared.paths import DATA_DIR
 from src.shared.hill_model import FT_PER_M
 from src.shared.workouts import _parse_hr, hc_loop_distance, parse_hc
-
-MILE = 1609.344
+from src.shared.units import METERS_PER_MILE as MILE
 QUALITY_TYPES = {'tempo', 'interval', 'rep', 'fartlek'}
 
 CHUNK = 20.0          # m, fine evaluation step

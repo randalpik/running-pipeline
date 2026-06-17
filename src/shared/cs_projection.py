@@ -21,7 +21,7 @@ projection level it under-credits (a 57 s 400 m read as a 20-min-5K
 fitness) — and the CP3 bend fixes both directions with a shape instead of
 a knob. v_max itself is an uncertainty interval whose two edges serve the
 two directions (see the v_max section below).
-See docs/short-effort-unification-plan.md.
+See docs/cs-model-reference.md ("Projection method: CP3").
 
 At the race's date, look up D′ from the model and solve the race's own
 implied CS from (d, t) — a closed-form quadratic, since τ depends on the
@@ -61,6 +61,8 @@ import sys
 import pandas as pd
 import numpy as np
 from scipy.interpolate import CubicSpline
+
+from src.shared.units import METERS_PER_MILE
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +252,7 @@ def load_cs_outputs(in_dir, tag=''):
     # CS-implied 5K pace in min/mi (no β_long applied — this IS the model's CS
     # belief). Identical under CP2 and CP3 — the D′₃ bridge preserves the 5K
     # prediction by construction, on BOTH edges.
-    daily['p5k_implied_min'] = (1609.344 * (5000.0 - daily['dp_med'])
+    daily['p5k_implied_min'] = (METERS_PER_MILE * (5000.0 - daily['dp_med'])
                                 / daily['cs_mps_med'] / 5000.0 / 60.0)
     # CP3 full anaerobic reservoir per date, one per v_max edge (see the
     # module docstring): evidence (reading efforts) and prediction (forward
@@ -335,7 +337,7 @@ def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
     # Physical route correction (grade + off-road footing + altitude) — convert
     # each watch-covered race to its flat / sea-level / smooth-equivalent time
     # so the projection (and the frontier it feeds) matches what informs the CS
-    # fit (docs/watch-stream-enrichment-plan.md §B). MUST stay consistent with
+    # fit (docs/cs-model-reference.md "Race physical correction"). MUST stay consistent with
     # the same helper applied in bayes_cs_fit. Where a race has a measured
     # correction the categorical XC factor is turned OFF for it (measured wins;
     # categorical is the pre-watch fallback). dt_sec is 0 on unmeasured races,
@@ -380,11 +382,11 @@ def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
         t_anchor = float(cp3_time(norm_dist_m, cs_imp, dp3, vmax)) * beta_anchor
         if not np.isfinite(t_anchor):
             return np.nan
-        return t_anchor / (norm_dist_m / 1609.344) / 60.0
+        return t_anchor / (norm_dist_m / METERS_PER_MILE) / 60.0
 
     df['pace_norm_min'] = df.apply(_proj, axis=1)
     df['pace_norm_sec'] = df['pace_norm_min'] * 60.0
-    df['time_norm_sec'] = df['pace_norm_sec'] * (norm_dist_m / 1609.344)
+    df['time_norm_sec'] = df['pace_norm_sec'] * (norm_dist_m / METERS_PER_MILE)
     return df
 
 
@@ -413,7 +415,7 @@ def pace5k_series_to_anchor(p5k_min, daily_summary, anchor_dist_m,
     Forward direction → prediction edge."""
     vmax = vmax_predict()
     dp3 = daily_summary['dp3_pred_med'].to_numpy(float)
-    t5k = np.asarray(p5k_min, float) * 60.0 * 5000.0 / 1609.344
+    t5k = np.asarray(p5k_min, float) * 60.0 * 5000.0 / METERS_PER_MILE
     cs_mps = cp3_implied_cs(5000.0, t5k, dp3, vmax)
     beta_anchor = _beta_long_factor(anchor_dist_m, beta_long, d_thresh_long)
     return cp3_time(anchor_dist_m, cs_mps, dp3, vmax) * beta_anchor

@@ -108,8 +108,7 @@ would absorb them).
 
 Per-route empirical dummies and the hand-set `elev_per_mile × constant`
 route cost were replaced by a physical, era-free engine driven by the
-per-second watch altitude/GPS stream (docs/watch-stream-enrichment-plan.md,
-now complete). One engine feeds all three layers — recovery, long-run, race
+per-second watch altitude/GPS stream. One engine feeds all three layers — recovery, long-run, race
 — through a single set of constants, so a route's intrinsic cost is computed
 the same way everywhere.
 

@@ -41,7 +41,7 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import daily_floor
+from src.shared.plot_window import clip_to_daily_floor
 from src.shared.country_codes import country_abbrev
 from src.shared.effective_mileage import effective_daily_miles
 from src.plotting import (render_plot, apply_default_layout, GRID)
@@ -655,7 +655,7 @@ def main():
     # Daily.csv now includes pre-2016 stub rows synthesized from race
     # additions (used by the world map). All other daily-driven plots —
     # this one included — standardize on the 2016+ logging era.
-    df = df[df['date'] >= daily_floor()]
+    df = clip_to_daily_floor(df)
     # Drop rows with no resolved city_state (e.g. indoor runs in a watch-import
     # profile) — the geography categories are keyed on city_state.
     df = df.dropna(subset=['city_state']).copy()

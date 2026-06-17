@@ -77,7 +77,7 @@ import numpy as np
 import pandas as pd
 
 from src.shared.paths import DATA_DIR
-from src.shared.plot_window import daily_floor
+from src.shared.plot_window import clip_to_daily_floor
 from src.shared.recovery_model import (quality_category_dates,
                                        add_quality_features,
                                        fit_recovery_model,
@@ -160,7 +160,7 @@ def load_quality_dates():
     long-run fatigue covariates. Filtered to the logging era so the dates
     match what the recovery fit sees."""
     daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
-    daily = daily[daily['date'] >= daily_floor()]
+    daily = clip_to_daily_floor(daily)
     races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
     return quality_category_dates(daily, races)
 

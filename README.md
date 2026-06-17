@@ -55,7 +55,7 @@ src/
   models/     Bayesian CS fit (bayes_cs_fit.py)
   plotting/   shared rendering layer — see CLAUDE.md § "Plot conventions"
   plots/      one .py per plot (+ sibling .js / .css for plot-specific behavior)
-scripts/      run_pipeline.sh, run_plots.sh, dev.py, sheets_trigger.gs
+scripts/      run_pipeline.sh, run_plots.sh, build_profiles.py, dev.py, sheets_trigger.gs
 output/       generated HTML + plotly.min.js (copied to site/dist/ at deploy)
 site/         Netlify functions, edge gate, deployed dist
 docs/         reference docs per analytical layer (see map below)

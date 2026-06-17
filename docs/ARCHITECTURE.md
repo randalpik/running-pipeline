@@ -89,9 +89,7 @@ The volume / temperature / weight panel: three stacked subplots with moving-aver
 | `recovery-runs-reference.md` | 3 | Era window (±182d), OLS features, route inclusion threshold, rejected normalizers (volume, bodyweight). |
 | `route-normalization-reference.md` | cross | Locations-sheet schema/dataflow + the **physical elevation engine** (June 2026, watch enrichment): grade cost model (`elevation_cost.py`, terrain×effort refund), threshold+linear altitude curve, pinned footing/altitude betas (`physical_route_betas`, the single source shared by recovery/long/race), per-run features (`per_run_elevation`/`per_run_altitude`), and the race DEM (`dem_elevation.py`). |
 | `qualitative-trends-reference.md` | diagnostic | Window sizes (56/28/56-day MA, 14d min-max with 7d smoothing), gradient-strip rendering, weight gap-align before+after smoothing. |
-| `cs-workout-enrichment-plan.md` | 1 (plan) | Plan-of-record for *if/how* watch-enriched interval workouts get added to the CS fit. Spike executed June 2026 → HALTED at validation (level bias); fit stays race-only. |
-| `short-effort-unification-plan.md` | cross (plan) | Proposed June 2026: replace race-side β_short AND workout-side g(d) with ONE effort-aware anaerobic correction (scales with speed-above-CS; a 400m race analyzes exactly like a 400m rep). Problem evidence, candidate designs (effort-aware g, 3-param CP), validation gates. |
-| `cs-workout-enrichment-spike-report.md` | 1 (report) | June 2026 spike: CS-likelihood enrichment HALTED (hold-out failures, characterized likelihood pathologies); pivoted to the **performance frontier** — deterministic demonstrated-capability envelope on Fitness (`src/shared/performance_frontier.py`, cone slopes from the spike's structure-function analysis). `bayes_cs_fit.py --workout-obs` remains flag-gated, default off. |
+| `watch-derived-cache-spec.md` | cross | Data-layer spec for the watch-derived cache (corrected mileage, per-run elevation/altitude, weather) consumed by the elevation engine and the recovery/long-run/race models. |
 
 ## Pre-2016 race data
 
