@@ -560,9 +560,19 @@ def project_workouts(cs, epoch):
         w.loc[has, 'D_eff'] = w.loc[has, 'd_eff_m']
         w.loc[has, 't_eff'] = (w.loc[has, 't_eff_s']
                                / np.where(w.loc[has, 'xc_corrected'], 1.06, 1.0))
-    cs_imp = cp3_implied_cs(w['D_eff'], w['t_eff'], w['dp3_t'],
-                            workout_vmax())
+    # Hybrid (June 2026): a session whose connected-fatigue D_eff exceeds 5K is
+    # an aerobic effort and down-converts via the WA tables (aerobic-to-aerobic,
+    # like long runs); D_eff <= 5K stays on CP3 + v_max (up-conversion, where
+    # IAAF cross-athlete equivalence is invalid — Max's mid-distance/sprint
+    # strength is not the population's). Most sessions are <=5K and unchanged.
+    cs_imp = cp3_implied_cs(w['D_eff'], w['t_eff'], w['dp3_t'], workout_vmax())
     w['t_5k_hyp'] = cp3_time(5000.0, cs_imp, w['dp3_t'], workout_vmax())
+    long_w = w['D_eff'].astype(float) > 5000.0
+    if long_w.any():
+        from src.shared.wa_scoring import wa_5k_equiv_time
+        w.loc[long_w, 't_5k_hyp'] = [wa_5k_equiv_time(float(d), float(t))
+                                     for d, t in zip(w.loc[long_w, 'D_eff'],
+                                                     w.loc[long_w, 't_eff'])]
     w['p5k_min']  = w['t_5k_hyp'] * METERS_PER_MILE / 5000 / 60.0
     w['raw_resid'] = (w['p5k_min'] - w['p5k_cs_min']) * 60
     w['category'] = w['type']
@@ -624,18 +634,6 @@ def project_workouts(cs, epoch):
 
 
 # ---------- long runs ----------
-def _load_beta_long():
-    """(beta_long, d_thresh_long) from the profile's bayes_cs_params.csv —
-    the same long-distance fade the race plots un-bias with. Falls back to
-    (0, 10000) when the params artifact is absent (no CS fit yet)."""
-    path = DATA_DIR / 'bayes_cs_params.csv'
-    if not path.exists():
-        return 0.0, 10000.0
-    p = pd.read_csv(path)
-    return (float(p['beta_long_med'].iloc[0]),
-            float(p['d_thresh_long'].iloc[0]))
-
-
 def _long_run_gated(d):
     """Long-run rows (``run_type == 'long'``, valid pace/miles) with the
     ``excluded_reason`` flag (slice / partner / snow). Shared by
@@ -714,9 +712,16 @@ def project_long_runs(cs, epoch):
     feed the projection their corrected distance/time and, for watch days, a
     pause-aware connected-fatigue D_eff — so p5k_min/raw_resid (and every
     downstream consumer: the TQ smoother, the dashboard's long-run
-    prediction) are correction-aware. β uses the run's full corrected
-    distance, not D_eff: the fade is total-work/glycogen depletion, which
-    a stoplight pause doesn't reset. The slice gate stays on LOGGED values:
+    prediction) are correction-aware. β un-biases at D_eff, the connected-
+    fatigue distance, NOT the full distance: a substantial pause the
+    connected-fatigue model already counts as recovery (d_eff << d_m) is not a
+    full-distance glycogen-depletion effort, so it earns only the smaller fade
+    its connected effort justifies — conservative, and self-consistent with the
+    distance the CP3 inference uses. Short stoplight pauses leave d_eff ~ d_m so
+    they're unaffected. (Prior logic un-biased at the full distance on a
+    glycogen-depletion argument, but that contradicts d_eff treating the same
+    pauses as recovery — it took the generous side of both.) The slice gate
+    stays on LOGGED values:
     the 26.2 ceiling is a logging convention (training marathons are logged
     as exactly 26.2) and corrections never move a run across either bound.
 
@@ -809,19 +814,25 @@ def project_long_runs(cs, epoch):
     # nearly flat in D_eff so this is a small, one-directional refinement
     # (~+1-3 s/mi) — the distance calibration does the heavy lifting. The
     # grade cost rides on the run's pace (t_run_flat over the real distance
-    # d_m); D_eff only rescales the fatigue work.
-    d_eff = np.where(lr['d_eff_m'].notna(), lr['d_eff_m'], lr['d_m'])
-    t_eff = d_eff / (lr['d_m'] / t_run_flat)
-    # Race-equivalent un-bias (see docstring): β at the run's full distance.
-    beta_long, d_thresh = _load_beta_long()
-    beta = np.where(lr['d_m'] > d_thresh,
-                    1.0 + beta_long * np.log(np.maximum(lr['d_m'], d_thresh)
-                                             / d_thresh),
-                    1.0)
-    t_eff = t_eff / beta
-    cs_imp = cp3_implied_cs(d_eff, t_eff, lr['dp3_t'], workout_vmax())
-    lr['t_5k_hyp'] = cp3_time(5000.0, cs_imp, lr['dp3_t'], workout_vmax())
-    lr['p5k_min']  = lr['t_5k_hyp'] * METERS_PER_MILE / 5000.0 / 60.0
+    # 5K-equivalent via the World Athletics tables (June 2026 hybrid): long runs
+    # are all >5K, so they down-convert aerobic-to-aerobic (replaces the old
+    # beta_long un-bias), on the PHYSICALLY-corrected time (grade/footing/alt
+    # removed) at the full distance. A cardiovascular-drift PAUSE PENALTY is
+    # added first: a paused run's moving pace overstates the continuous-
+    # equivalent by the fast (HR/W')-drift component the stops reset, intensity-
+    # gated (>~0.88 CS) and heat-scaled. D_eff/connected-fatigue is no longer
+    # used here — the WA score is on the run's actual distance/time.
+    from src.shared.wa_scoring import wa_5k_equiv_time, pause_penalty_fraction
+    run_pace = lr['t_run'] / (lr['d_m'] / METERS_PER_MILE)     # moving pace s/mi
+    cs_pace = lr['p5k_cs_min'] * 60.0                          # CS-implied pace s/mi
+    intensity = (cs_pace / run_pace).to_numpy()
+    pen = np.array([pause_penalty_fraction(i, T / 3600.0, tc)
+                    for i, T, tc in zip(intensity, lr['t_run'].to_numpy(),
+                                        lr['temp_c'].to_numpy())])
+    t_wa = t_run_flat.to_numpy() * (1.0 + pen)                 # continuous-equivalent
+    lr['t_5k_hyp'] = [wa_5k_equiv_time(float(d), float(t))
+                      for d, t in zip(lr['d_m'].to_numpy(), t_wa)]
+    lr['p5k_min']  = np.asarray(lr['t_5k_hyp'], float) * METERS_PER_MILE / 5000.0 / 60.0
     lr['raw_resid'] = (lr['p5k_min'] - lr['p5k_cs_min']) * 60
     return lr
 

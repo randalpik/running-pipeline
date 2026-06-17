@@ -326,22 +326,22 @@ evidence.** Each entry below documents the test and rationale.
   collapsing to watch-era rows. Calm (0 mph) is the zero-contribution
   baseline. Degrades to 0 (no-op) without watch data.
 
-- **Humidity → heat index — ADOPTED June 2026 (as a temp transform, not
-  a standalone term).** A standalone humidity main effect is small
-  (~+0.04 s/mi/%, t=2.6) and confounded with mild-dry-Boulder-ideal days;
-  the hypothesized temp×humidity *compounding* interaction is **not
-  supported and reverses** in Max's data (humid−dry is +2.8 s/mi at mild
-  temps but −0.7 at ≥22°C — his hot days are dry Boulder/altitude, and
-  the hot-humid travel days e.g. Baton Rouge June 2024 carry no penalty
-  beyond temp once the lost sea-level/altitude bonus is accounted for).
-  So humidity enters only by replacing air temp with **apparent
-  ("feels-like") temperature** (NWS heat index, `apparent_temp_c`),
-  centered at 12°C. Adopted on principle (validated physiological
-  construct, correct-by-default for humid-climate profiles, sharpens the
-  residual toward behavior) rather than fit: it touches only ~80 hot-humid
-  rows (max +4.8°C felt), shrinks the temp beta ~1.5% (+0.241→+0.239), and
-  every other beta holds to <0.1%. Below 80°F and where humidity is
-  missing it equals plain air temp.
+- **Temperature is a ONE-SIDED HEAT HINGE — `temp_centered = max(0, air_temp − 6°C)`
+  (SUPERSEDES the symmetric/heat-index form, June 2026).** The earlier
+  apparent-temp-centered-at-12 term was *bidirectional*: every sub-12°C day was
+  credited a phantom cold speedup mirroring the heat penalty (it predicted
+  ~−8 s/mi at −19°C where the data is a flat ~−2). The true recovery shape,
+  pinned from 2356 well-normalized runs, is a flat cold plateau and a monotonic
+  heat rise from ~6°C, fit only above the onset (β ≈ +0.31 s/mi per °C above 6,
+  the slope unchanged by the form). The contribution is re-referenced to the
+  **median clean-day hinge** so normalizing temperature moves hot days faster
+  and cool days slower around a typical day (like wind), not the whole cloud one
+  direction. **Humidity / the heat index were DROPPED:** a separate humidity
+  term is weak (~+0.04 s/mi/%, t=2.6) and the heat index — humidity's physical
+  encoding — never beat plain air temp in the corrected comparison, so this is
+  air temperature, not feels-like. Long runs reuse the same hinge SHAPE with a
+  freely-fit (steeper) slope; see `cs-model-reference.md` for how heat ties into
+  the long-run pause penalty.
 
 - **Shoe age** (cumulative miles in this physical pair before the run) —
   tested April 2026. n=1671 runs across 18 pairs with ≥30 runs each,
@@ -556,7 +556,7 @@ Single-pass:
 
 ```
 intercept            +2.53
-temp_centered        +0.28      sec/mi per °C from 12°C reference
+temp_centered        +0.31      sec/mi per °C above 6°C (one-sided heat hinge)
 fat_marathon        +17.0       exp(−t/6) decay from marathon
 fat_race_short       +8.7       exp(−t/5) decay from short race
 tod_is_pm            −4.7       sec/mi for afternoon/late vs early/morning

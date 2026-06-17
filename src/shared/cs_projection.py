@@ -377,9 +377,25 @@ def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
         t_race = float(r['time_sec'])
         if t_race <= 0 or d_race <= 0:
             return np.nan
-        t_eff = t_race / _beta_long_factor(d_race, beta_long, d_thresh)
-        cs_imp = float(cp3_implied_cs(d_race, t_eff, dp3, vmax))
-        t_anchor = float(cp3_time(norm_dist_m, cs_imp, dp3, vmax)) * beta_anchor
+        # Hybrid (June 2026), composed in two legs through the 5K anchor:
+        #   leg 1  race -> 5K-equiv:  >5K via World Athletics (aerobic-to-aerobic,
+        #          retires beta_long), <=5K via CP3 + v_max (sprint↔distance is
+        #          invalid in IAAF for a specialist).
+        #   leg 2  5K-equiv -> requested anchor: identity at 5K, >5K via WA
+        #          up-conversion, <=5K via CP3.
+        from src.shared.wa_scoring import wa_5k_equiv_time, wa_equiv_time_at
+        if d_race > 5000.0:
+            t5k = wa_5k_equiv_time(d_race, t_race)
+        else:
+            cs_imp = float(cp3_implied_cs(d_race, t_race, dp3, vmax))
+            t5k = float(cp3_time(5000.0, cs_imp, dp3, vmax))
+        if abs(norm_dist_m - 5000.0) < 1.0:
+            t_anchor = t5k
+        elif norm_dist_m > 5000.0:
+            t_anchor = wa_equiv_time_at(norm_dist_m, t5k)
+        else:
+            cs2 = float(cp3_implied_cs(5000.0, t5k, dp3, vmax))
+            t_anchor = float(cp3_time(norm_dist_m, cs2, dp3, vmax))
         if not np.isfinite(t_anchor):
             return np.nan
         return t_anchor / (norm_dist_m / METERS_PER_MILE) / 60.0
@@ -391,13 +407,19 @@ def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
 
 
 def cs_line_at_anchor(daily_summary, anchor_dist_m, beta_long, d_thresh_long):
-    """CS-predicted total time (seconds) at anchor_dist_m for each daily date:
-    the CP3 forward solve on (CS(date), D′₃(date)), times the β_long factor
-    for anchors above d_thresh_long. Forward direction → prediction edge."""
-    beta_anchor = _beta_long_factor(anchor_dist_m, beta_long, d_thresh_long)
-    return cp3_time(anchor_dist_m, daily_summary['cs_mps_med'].values,
-                    daily_summary['dp3_pred_med'].values,
-                    vmax_predict()) * beta_anchor
+    """CS-predicted total time (seconds) at anchor_dist_m for each daily date.
+    Hybrid (June 2026): anchors ≤5K via the CP3 forward solve on (CS, D′₃);
+    anchors >5K via World Athletics up-conversion of the CS-implied 5K time
+    (replaces the retired β_long fade). Forward direction → prediction edge.
+    (beta_long/d_thresh_long retained for signature compat; ignored.)"""
+    vmax = vmax_predict()
+    cs_mps = daily_summary['cs_mps_med'].values
+    dp3 = daily_summary['dp3_pred_med'].values
+    if anchor_dist_m > 5000.0:
+        from src.shared.wa_scoring import wa_equiv_time_at
+        t5k = np.asarray(cp3_time(5000.0, cs_mps, dp3, vmax), float)
+        return np.array([wa_equiv_time_at(anchor_dist_m, t) for t in t5k])
+    return cp3_time(anchor_dist_m, cs_mps, dp3, vmax)
 
 
 def pace5k_series_to_anchor(p5k_min, daily_summary, anchor_dist_m,
@@ -413,12 +435,14 @@ def pace5k_series_to_anchor(p5k_min, daily_summary, anchor_dist_m,
     that equals the model's own p5k_implied_min, the result matches
     cs_line_at_anchor exactly (the D′₃ bridge preserves the 5K solve).
     Forward direction → prediction edge."""
+    t5k = np.asarray(p5k_min, float) * 60.0 * 5000.0 / METERS_PER_MILE
+    if anchor_dist_m > 5000.0:   # hybrid: >5K up-converts via World Athletics
+        from src.shared.wa_scoring import wa_equiv_time_at
+        return np.array([wa_equiv_time_at(anchor_dist_m, t) for t in t5k])
     vmax = vmax_predict()
     dp3 = daily_summary['dp3_pred_med'].to_numpy(float)
-    t5k = np.asarray(p5k_min, float) * 60.0 * 5000.0 / METERS_PER_MILE
     cs_mps = cp3_implied_cs(5000.0, t5k, dp3, vmax)
-    beta_anchor = _beta_long_factor(anchor_dist_m, beta_long, d_thresh_long)
-    return cp3_time(anchor_dist_m, cs_mps, dp3, vmax) * beta_anchor
+    return cp3_time(anchor_dist_m, cs_mps, dp3, vmax)
 
 
 def cubic_at_anchor(daily_summary, cubic_coefs, t0, handdrawn_start, handdrawn_end,

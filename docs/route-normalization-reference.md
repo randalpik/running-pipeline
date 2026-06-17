@@ -247,8 +247,9 @@ of runs, and the pinned betas are fit on them.
   pinned grade `elev_cost`, all on corrected pace).
 - **Long-run 5K conversion** (`training-quality-reference.md`,
   `workouts.project_long_runs`): grade + footing + altitude credited as flat /
-  sea-level-equivalent TIME corrections *before* the β_long un-bias and the
-  CP3 projection. Replaced the old route-constant `0.17·elev_per_mile`.
+  sea-level-equivalent TIME corrections *before* the World Athletics
+  down-conversion to 5K-equivalent (June 2026 — replaced the β_long un-bias).
+  Replaced the old route-constant `0.17·elev_per_mile`.
 - **Race CS** (`cs-model-reference.md`, `recovery_model.race_physical_
   correction`): corrects each watch-covered race's time to its flat / sea-level
   / smooth-equivalent before it informs CS, replacing the categorical XC ×1.08

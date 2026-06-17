@@ -459,6 +459,22 @@ def main():
 
     race_distances = elig['distance_m'].to_numpy().astype(float)
     race_times = elig['time_sec'].to_numpy().astype(float)
+    # Hybrid 5K-equivalence (June 2026): efforts ABOVE 5K down-convert via the
+    # World Athletics tables (aerobic-to-aerobic — replaces the old beta_long
+    # fade) and enter the fit as 5000m anchors; efforts at/below 5K stay raw and
+    # are fit by the CP3 hyperbola + v_max (up-conversion, where IAAF's
+    # cross-athlete equivalence is invalid for a distance specialist). Times are
+    # already physical/XC-corrected above, so the WA score sees the corrected
+    # time. With every race now <=5000m, log_d_ratio below is 0 for all rows, so
+    # beta_long is inert (written as 0 to params); it survives only as dead code.
+    from src.shared.wa_scoring import wa_5k_equiv_time
+    long_mask = race_distances > 5000.0
+    for i in np.flatnonzero(long_mask):
+        race_times[i] = wa_5k_equiv_time(float(race_distances[i]), float(race_times[i]))
+    race_distances[long_mask] = 5000.0
+    if int(long_mask.sum()):
+        print(f"Hybrid: {int(long_mask.sum())} races >5K down-converted to "
+              f"5K-equivalent via World Athletics tables (beta_long retired).")
     log_race_times = np.log(race_times)
 
     # ---------- optional near-race workout observations (spike) ----------
@@ -512,32 +528,17 @@ def main():
         D_REF = 5000.0
         sigma_per_race = sigma_base * (race_distances / D_REF) ** alpha_sig
 
-        # Long-distance bias term: pure CS theory predicts marathon times that
-        # are systematically too fast (no glycogen wall, no fuel constraints,
-        # no thermoregulatory drift). Without correction, marathons drag CS
-        # downward to "explain" their slowness, distorting the CS estimate
-        # at marathon-adjacent dates.
+        # Long-distance bias: RETIRED (June 2026). The old in-model fade term
+        # (1 + beta_long*log(d/d_thresh)) corrected marathons that pure CS theory
+        # times too fast. It's gone — every race >5K is now down-converted to its
+        # 5K-equivalent via the World Athletics tables BEFORE the fit (see the
+        # race-ingestion block above), so the fit only ever sees efforts <=5K and
+        # there is no fade to apply. bias_factor is identically 1.
         #
-        # Model: predicted time gets multiplied by (1 + β * log(d/d_thresh))
-        # for d > d_thresh, so the inflation is 0 below threshold and grows
-        # smoothly with distance. β has prior centered at 0 — the data
-        # determines the magnitude. If a future race breaks through the
-        # historical bias (e.g. a well-executed marathon), it will register
-        # as a strong negative residual, naturally pulling β downward.
-        #
-        # At β=0.05: HM bias ≈ +3.7%, marathon bias ≈ +7.2% — matches
-        # observed v7 residuals (HM mean +4.2%, marathon mean +8.5%).
-        d_thresh = 10000.0
-        beta_long = pm.HalfNormal('beta_long', sigma=0.1)
-        # log_d_ratio is 0 for d <= d_thresh, log(d/d_thresh) above
-        log_d_ratio = np.maximum(0.0, np.log(race_distances / d_thresh))
-
-        # XC bias is handled OUTSIDE the model via pre-correction of XC times
-        # (see --xc-correction CLI flag). The model can't empirically separate
-        # terrain effect from fitness loss in fall XC clusters, so we encode
-        # the terrain penalty exogenously and let the model fit pre-corrected
-        # times naturally.
-        bias_factor = 1.0 + beta_long * log_d_ratio
+        # XC bias is still handled OUTSIDE the model via pre-correction of XC
+        # times (see --xc-correction CLI flag): the model can't separate terrain
+        # from fitness in fall XC clusters, so we pre-correct and fit naturally.
+        bias_factor = 1.0
 
         # HSGP — Hilbert space approximation, much cheaper than full Latent
         cov_cs_long = sf_cs_long ** 2 * pm.gp.cov.Matern52(input_dim=1, ls=ell_cs_long)
@@ -653,8 +654,7 @@ def main():
                                                  'sf_cs_long', 'ell_cs_long',
                                                  'sf_cs_dev',  'ell_cs_dev',
                                                  'sf_dp', 'ell_dp',
-                                                 'sigma_base', 'alpha_sig',
-                                                 'beta_long'])
+                                                 'sigma_base', 'alpha_sig'])
             f.write(summ.to_string())
             f.write("\n\n")
             n_div = int(trace.sample_stats['diverging'].sum())
@@ -709,11 +709,9 @@ def main():
         cs_at_race_med = np.median(cs_flat[:, race_grid_idx], axis=0)
         dp_at_race_med = np.median(dp_flat[:, race_grid_idx], axis=0)
         # Apply long-distance bias correction (matching the likelihood model).
-        # XC races already had their times pre-corrected, so no β_xc here.
-        beta_long_med = float(np.median(trace.posterior['beta_long'].values))
-        log_d_ratio_np = np.maximum(0.0, np.log(race_distances / 10000.0))
-        bias_factor_med = 1.0 + beta_long_med * log_d_ratio_np
-        pred_t = (race_distances - dp_at_race_med) / cs_at_race_med * bias_factor_med
+        # XC races already had their times pre-corrected, and >5K races are
+        # pre-converted to 5K-equivalent — so the prediction is pure CP3 (no fade).
+        pred_t = (race_distances - dp_at_race_med) / cs_at_race_med
         pct_resid = (race_times / pred_t - 1) * 100
 
         resid_df = pd.DataFrame({
@@ -767,15 +765,13 @@ def main():
             # σ_per_race posterior: σ_base * (d/D_REF)^α, sample by sample
             sb_post = trace.posterior['sigma_base'].values.reshape(-1)
             a_post  = trace.posterior['alpha_sig'].values.reshape(-1)
-            beta_post = trace.posterior['beta_long'].values.reshape(-1)
             # Broadcast σ across races: shape (samples, races)
             D_REF_arr = 5000.0
             ratio = (race_distances[None, :] / D_REF_arr) ** a_post[:, None]
             sig_per_race = sb_post[:, None] * ratio   # (samples, races)
-            # Per-sample bias factor (long-distance only; XC corrected upstream)
-            bias_factor_post = 1.0 + beta_post[:, None] * log_d_ratio_np[None, :]
-            # Posterior-predictive log-time mean (with bias) and noise per sample
-            expected_t_pp = (race_distances[None, :] - dp_post) / cs_post * bias_factor_post
+            # Posterior-predictive log-time mean — pure CP3 (no fade; >5K
+            # pre-converted to 5K-equiv, XC pre-corrected).
+            expected_t_pp = (race_distances[None, :] - dp_post) / cs_post
             mean_log_t = np.log(expected_t_pp)  # (samples, races)
             # Draw one log_t per (sample, race): mean + σ * N(0,1)
             rng = np.random.default_rng(args.seed)
@@ -815,7 +811,10 @@ def main():
     # a flat course at the corresponding distance band.
     params_path = os.path.join(args.out_dir, f'bayes_cs_params{suffix}.csv')
     params_df = pd.DataFrame([{
-        'beta_long_med': float(np.median(trace.posterior['beta_long'].values)),
+        # Retired under the hybrid (June 2026): >5K efforts down-convert via the
+        # WA tables before the fit, so no in-model fade is applied. Written as 0
+        # so any consumer still reading beta_long applies a no-op factor.
+        'beta_long_med': 0.0,
         'd_thresh_long': 10000.0,
         'xc_correction': float(args.xc_correction),
     }])

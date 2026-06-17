@@ -52,6 +52,8 @@ The layers are intentionally **not combined**. Each answers a different question
 
 Bayesian estimate of fitness on a single continuous scale, derived from race results only. Replaces earlier VDOT-based approaches. Workouts and long runs do **not** feed back into CS; a combined model was tested in April 2026 and underperformed CS-only on the 2018+ HM+Track5K subset (RMSE 13.4 vs 10.6).
 
+**Cross-distance equivalence is a hybrid (June 2026):** races above 5K down-convert to their 5K-equivalent via the **World Athletics scoring tables** (aerobic-to-aerobic, retiring the old fitted `β_long` fade); efforts at/below 5K up-convert via **CP3 + v_max** (IAAF's cross-athlete equivalence is invalid for a distance specialist's sprints). The two meet continuously at the 5K anchor. This is the single conversion used to ground the fit and to project the frontier up to HM/marathon.
+
 CS-implied 5K is treated as ground truth for fitness. The other layers sit beside it, not inside it.
 
 → See `cs-model-reference.md`
@@ -64,7 +66,7 @@ A residual layer on top of CS. Translates each workout, long run, and hill effor
 
 ### Layer 3 — Recovery
 
-Era-windowed regression on recovery-run pace, with a small set of OLS features (apparent/"feels-like" temperature — humidity folded in via the heat index, recent race exposure, time-of-day, pinned physical footing/altitude/elevation, and a pinned wind cost on watch-measured days). Volume normalizers and bodyweight features were explored and rejected. Captures the slow drift in baseline aerobic fitness independent of race performance.
+Era-windowed regression on recovery-run pace, with a small set of OLS features (a one-sided heat hinge on air temperature — `max(0, air_temp − 6°C)`, with humidity/heat-index dropped after June 2026; recent race exposure, time-of-day, pinned physical footing/altitude/elevation, and a pinned wind cost on watch-measured days). Volume normalizers and bodyweight features were explored and rejected. Captures the slow drift in baseline aerobic fitness independent of race performance.
 
 → See `recovery-runs-reference.md`
 

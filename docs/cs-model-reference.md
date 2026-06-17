@@ -73,16 +73,21 @@ necessary model parameter but not informative for the user.
 ### Likelihood
 
 ```
-expected_t = (d - D') / CS · bias_factor
+expected_t = (d - D') / CS          (pure CP2; no fade term)
 log τ ~ Normal(log(expected_t), σ_per_race)
 ```
 
-with:
+with `σ_per_race = σ_base · (d/5000)^α` — distance-dependent noise
+(σ_base ≈ 0.028, α ≈ 0.03).
 
-- `σ_per_race = σ_base · (d/5000)^α` — distance-dependent noise.
-  Posteriors: σ_base ≈ 0.028, α ≈ 0.03.
-- `bias_factor = 1 + β_long · max(0, log(d/d_thresh))` for d_thresh = 10K.
-  β_long posterior ≈ 0.071. Marathon inflation ≈ +10.3%, HM ≈ +5.3%.
+**`β_long` is RETIRED (June 2026 — the IAAF hybrid, see "Cross-distance
+equivalence" below).** The fit no longer carries a long-distance fade term.
+Instead, every race **above 5K is down-converted to its 5K-equivalent via the
+World Athletics scoring tables BEFORE the fit** (in the race-ingestion block of
+`bayes_cs_fit.py`), so the model only ever sees efforts ≤ 5K and `bias_factor`
+is identically 1. `bayes_cs_params.csv` still writes `beta_long_med = 0.0`
+(no-op) for the handful of consumers that still unpack it from
+`load_cs_outputs`; that plumbing is vestigial.
 
 ### XC pre-correction
 
@@ -128,23 +133,83 @@ identically. Reading a race as evidence
 uses the HIGH edge (short diamonds conservative — every 400 ever raced
 sits at/behind the frontier by construction); forward solves (dashboard
 predictions, lines-at-anchor) use the LOW edge (400/800 predictions never
-beat the lifetime PRs at any date in the sweep). For each race, un-bias
-the time first if d > 10K (β_long, unchanged), then solve the race's own
-implied CS (closed-form quadratic — SELF-consistent, the fit's CS never
-enters) and forward-solve the 5K time on that curve. The fit's D′ is
-bridged per date as the effective anaerobic distance at 5K
-(`D′₃ = D′₂/(1 − D′₂/((v_max−CS)·t5K))`, per edge), which preserves the
-fit's 5K prediction exactly on both edges and keeps the models within
-~1 s/mi over 3000m–10K; miles read ~2.5–4 s/mi fitter than under CP2,
-sub-800m efforts are where the bend really acts.
+beat the lifetime PRs at any date in the sweep).
+
+**CP3 + v_max is the UP-conversion only (effective distance ≤ 5K).** For races
+at/below 5K, solve the race's own implied CS (closed-form quadratic —
+SELF-consistent, the fit's CS never enters) and forward-solve the 5K time on
+that curve. The fit's D′ is bridged per date as the effective anaerobic
+distance at 5K (`D′₃ = D′₂/(1 − D′₂/((v_max−CS)·t5K))`, per edge), which
+preserves the fit's 5K prediction exactly and keeps the models within ~1 s/mi
+over 3000m–10K; miles read ~2.5–4 s/mi fitter than under CP2; sub-800m efforts
+are where the bend really acts.
+
+**Above 5K, the DOWN-conversion is World Athletics, not CP3** (see "Cross-
+distance equivalence"). The old `β_long` un-bias is gone.
 
 - Race time IS the data — diamonds preserve race-to-race deviations.
 - The bend makes 400m/800m diamonds and predictions honest with ONE
   physiological parameter — the former β_short display knob (two outcome-
   pinned constants below 875 m) is retired, as is the workout-side g(d).
-- Un-biasing for d > 10K projects "the underlying fitness this race
-  implies" rather than the raw race-execution pace (which would be
-  near-asymptotic CS for marathons, making the projection useless).
+
+### Cross-distance equivalence: the World Athletics hybrid (June 2026)
+
+The single rule that homogenises every effort (race, long run, workout) to a
+5K-equivalent — replacing the fitted `β_long` fade entirely:
+
+- **Effective distance > 5K → World Athletics down-conversion.** Score the
+  (corrected) time on the WA 2025 men's tables, then read the equivalent 5K
+  time at the same score. Aerobic-to-aerobic, empirical, no fitted parameter.
+- **Effective distance ≤ 5K → CP3 + v_max up-conversion** (above).
+- **5K is the shared anchor** — both regimes give 5K = 5K, so they meet
+  continuously; no kink at the boundary.
+
+**Why the split, not all-IAAF.** WA tables equate *specialists across events*
+(a world-class 400 and a world-class 5K both score ~1300). Using them to
+convert one athlete's 400 to their 5K assumes a population-average
+anaerobic↔aerobic balance, which a distance specialist doesn't have — it under-
+rates his short races by ~1–2 min of 5K-equivalent (his 57s 400 → 16:58, not a
+fitness statement). The equivalence is only valid where both efforts tax the
+*same* system. So WA handles the aerobic (>5K) side it's good at; CP3 + v_max —
+calibrated on his own corpus — handles the short side IAAF can't.
+
+This fixed three things at once that the single-`β_long`-log couldn't:
+over-credited HMs, a 10K "cliff" (10K projecting slower than both its 5K and HM
+neighbours), and the marathon-only calibration leaking onto every other
+distance. The CS refit on the WA-grounded races came out ~5 s/mi faster in
+recent years (HMs now credited as the strength they are) and smooth.
+
+Implementation: `src/shared/wa_scoring.py` (coefficients, `wa_points`,
+`wa_5k_equiv_time`, distance interpolation on the dense road ladder
+5K/10K/15K/20K/HM/25K/30K/marathon, and the long-run pause penalty below).
+
+### Long-run pause penalty (durability-gated drift)
+
+Long runs (all > 5K → WA) carry one extra adjustment a continuous race doesn't:
+a paused run's **moving** pace overstates the pace sustainable continuously,
+because stoplight pauses reset the fast (HR / W′) component of cardiovascular
+drift. The penalty (added to the time before the WA score):
+
+```
+penalty_frac = k · (1 + temp_amp) · max(0, i − i₀(T)) · φ_fast · (T/2) · r_eff
+```
+- `i = run speed / CS speed` (intensity).
+- `i₀(T)` is **duration-dependent** (durability): the sustainable fraction of
+  CS collapses with time-on-feet — ~0.90 for short efforts descending to ~0.82
+  at marathon duration (marathoners race 82–88% CS and fade from 26–33 km; CP
+  itself drops ~10% after 120 min). This is what makes a 2–3 h, ~0.91-CS long
+  run register as the near-limit effort it is, rather than "barely heavy."
+- `temp_amp = 0.025·max(0, T_C − 12)` — heat amplifies drift (Tucker/Wingo),
+  and is *designed* to net against the warm-day temperature credit the long-run
+  model separately applies.
+- Upper/conservative band (`k=0.5, φ_fast=0.6, r_eff=0.8`), per the standing
+  rule to be conservative making fitness claims from non-races.
+
+Only the FAST component is penalised (the slow component — glycogen, core temp,
+plasma volume — both paused and continuous runs pay, so it cancels). Easy long
+runs (i below their duration-onset) get zero penalty. Net effect on the
+frontier: exactly one long run (a peak 2023 effort) tops the best HM race, by
+~2 s/mi; the rest cluster at or below it.
 
 ### CS line interpretation
 
@@ -209,8 +274,8 @@ line. Fitness: home tab (above). **Races + Race distances: the frontier is
 the ONLY line** — gold CS lines removed entirely; the hand-drawn pre-2013
 cubic survives invisibly as the frontier's floor in that era (the GP isn't
 really estimating CS there); per-panel lines via `frontier_at_anchor()`
-(CP3 forward solve + β_long for anchors above 10K — β_short is retired,
-June 2026); hover Δs are vs the frontier. Training: purple line added (normalized mode shows
+(CP3 forward solve for anchors ≤5K, World Athletics up-conversion for anchors
+>5K — both β_short and β_long retired, June 2026); hover Δs are vs the frontier. Training: purple line added (normalized mode shows
 frontier−CS-5K excess at/below zero). Workouts: purple 5K line. Long runs:
 frontier marathon (bright purple) + HM (faint purple) — the gold CS pair
 is REMOVED (frontier lines only; tooltip rows are frontier values).
@@ -335,10 +400,13 @@ defaults in the function signature if recalibration is needed.
 
 
 
-- **Hardcoded marathon correction** (e.g., "all marathons +6%"). Rejected
-  because Max's marathons are legitimately bad due to mental/logistical
-  factors, not a fixed physiological law. A learnable β_long (centered at
-  0) lets the model update if a future well-executed marathon arrives.
+- **Hardcoded marathon correction** (e.g., "all marathons +6%"). Rejected,
+  and the learnable `β_long` that replaced it is now ALSO retired (June 2026):
+  the marathon-only single-log fade over-credited HMs, created a 10K cliff, and
+  leaked the marathon calibration onto every distance. Replaced by the World
+  Athletics hybrid — marathons (and all >5K efforts) down-convert to their
+  empirical 5K-equivalent before the fit, so no in-model marathon correction is
+  needed at all. See "Cross-distance equivalence."
 - **Learnable β_xc inside the model**. Tried; posterior settled at
   β_xc ≈ 0.0075 because the model's CS GP absorbs XC slowness as fitness
   loss instead of as terrain penalty (no concurrent non-XC data to

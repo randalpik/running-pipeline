@@ -28,9 +28,14 @@ sits next to CS without feeding back into it.
   the CS-implied-5K line exactly, so residual semantics are unchanged; the
   shift is ≤ ~2 s/mi for typical workouts and matters most for short-rep
   days, together with the effort-aware deflation below.)*
-- **No β_long anywhere.** β_long encodes max-effort long-distance fade,
-  doesn't apply to sub-max efforts. Including it would inflate fitness
-  implications beyond what the data demonstrates.
+- **Cross-distance conversion is the World Athletics hybrid (June 2026).**
+  `β_long` is retired everywhere. Each effort homogenises to a 5K-equivalent
+  by: efforts whose effective distance >5K (long runs; workout sessions whose
+  connected-fatigue `D_eff` >5K) down-convert via the **WA scoring tables**
+  (`wa_scoring.py`); efforts ≤5K (most workout `D_eff`s) up-convert via
+  **CP3 + v_max** as before. So a short rep session and a 400m race still
+  analyze identically, while long aerobic efforts use the empirical WA
+  equivalence instead of a fitted fade. See `cs-model-reference.md`.
 - **Long-run scope is `duration ≥ 80 min AND miles < 26.2`, global
   across profiles; distance carries no model term (June 2026).** The
   bounds deliberately mix units because they encode different
@@ -80,8 +85,8 @@ sits next to CS without feeding back into it.
   conversion now applies the full physical decomposition (grade +
   off-road footing + altitude) as flat / sea-level-equivalent **time**
   corrections, subtracted from each run's time in
-  `workouts.project_long_runs` *before* the β_long un-bias and the CP3
-  projection (so the projection treats the flat-equivalent as a race).
+  `workouts.project_long_runs` *before* the World Athletics 5K-equivalent
+  conversion (so the conversion treats the flat-equivalent as a race).
   Grade prices each run's per-run measured gain/loss through the shared
   `elevation_cost` engine with an effort-aware paved descent refund;
   footing and altitude are pinned from `recovery_model.physical_route_betas`
@@ -131,13 +136,16 @@ sits next to CS without feeding back into it.
   run predicts a faster 5K than a race at the same distance/pace —
   physically indefensible, and the same class-constant design already
   rejected for workouts. Instead `project_long_runs` projects each long
-  run AS IF IT WERE A RACE: time un-biased by the CS fit's β_long
-  (divide by 1 + β_long·log(d/d_thresh) for d > 10K, exactly the race
-  projection in cs_projection.py; β at the run's full distance — the
-  fade is total-work depletion a stoplight pause doesn't reset), then
-  through the hyperbola. The hardest long runs (true race-effort
-  simulations) land at/near CS on their own (the all-time fastest
-  displays right at PR pace); easy ones read honestly slow; era effort
+  run AS IF IT WERE A RACE of its distance, **down-converted to 5K via the
+  World Athletics tables** (June 2026 — replaces the old β_long un-bias;
+  long runs are all >5K). It carries one extra adjustment a race doesn't: a
+  **cardiovascular-drift PAUSE PENALTY** added to the (physically-corrected)
+  time before the WA score — the fast HR/W′ drift component a paused run's
+  moving pace fails to pay, **intensity-gated by a DURATION-DEPENDENT onset**
+  (sustainable %CS collapses with time-on-feet: ~0.90 short → ~0.82 at
+  marathon duration) and heat-amplified. The hardest long runs (true
+  race-effort simulations) land near CS on their own (the all-time fastest
+  displays just above the best HM); easy ones read honestly slow; era effort
   policy stays visible (modern medians +8 to +21, 2016–19 at +28 to
   +83). The model's PHYSICAL + STATE terms ARE always applied (Max,
   June 2026): resid = raw − (elev + temp + race-fatigue contributions) —
@@ -530,8 +538,8 @@ raw_resid ~ temp_centered
   `LR_ELEV_SLOPE`/`elev_pm_c` and the fitted altitude term have been
   removed. Grade, off-road footing, and altitude are now applied upstream
   in `workouts.project_long_runs` as flat / sea-level-equivalent time
-  corrections — subtracted from the run's time *before* the β_long un-bias
-  and the CP3 projection — rather than as residual regressors. Grade is
+  corrections — subtracted from the run's time *before* the World Athletics
+  5K-equivalent conversion — rather than as residual regressors. Grade is
   each run's per-run measured gain/loss priced through the shared
   `elevation_cost` engine with an effort-aware paved descent refund
   (`paved_refund`; long runs sit near race effort, so paved descents
@@ -833,7 +841,7 @@ race residual = −0.16. Three reasons:
   gain/loss (with an effort-aware paved descent refund), plus footing and
   per-run-measured altitude pinned from `recovery_model.physical_route_betas`,
   all credited as flat / sea-level-equivalent time corrections before the
-  β_long un-bias and the CP3 projection. The route constant priced terrain
+  World Athletics 5K-equivalent conversion. The route constant priced terrain
   as a static per-route slope; the physical engine prices each run's
   measured grade/footing/altitude and shares one constant per channel with
   the recovery and race-CS models. `LR_ELEV_SLOPE`/`elev_pm_c` removed.
