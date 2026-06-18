@@ -139,15 +139,21 @@ sits next to CS without feeding back into it.
   run AS IF IT WERE A RACE of its distance, **down-converted to 5K via the
   World Athletics tables** (June 2026 — replaces the old β_long un-bias;
   long runs are all >5K). It carries one extra adjustment a race doesn't: a
-  **cardiovascular-drift PAUSE PENALTY** added to the (physically-corrected)
-  time before the WA score — the fast HR/W′ drift component a paused run's
-  moving pace fails to pay, **intensity-gated by a DURATION-DEPENDENT onset**
-  (sustainable %CS collapses with time-on-feet: ~0.90 short → ~0.82 at
-  marathon duration) and heat-amplified. The hardest long runs (true
-  race-effort simulations) land near CS on their own (the all-time fastest
-  displays just above the best HM); easy ones read honestly slow; era effort
-  policy stays visible (modern medians +8 to +21, 2016–19 at +28 to
-  +83). The model's PHYSICAL + STATE terms ARE always applied (Max,
+  **durability + W′-balance PAUSE PENALTY** added to the (physically-corrected)
+  time before the WA score (`src/shared/durability.py`). It is the **marginal
+  value of the run's own stops** — pace(fastest constant pace feasible WITHOUT
+  the stops) − pace(fastest feasible WITH them) — under a W′-balance sim where
+  effective CS declines with time on feet (accelerating polynomial, 12%@2h),
+  running above CS_eff drains D′, and each stop reconstitutes it (τ ≈ 110 s).
+  A continuous run (no stops) gets **exactly 0 at any durability** — ground
+  truth, untouched — and the penalty self-targets stop magnitude × proximity to
+  the end × proximity to CS (capped at ~D′, ~25 s/mi). Watch runs use their real
+  measured stops; **pre-watch runs (no stops) impute the P90 watch-era stop
+  structure** uniformly. The hardest long runs land near CS on their own (the
+  all-time fastest, a low-pause 2024 Boulder run, displays right at the best HM
+  ~14:30); easy and heavily-paused ones read honestly slow; era effort policy
+  stays visible. See cs-model-reference.md for the full mechanism; it
+  **supersedes** the old fixed-cadence cardiovascular-drift formula. The model's PHYSICAL + STATE terms ARE always applied (Max,
   June 2026): resid = raw − (elev + temp + race-fatigue contributions) —
   verified, physically grounded effects, the same family as the hills'
   Minetti term. Only the INTERCEPT (the long-run effort level,
@@ -215,11 +221,20 @@ sits next to CS without feeding back into it.
     hyperbola is nearly flat at long-run distances so this is only
     ~+1–3 s/mi; it's kept for correctness, not magnitude.
   Pre-watch runs on the two staples (2018-01 → 2022-04-15) get a
-  route-era deflation instead (`MISLOGGED_ROUTES`: belle meade 1.068,
-  greenway 1.056 — median logged-over-honest-logged inflation of each
-  route's watch-covered era; the constant lives in `recovery_model.py`
-  since June 2026 so the recovery fit applies the same rules to those
-  routes' recovery rows). Watch enrichment wins over the rule.
+  route-era deflation instead (`MISLOGGED_ROUTES`: belle meade & greenway
+  both **1.05** flat, pinned 2026-06-17). The real over-logging is
+  watch-confirmed at ~5% for both (pre-2022 logged/watch median ÷ the
+  post-2022 accurate-logging baseline ≈ 1.057/1.055), essentially flat
+  across intensity — the steeper raw trend was a watch GPS-undercount
+  artifact that doesn't apply to pre-watch runs. It is **per-route, not
+  blanket**: Lake Sammamish's watch ratio is 1.007 (accurately logged), so
+  it gets no correction — a flat pre-watch haircut would wrongly deflate
+  it. The constant lives in `recovery_model.py` so the recovery fit applies
+  the same rules to those routes' recovery rows. Watch enrichment wins over
+  the rule. (Distance correction is separate from the pre-watch PAUSE
+  penalty above, which imputes the P90 stop structure onto every pre-watch
+  run; together they pull the pre-watch Nashville long runs off the
+  frontier while leaving accurately-logged routes' distances intact.)
   Distance bracket: true distance is bracketed `watch <= true <= logged`
   — the watch under-reads, the hand log is the ceiling Max never
   under-estimates — so `corr_mi = min(watch+error, logged)`. Time is the

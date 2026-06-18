@@ -257,9 +257,11 @@ recovery+long corpus).
   pace ×factor — that's a distance-estimate error biasing the logged
   @pace itself, independent of strides — but carries no corrected
   distance (corr_miles NaN).
-- **Route-era rules**: `MISLOGGED_ROUTES` (belle meade 1.068, greenway
-  1.056, 2018 → 2022-04-15 — the constant moved here from workouts.py)
-  now also deflates those routes' ~9 recovery rows. No OTHER recovery
+- **Route-era rules**: `MISLOGGED_ROUTES` (belle meade & greenway both
+  **1.05** flat, 2018 → 2022-04-15, pinned 2026-06-17 — watch-confirmed
+  ~5% real over-logging once the watch GPS-undercount artifact is removed;
+  the constant lives here, not in workouts.py) also deflates those routes'
+  ~9 recovery rows. No OTHER recovery
   route warrants a rule: every watch-covered route's median inflation
   sits within 0.97–1.011 (the Nashville long-route inflation was a
   property of those route-distance estimates, not of Max's logging).
@@ -340,8 +342,10 @@ evidence.** Each entry below documents the test and rationale.
   term is weak (~+0.04 s/mi/%, t=2.6) and the heat index — humidity's physical
   encoding — never beat plain air temp in the corrected comparison, so this is
   air temperature, not feels-like. Long runs reuse the same hinge SHAPE with a
-  freely-fit (steeper) slope; see `cs-model-reference.md` for how heat ties into
-  the long-run pause penalty.
+  freely-fit (steeper) slope in the long-run model's temperature covariate.
+  (The long-run pause penalty is now a durability + W′-balance model with **no
+  heat term** — the earlier heat-amplified drift formula it replaced is retired;
+  see `cs-model-reference.md`.)
 
 - **Shoe age** (cumulative miles in this physical pair before the run) —
   tested April 2026. n=1671 runs across 18 pairs with ≥30 runs each,

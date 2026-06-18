@@ -817,19 +817,31 @@ def project_long_runs(cs, epoch):
     # 5K-equivalent via the World Athletics tables (June 2026 hybrid): long runs
     # are all >5K, so they down-convert aerobic-to-aerobic (replaces the old
     # beta_long un-bias), on the PHYSICALLY-corrected time (grade/footing/alt
-    # removed) at the full distance. A cardiovascular-drift PAUSE PENALTY is
-    # added first: a paused run's moving pace overstates the continuous-
-    # equivalent by the fast (HR/W')-drift component the stops reset, intensity-
-    # gated (>~0.88 CS) and heat-scaled. D_eff/connected-fatigue is no longer
-    # used here — the WA score is on the run's actual distance/time.
-    from src.shared.wa_scoring import wa_5k_equiv_time, pause_penalty_fraction
-    run_pace = lr['t_run'] / (lr['d_m'] / METERS_PER_MILE)     # moving pace s/mi
-    cs_pace = lr['p5k_cs_min'] * 60.0                          # CS-implied pace s/mi
-    intensity = (cs_pace / run_pace).to_numpy()
-    pen = np.array([pause_penalty_fraction(i, T / 3600.0, tc)
-                    for i, T, tc in zip(intensity, lr['t_run'].to_numpy(),
-                                        lr['temp_c'].to_numpy())])
-    t_wa = t_run_flat.to_numpy() * (1.0 + pen)                 # continuous-equivalent
+    # removed) at the full distance. A durability + W'-balance PAUSE PENALTY is
+    # added first (src/shared/durability.py): the MARGINAL effect of THIS run's
+    # own stops — how much slower the run would have to be run continuously
+    # (stops stitched out) to stay feasible, given effective-CS declining over
+    # time on feet and the stops reconstituting D'. Driven by the run's stop
+    # MAGNITUDE, PROXIMITY TO THE END, and pace PROXIMITY TO CS. A continuous
+    # run (no stops) gets exactly zero — ground truth, untouched at any
+    # durability. Each run is self-contained (its own day's CS/D' + stop timing).
+    # Uses the reliable corrected average pace + button-press pause timestamps;
+    # the noisy per-second pace is not used (fade is the declining CS). Days
+    # without a rich record (no watch / log-only build) get 0 (no stop data).
+    from src.shared.wa_scoring import wa_5k_equiv_time
+    from src.shared.durability import pause_advantage_s_per_mi
+    cs_mps_t = np.interp(lr['day'], cs['day'].values, cs['cs_mps_med'].values)
+    miles = lr['d_m'].to_numpy(float) / METERS_PER_MILE
+    avg_speed = lr['d_m'].to_numpy(float) / lr['t_run'].to_numpy(float)
+    # Watch runs use their real measured stops; pre-watch (no watch) runs impute
+    # the aggressive uniform P95 stop structure (durability._impute_segments).
+    is_watch = lr['lr_watch'].to_numpy()
+    adv = np.array([pause_advantage_s_per_mi(d.strftime('%Y-%m-%d'), dm, sp, c0, dp0, bool(w))
+                    for d, dm, sp, c0, dp0, w in zip(
+                        lr['date'], lr['d_m'].to_numpy(float), avg_speed,
+                        cs_mps_t, lr['dp_t'].to_numpy(float), is_watch)])
+    lr['pause_adv_s_per_mi'] = adv
+    t_wa = t_run_flat.to_numpy() + adv * miles                 # continuous-equivalent
     lr['t_5k_hyp'] = [wa_5k_equiv_time(float(d), float(t))
                       for d, t in zip(lr['d_m'].to_numpy(), t_wa)]
     lr['p5k_min']  = np.asarray(lr['t_5k_hyp'], float) * METERS_PER_MILE / 5000.0 / 60.0

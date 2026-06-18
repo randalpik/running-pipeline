@@ -980,7 +980,7 @@ function buildTooltip(day, isSnap, pointHtml) {
     state_rows = []
     if lr_fit.cov_coefs:
         state_rows = [
-            ('temp, per °C above 6 (heat only)',
+            ('temp, per °C above 6',
              f'{lr_fit.cov_coefs["temp_centered"]:+.2f}'),
             ('marathon fatigue, peak',
              f'{lr_fit.cov_coefs["fat_marathon"]:+.1f}'),

@@ -11,11 +11,10 @@ cross-checked to reproduce the owner's known scores (5K/10K 828, HM ~893,
 marathon ~881 on the recalibrated 2025 marathon table). Non-standard distances
 interpolate the iso-points TIME in log-distance between bracketing events.
 
-Long runs additionally carry a cardiovascular-drift PAUSE PENALTY: a paused
-run's moving pace overstates the continuous-equivalent pace by the fast
-(HR/W')-component of drift the stops reset. Intensity-gated (onset ~0.88 CS),
-temperature-scaled (drift grows with heat). Races and workouts get no penalty.
-See docs + the June 2026 investigation for the derivation.
+Long runs additionally carry a PAUSE PENALTY, but that lives in
+src/shared/durability.py (a durability + W'-balance model of the marginal effect
+of a run's own stops); this module is purely the cross-distance WA conversion.
+Races and workouts get no pause penalty.
 """
 from __future__ import annotations
 import math
@@ -38,30 +37,6 @@ COEF = {
 }
 _DISTS = sorted(COEF)
 ANCHOR_M = 5000.0
-
-# ---- pause-penalty calibration (long runs only; upper/conservative band) ----
-# The drift onset is DURATION-DEPENDENT (durability): the sustainable fraction
-# of CS collapses with time-on-feet — marathoners race ~82-88% CS and fade from
-# 26-33 km, and CP itself drops ~10% after 120 min. So a 2-3 hr effort at ~0.91
-# CS is at/past its durability-limited ceiling (big pause benefit), while the
-# same 0.91 for a 25-min effort is merely heavy. The onset descends from ~0.90
-# (short) toward ~0.82 at marathon duration.
-PEN_I0_SHORT = 0.90     # fresh heavy-domain onset (short efforts)
-PEN_I0_DECAY = 0.04     # per-hour decline in sustainable %CS (durability)
-PEN_I0_T0    = 0.5      # hr; onset holds flat below this, then descends
-PEN_I0_FLOOR = 0.78     # floor (~ultra-duration sustainable fraction)
-PEN_K        = 0.50     # drift rate per unit intensity-overage per hour (upper band)
-PEN_PHI_FAST = 0.60     # fraction of drift that is fast/pause-resettable
-PEN_R_EFF    = 0.80     # steady-state fast-drift suppression from the pause cadence
-PEN_T_REF    = 12.0     # thermoneutral reference (C); heat amplifies drift above it
-PEN_TEMP_A   = 0.025    # +2.5%/C heat amplification of drift (Tucker/Wingo)
-
-
-def _drift_onset(t_moving_hr):
-    """Durability-adjusted intensity onset i0(T): the fraction of CS above which
-    fast (pause-resettable) drift accrues, descending with time-on-feet."""
-    return max(PEN_I0_FLOOR,
-               PEN_I0_SHORT - PEN_I0_DECAY * max(0.0, t_moving_hr - PEN_I0_T0))
 
 
 def _time_at(ev, P):
@@ -132,15 +107,3 @@ def wa_equiv_time_at(dist_m, time_5k_s):
     return _time_at_dist(dist_m, wa_points(ANCHOR_M, time_5k_s))
 
 
-def pause_penalty_fraction(intensity, t_moving_hr, temp_c):
-    """Continuous-equivalent pace penalty (fraction of pace) for a PAUSED long
-    run — the fast/acute cardiovascular-drift component the stops reset, which
-    its moving pace fails to pay. intensity = run speed / CS speed.
-    Intensity-gated (>PEN_I0) and heat-scaled (>PEN_T_REF)."""
-    if intensity is None or intensity != intensity:
-        return 0.0
-    over = max(0.0, intensity - _drift_onset(t_moving_hr))
-    if over <= 0:
-        return 0.0
-    k = PEN_K * (1.0 + PEN_TEMP_A * max(0.0, (temp_c or PEN_T_REF) - PEN_T_REF))
-    return k * over * PEN_PHI_FAST * (t_moving_hr / 2.0) * PEN_R_EFF

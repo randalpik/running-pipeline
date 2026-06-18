@@ -772,7 +772,7 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
         detail_rows.append(widgets.detail_row(
             'Temperature',
             f': β = {betas["temp_centered"]:+.2f} s/mi per °C above '
-            f'{int(TEMP_HEAT_ONSET_C)}°C (heat only; cold = 0)'))
+            f'{int(TEMP_HEAT_ONSET_C)}'))
     if av.get('elevation', True):
         from src.shared.elevation_cost import CLIMB_COST
         detail_rows.append(widgets.detail_row(

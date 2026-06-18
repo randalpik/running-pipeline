@@ -249,21 +249,26 @@ WATCH_FAIL_MIN_ROUTE_N = 5
 STRIDE_SUFFIX_RX = re.compile(r'/\s*(?:\d+\s*x\s*)?\d+\s*(?:st|sp)\b',
                               re.IGNORECASE)
 
-# Route-era mislogged-distance rules (Max-specific carve-out, June 2026 —
-# same precedent as the race plots' handdrawn curve: hand-derived knowledge
-# the data can't reconstruct). The two Nashville staples were logged with
-# inflated distances until Max re-measured them in April 2022. Factors are
-# the median logged-over-honest inflation across the routes'
-# pre-2022-04-15 watch-covered LONG runs (honest = watch distance through
-# the profile's calibration curve): belle meade 1.068 (n=18), greenway
-# 1.056 (n=11). Distance error is a route property, so the same factors
-# apply to the routes' recovery rows (9 pre-watch days). Applied per Max's
-# call back to 2018. Watch enrichment, when present, wins over the rule.
-# Lives here (not workouts.py) so both the long-run projection and the
-# recovery fit can consume it without a circular import.
+# Route-era mislogged-distance rules (Max-specific carve-out). The two Nashville
+# staples were over-logged pre-2022 until Max re-measured them in April 2022.
+# Factor PINNED at 1.05 flat (2026-06-17). The real over-logging is watch-
+# confirmed at ~5% for BOTH routes (pre-2022 logged/watch median ÷ the post-2022
+# accurate-logging baseline: belle meade 1.069/1.011 ≈ 1.057, greenway
+# 1.057/1.001 ≈ 1.055), essentially flat across intensity — the steeper raw
+# trend was a watch GPS-undercount artifact that doesn't apply to pre-watch
+# runs. Per-route (not flat across ALL routes): Lake Samm's watch ratio is
+# 1.007 (accurately logged), so it gets NO correction — a blanket pre-watch
+# haircut would wrongly deflate it. This correction handles only DISTANCE; the
+# pre-watch PAUSE penalty is separate (durability.py imputes the P95 watch-era
+# stop structure onto pre-watch runs). Together they pull the pre-watch Nashville
+# long runs off the demonstrated-capability frontier. Distance error is a route
+# property, so the factor also applies to the routes' recovery rows; applied
+# back to 2018; watch enrichment, when present, wins over the rule. Lives here
+# (not workouts.py) so both the long-run projection and the recovery fit consume
+# it without a circular import.
 MISLOGGED_ROUTES = (
-    ('belle meade', '2018-01-01', '2022-04-15', 1.068),
-    ('greenway',    '2018-01-01', '2022-04-15', 1.056),
+    ('belle meade', '2018-01-01', '2022-04-15', 1.05),
+    ('greenway',    '2018-01-01', '2022-04-15', 1.05),
 )
 
 
