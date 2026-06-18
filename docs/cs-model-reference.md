@@ -213,6 +213,45 @@ let the long-run erosion below backfire). The smooth curve is exact at the four
 anchors, so no race conversion moved. The long-run pause handling (below) lives
 separately in `src/shared/durability.py`.
 
+### Direction matters: down-convert evidence (1500 m boundary), up-convert predictions (5 K boundary)
+
+The hybrid above is the **down-conversion**: an actual effort → its 5K-equivalent,
+for the fit and for placing demonstrations on the frontier. **Predictions run the
+other way** — the frontier's 5K *capability* → a predicted time at a target
+distance — and the two directions deliberately use **different WA/CP3 boundaries**.
+This asymmetry is intentional; do not "unify" the two onto one boundary.
+
+| Direction | Used by | Boundary | Below boundary | At/above boundary |
+|---|---|---|---|---|
+| **Down** (effort → 5K-equiv) | the fit; race-diamond placement | **1500 m** | CP3 + v_max (evidence edge) → 1500 m, then WA → 5K | World Athletics |
+| **Up** (5K capability → target) | dashboard predictions; `frontier_at_anchor` / `pace5k_series_to_anchor` lines-at-anchor | **5 K** | CP3 + v_max (prediction edge) forward solve from 5K | World Athletics |
+
+**Why the up-conversion keeps CP3 all the way to 5 K** (not 1500 m). WA up-conversion
+to a *short* distance assumes the athlete has population-typical leg speed for his
+aerobic level. He doesn't — projecting his (aerobically-set) 5K frontier up to
+800 / 1500 / mile via WA over-predicts, beating his own flat track PRs by several
+seconds (mile −7 s, 1500 −5 s, 800 −1 s in the June 2026 check). CP3 + v_max instead
+caps every short prediction at his *own demonstrated* v_max (the conservative LOW
+edge), so a forward solve never claims sprint speed he hasn't shown. Down-conversion
+has no such problem: a real 1500 m race already encodes his actual 1500 ability, so
+WA reads it honestly from 1500 m up. (So the diamond at a short anchor — a
+down-converted race — and the prediction line through it — an up-converted
+capability — are *legitimately different objects*; they need not coincide.)
+
+**At and above 5 K both directions are WA** — the aerobic fade is symmetric and
+validated, so a marathon down-converts and a marathon prediction up-converts through
+the same tables. This is why the **long-run pace prediction is WA**: a multi-hour
+effort is a > 5K up-conversion. (The retired `β_long` had left a `cp3_time × β_long`
+path on this prediction that, with `β_long = 0`, was bare CP3 — which asymptotes to
+CS *from above* and so predicted a 2-hour pace *faster than CS*. Routing it through
+the up-conversion fixed it.)
+
+Implementation: down-conversion is `t5k_to_anchor_time` / `project_races_to_5k_pace`
+(1500 m); up-conversion is `pace5k_series_to_anchor` and `cs_line_at_anchor` (5 K).
+The shared `t5k_to_anchor_time` is the 1500 m (evidence) convention — used for race
+placement and for the long-run (> 5K, where it is pure WA either way); it must **not**
+be used for ≤ 5K predictions.
+
 ### Long-run pause handling (pause-uncertainty erosion)
 
 Long runs are usually **paused** (stoplights, water, regroups), and a paused run

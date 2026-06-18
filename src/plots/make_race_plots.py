@@ -754,8 +754,9 @@ function buildTooltip(day, isSnap, pointHtml) {
         sub = elig[elig['group'] == name]
         anchor = bin_anchors[name]
 
-        # 1. Project races to this anchor via CP3 (β_long applied
-        #    symmetrically). For races already at the anchor, this is identity.
+        # 1. Project races to this anchor via the WA hybrid down-conversion
+        #    (t5k_to_anchor_time: WA ≥1500 m, CP3+v_max sprint leg <1500 m;
+        #    β_long retired). For races already at the anchor, this is identity.
         sub_proj = project_races_to_5k_pace(
             sub, daily_summary, beta_long, d_thresh,
             apply_xc_correction=False, apply_physical_correction=False,
@@ -767,7 +768,11 @@ function buildTooltip(day, isSnap, pointHtml) {
 
         # 2. CS-predicted time at this anchor for every date in summary —
         #    the blended 5K line (hiatus floor pre-2013, CS-implied after)
-        #    projected onto this anchor's CP3 curve.
+        #    up-converted to this anchor (CP3+v_max forward solve for anchors
+        #    ≤5K, WA up-conversion for >5K — the prediction-direction boundary;
+        #    see cs_projection.pace5k_series_to_anchor). The diamonds (step 1)
+        #    use the 1500 m down-conversion boundary, so a short-anchor line and
+        #    its diamonds are different objects by design.
         front_times = pace5k_series_to_anchor(
             cs_line_5k, daily_summary, anchor, beta_long, d_thresh)
 

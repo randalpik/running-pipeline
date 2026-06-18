@@ -15,10 +15,12 @@ marathon — and interpolate the iso-points TIME between them with a MONOTONE cu
 (PCHIP / Fritsch–Carlson) in log-distance/log-time: C1-smooth, passes exactly
 through the anchors, and provably can't overshoot (so the conversion is monotone
 in distance — no spikes). Distances above the marathon extrapolate linearly in
-log-log (stays monotone). Sub-5K stays on the track tabs (CP3 owns ≤5K in the
-hybrid); only the 5K→marathon region changed. Since every race >5K is at an
-anchor, no race conversion moves — only long runs / workouts at in-between
-distances.
+log-log (stays monotone). Sub-5K distances here stay on the track tabs; only the
+5K→marathon region of THIS module changed. (Which distances actually reach the WA
+tables vs. CP3 is decided by the caller in cs_projection, and differs by direction
+— down-convert ≥1500 m, up-convert/predict only >5K; see its "Direction
+asymmetry" note.) Since every race >5K is at an anchor, no race conversion moves —
+only long runs / workouts at in-between distances.
 
 Coefficients: jchen1/iaaf-scoring-tables coefficients-2025.json, men's outdoor,
 cross-checked to reproduce the owner's known scores (5K/10K 828, HM ~893,

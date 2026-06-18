@@ -30,12 +30,23 @@ own curve, and the fit's current-fitness CS never enters (short races
 stay independent evidence, not circular echoes of the CS line). Then
 forward-solve the time at the anchor distance on that implied curve.
 
-For races above d_thresh_long (=10K), un-bias by dividing t_race by
-(1 + β_long · log(d / d_thresh)) BEFORE projecting — the model's β_long
-captures the systematic pacing fade above 10K. Without un-biasing, the
-implied CS collapses toward the actual race pace and the 5K-equivalent
-becomes uninformative for HM/marathon. (β_long is race-execution
-physiology above 10K and is orthogonal to the short-duration bend.)
+Cross-distance equivalence is the World Athletics hybrid (June 2026); the
+fitted β_long fade it replaced is RETIRED (load_cs_outputs returns β_long=0).
+An aerobic effort (≥1500 m) down-converts to its 5K-equivalent by WA score;
+a sub-1500 m sprint goes CP3+v_max → 1500 m then WA → 5K (the CP3 bend, below).
+
+**Direction asymmetry — read carefully, the two boundaries are deliberate.**
+The WA/CP3 boundary depends on which way the conversion runs:
+  - DOWN (effort → 5K-equiv, for the fit and frontier placement): boundary
+    1500 m, WA above it. This is `t5k_to_anchor_time` / `project_races_to_5k_pace`.
+  - UP (5K capability → predicted time at a target, for dashboard predictions
+    and lines-at-anchor): boundary 5K — CP3+v_max owns ALL of ≤5K, WA only >5K.
+    This is `pace5k_series_to_anchor` / `cs_line_at_anchor`.
+WA up-conversion to a short distance assumes population-typical leg speed and
+over-predicts a distance specialist, so predictions stay on CP3+v_max (capped at
+his own v_max) down to the 5K anchor; down-conversion of a real short race has no
+such problem. Above 5K both directions are WA. Do NOT unify the boundaries.
+See docs/cs-model-reference.md ("Direction matters: down-convert evidence …").
 
 XC pre-correction (dividing time by 1+xc_correction) is OPTIONAL via the
 `apply_xc_correction` flag. The CS plot applies it (matches the fit). The
