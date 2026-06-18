@@ -16,3 +16,6 @@ site/node_modules/
 site/dist/*
 !site/dist/login.html
 !site/dist/admin.html
+
+# Local scratch/experiment area (prototypes, one-off plots) — never committed.
+scratch/

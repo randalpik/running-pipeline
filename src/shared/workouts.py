@@ -691,6 +691,24 @@ def long_run_fit_rows():
     return lr
 
 
+# --- pause-uncertainty model (see project_long_runs) ---
+# Full rationale + rejected alternatives: docs/long-run-pause-uncertainty-reference.md
+# Every second of a pause erodes all subsequent moving distance, weighted by
+# lateness (durability.eroded_deff): credit after a pause of P sec at run-fraction
+# L is multiplied by exp(-gate·LR_EROSION_RATE·P·L). Pause LENGTH drives it (not
+# count), a late pause bites harder than an early one, and there's no lower bound.
+# `gate` effort-scales it — zero for the cloud, and UNCAPPED above race pace so the
+# most-suspicious runs (flat pace faster than the CS-predicted race pace at their
+# distance — effort > 1, "you couldn't actually race this") are punished hardest:
+#   gate = max((effort − LR_EFFORT_E0)/(1 − LR_EFFORT_E0), 0)   # no upper cap
+#   effort = CS-predicted race pace at the run's distance ÷ the run's flat pace
+# No hard cap on the result either — erosion alone places the runs.
+#   LR_EROSION_RATE — strength: bigger erodes paused frontier runs harder.
+#   LR_EFFORT_E0    — gate onset: raise to leave more of the cloud untouched.
+LR_EROSION_RATE = 0.001
+LR_EFFORT_E0    = 0.95
+
+
 def project_long_runs(cs, epoch):
     """Return ALL `run_type == 'long'` rows with absolute pace + 5K-equiv
     projection + `excluded_reason` flag. No filtering by miles or snow.
@@ -808,42 +826,57 @@ def project_long_runs(cs, epoch):
                    + lr['alt_cost_s_per_mi'].to_numpy())
     t_run_flat = lr['t_run'] - phys_credit * (lr['d_m'] / METERS_PER_MILE)
 
-    # Connected D_eff (watch days; full distance elsewhere) enters the
-    # hyperbola the same way enriched workouts do: t_eff = D_eff / v with v
-    # the run's mean moving speed. At long-run distances the hyperbola is
-    # nearly flat in D_eff so this is a small, one-directional refinement
-    # (~+1-3 s/mi) — the distance calibration does the heavy lifting. The
-    # grade cost rides on the run's pace (t_run_flat over the real distance
-    # 5K-equivalent via the World Athletics tables (June 2026 hybrid): long runs
-    # are all >5K, so they down-convert aerobic-to-aerobic (replaces the old
-    # beta_long un-bias), on the PHYSICALLY-corrected time (grade/footing/alt
-    # removed) at the full distance. A durability + W'-balance PAUSE PENALTY is
-    # added first (src/shared/durability.py): the MARGINAL effect of THIS run's
-    # own stops — how much slower the run would have to be run continuously
-    # (stops stitched out) to stay feasible, given effective-CS declining over
-    # time on feet and the stops reconstituting D'. Driven by the run's stop
-    # MAGNITUDE, PROXIMITY TO THE END, and pace PROXIMITY TO CS. A continuous
-    # run (no stops) gets exactly zero — ground truth, untouched at any
-    # durability. Each run is self-contained (its own day's CS/D' + stop timing).
-    # Uses the reliable corrected average pace + button-press pause timestamps;
-    # the noisy per-second pace is not used (fade is the declining CS). Days
-    # without a rich record (no watch / log-only build) get 0 (no stop data).
-    from src.shared.wa_scoring import wa_5k_equiv_time
-    from src.shared.durability import pause_advantage_s_per_mi
+    # Project each long run's flat-/altitude-corrected time to a 5K-equivalent via
+    # the World Athletics tables (down-convert; long runs are all >5K, replacing
+    # the old beta_long un-bias) — scored NOT at the full distance but at the
+    # PAUSE-UNCERTAINTY-eroded demonstrated distance (the model is below; full
+    # rationale in docs/long-run-pause-uncertainty-reference.md).
+    # NOTE: `pause_adv_s_per_mi` / `est_pause_s` computed just below are LEGACY,
+    # kept only for the Long Runs plot's display toggle — NOT used by the
+    # projection (that uses durability.eroded_deff). See durability.py header.
+    from src.shared.wa_scoring import wa_5k_equiv_time, wa_equiv_time_at
+    from src.shared.durability import (pause_advantage_s_per_mi,
+                                       imputed_pause_total_s, eroded_deff)
     cs_mps_t = np.interp(lr['day'], cs['day'].values, cs['cs_mps_med'].values)
     miles = lr['d_m'].to_numpy(float) / METERS_PER_MILE
     avg_speed = lr['d_m'].to_numpy(float) / lr['t_run'].to_numpy(float)
-    # Watch runs use their real measured stops; pre-watch (no watch) runs impute
-    # the aggressive uniform P95 stop structure (durability._impute_segments).
     is_watch = lr['lr_watch'].to_numpy()
     adv = np.array([pause_advantage_s_per_mi(d.strftime('%Y-%m-%d'), dm, sp, c0, dp0, bool(w))
                     for d, dm, sp, c0, dp0, w in zip(
                         lr['date'], lr['d_m'].to_numpy(float), avg_speed,
                         cs_mps_t, lr['dp_t'].to_numpy(float), is_watch)])
     lr['pause_adv_s_per_mi'] = adv
-    t_wa = t_run_flat.to_numpy() + adv * miles                 # continuous-equivalent
-    lr['t_5k_hyp'] = [wa_5k_equiv_time(float(d), float(t))
-                      for d, t in zip(lr['d_m'].to_numpy(), t_wa)]
+    # Estimated pause time for the tooltip: watch days carry the measured
+    # `pause_s`; pre-watch (non-watch) days get the imputed P-pctile pause SCALED
+    # to the run's distance (durability.imputed_pause_total_s) so the tooltip can
+    # show "est. m:ss paused" where the imputed stops actually moved the pace.
+    _est = np.array([imputed_pause_total_s(dm) or np.nan
+                     for dm in lr['d_m'].to_numpy(float)])
+    lr['est_pause_s'] = np.where(is_watch, np.nan, _est)
+    # ---- 5K-equivalent projection with PAUSE-UNCERTAINTY erosion ----
+    # Effort = CS-predicted race pace at the run's distance ÷ its flat pace; the
+    # per-pause erosion f ramps from 0 (easy) up to LR_EROSION_MAX as effort nears
+    # 1 (run pace approaching race pace). eroded_deff then shrinks the post-pause
+    # tail by (1-f) per stop, so a heavily-paused frontier run loses distance
+    # while the cloud and near-continuous runs are untouched. No hard cap — the
+    # erosion alone places long runs; how far below the frontier they fall is the
+    # model's verdict, not a clamp. (pause_adv_s_per_mi above is now display-only
+    # for the Long Runs plot — the projection no longer uses the W'-rescue term.)
+    v_flat = lr['d_m'].to_numpy(float) / t_run_flat.to_numpy(float)
+    run_pace = METERS_PER_MILE / v_flat                                  # s/mi, flat
+    t5k_cs = lr['p5k_cs_min'].to_numpy(float) * 60.0 * 5000.0 / METERS_PER_MILE
+    race_pace_at_d = np.array([wa_equiv_time_at(float(dm), float(t)) / (dm / METERS_PER_MILE)
+                               for dm, t in zip(lr['d_m'].to_numpy(float), t5k_cs)])
+    effort = np.divide(race_pace_at_d, run_pace,
+                       out=np.zeros_like(run_pace), where=run_pace > 0)
+    gate = np.maximum((effort - LR_EFFORT_E0) / (1.0 - LR_EFFORT_E0), 0.0)  # UNCAPPED above race pace
+    lr['pause_erosion_gate'] = gate
+    demo = np.array([eroded_deff(d.strftime('%Y-%m-%d'), dm, gg, LR_EROSION_RATE, bool(wt))
+                     for d, dm, gg, wt in zip(
+                         lr['date'], lr['d_m'].to_numpy(float), gate, is_watch)])
+    lr['lr_demo_m'] = demo
+    t_demo = t_run_flat.to_numpy() * (demo / lr['d_m'].to_numpy(float))  # flat time over demo dist
+    lr['t_5k_hyp'] = [wa_5k_equiv_time(float(de), float(t)) for de, t in zip(demo, t_demo)]
     lr['p5k_min']  = np.asarray(lr['t_5k_hyp'], float) * METERS_PER_MILE / 5000.0 / 60.0
     lr['raw_resid'] = (lr['p5k_min'] - lr['p5k_cs_min']) * 60
     return lr

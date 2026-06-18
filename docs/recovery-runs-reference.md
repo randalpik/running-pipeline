@@ -343,9 +343,9 @@ evidence.** Each entry below documents the test and rationale.
   encoding — never beat plain air temp in the corrected comparison, so this is
   air temperature, not feels-like. Long runs reuse the same hinge SHAPE with a
   freely-fit (steeper) slope in the long-run model's temperature covariate.
-  (The long-run pause penalty is now a durability + W′-balance model with **no
-  heat term** — the earlier heat-amplified drift formula it replaced is retired;
-  see `cs-model-reference.md`.)
+  (The long-run pause handling is a pause-uncertainty *erosion* with **no heat
+  term** — heat lives only in this temperature covariate; see
+  `long-run-pause-uncertainty-reference.md`.)
 
 - **Shoe age** (cumulative miles in this physical pair before the run) —
   tested April 2026. n=1671 runs across 18 pairs with ≥30 runs each,

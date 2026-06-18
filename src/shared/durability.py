@@ -1,28 +1,24 @@
-"""Durability + W'-balance long-run pause model (June 2026).
+"""Long-run pause handling: stop structure, pre-watch imputation, and the
+PAUSE-UNCERTAINTY erosion that the 5K-equiv projection actually uses.
 
-The pause penalty for a long run is the MARGINAL effect of that run's own
-stops: the gap between the fastest constant pace it could have sustained
-*without* the stops and *with* them. Effective critical speed declines over
-time on feet (durability — an accelerating, delayed-onset polynomial, Stevenson
-2024); running above it draws down the finite D' reservoir; a stop reconstitutes
-D' (Vassallo running W'bal). A continuous run (no stops) has identical
-with/without sims, so its penalty is exactly zero AT ANY durability — continuous
-runs are ground truth and are never touched. Each run is self-contained: its own
-day's CS/D' and its own stop timing. Nothing about one run constrains another
-(no cross-era contamination).
+>>> Full model, rationale, and rejected alternatives:
+>>> docs/long-run-pause-uncertainty-reference.md  (READ before changing this).
 
-Inputs are the RELIABLE quantities only: the corrected average pace and the
-button-press pause TIMESTAMPS from the rich detail cache. The noisy per-second
-pace is not used; the run's pace fade is represented by the declining effective
-CS, not by the (GPS-corrupted) instantaneous trace.
+THE MODEL (`eroded_deff`, consumed by workouts.project_long_runs): a paused long
+run is less trustworthy as proof of continuous capability, so each pause erodes
+all *subsequent* confirmed distance by exp(-gate·RATE·pause_sec·lateness) — driven
+by pause LENGTH (not count) and LATENESS, gated by an uncapped effort function so
+the easy cloud is untouched. It is an UNCERTAINTY model, not a physical recovery
+model. Watch runs use measured stops (`load_segments`); pre-watch runs impute the
+global P90 stop structure (`_pre_watch_profile` / `_impute_segments`).
 
-The penalty's three drivers fall out of the mechanism: pause MAGNITUDE (more /
-longer stops reconstitute more), PROXIMITY TO THE END (late stops land when CS
-has declined and W' is being drawn — early stops, with W' full, buy nothing),
-and PROXIMITY TO CS (a run far below effective CS never draws W', so its stops
-are worthless). DUR_LOSS_2H is the conservatism dial (slowest projection = more
-aggressive decline); since the penalty is the with/without *difference*, raising
-it only moves paused runs, never continuous ones.
+LEGACY — DO NOT REVIVE (`pause_advantage_s_per_mi` + the W'-balance sim
+`_min_wbal` / `_fastest_feasible` and the DUR_*/TAU_* constants): the original
+"physical" pause penalty — the marginal value of a run's stops at the W'-limited
+redline. It over-credited EVERY long run (priced at a redline the easy long-run
+pace never reached), violated conservation, and was non-monotone; it was REPLACED
+by `eroded_deff`. The code survives only to feed the Long Runs plot's display
+toggle and is slated for removal — see the reference doc for why it failed.
 """
 from __future__ import annotations
 import functools
@@ -99,7 +95,7 @@ def _record_segments(path):
 def load_segments():
     """{date_str: [(seg_dist_m, rest_after_s)]} for every LONG-RUN day with a
     rich record carrying at least one stop. Empty dict on a log-only build (no
-    watch_daily / detail cache) -> callers then apply no pause penalty (honest:
+    watch_daily / detail cache) -> callers then apply no pause erosion (honest:
     no stop data). Only long-run dates are parsed (fast)."""
     if not _WATCH_DAILY.exists() or not _DAILY.exists():
         return {}
@@ -125,25 +121,28 @@ def load_segments():
 
 
 # Pre-watch runs have no measured stops. Per Max (2026-06-17) they get an
-# aggressive UNIFORM imputed pause structure — the PRE_WATCH_PCTILE (95th) of
-# the watch-era stop count + total pause, distributed across thirds by the
-# corpus-median split (late-loaded) — applied to EVERY pre-watch run regardless
-# of route. The goal is to push old, route-uncorrected long runs off the
+# aggressive imputed pause structure scaled to the run's DISTANCE — the
+# PRE_WATCH_PCTILE of the watch-era PER-MILE stop count and PER-MILE total
+# pause, distributed across thirds by the corpus-median split (late-loaded).
+# Both the stop count and total pause scale with run length (a fixed absolute
+# pause made no sense — a 10-mi run and a 28-mi run would impute the same
+# stoppage). The goal is to push old, route-uncorrected long runs off the
 # demonstrated-capability frontier, not to analyze them accurately. Dial the
-# percentile with this one constant.
+# aggressiveness with this one percentile constant.
 PRE_WATCH_PCTILE = 0.90
 
 
 @functools.lru_cache(maxsize=1)
 def _pre_watch_profile():
-    """(n_segs, total_pause_s, thirds) at PRE_WATCH_PCTILE of the watch-era
-    long-run corpus — the single aggressive stop structure imputed onto pre-watch
-    runs. None when no watch corpus. Derived from segments alone (no moving-time
-    join): total pause = sum of measured rests."""
+    """(segs_per_mi, pause_s_per_mi, thirds) at PRE_WATCH_PCTILE of the watch-era
+    long-run corpus — the aggressive PER-MILE stop structure imputed onto
+    pre-watch runs, scaled to each run's distance in _impute_segments. None when
+    no watch corpus. Derived from segments alone (no moving-time join): pause =
+    sum of measured rests, per mile of measured segment distance."""
     segmap = load_segments()
     if not segmap:
         return None
-    nsegs, pauses, thirds = [], [], []
+    segs_pm, pause_pm, thirds = [], [], []
     for segs in segmap.values():
         if len(segs) < 2:
             continue
@@ -151,28 +150,75 @@ def _pre_watch_profile():
         tot = dists.sum(); pause = rests.sum()
         if tot <= 0 or pause <= 0:
             continue
+        miles = tot / METERS_PER_MILE
         pos = np.cumsum(dists) / tot
         thirds.append([rests[(pos >= a) & (pos < b)].sum() / pause
                        for a, b in [(0, 1/3), (1/3, 2/3), (2/3, 1.0001)]])
-        nsegs.append(len(segs)); pauses.append(pause)
-    if not nsegs:
+        segs_pm.append(len(segs) / miles); pause_pm.append(pause / miles)
+    if not segs_pm:
         return None
     t = np.median(np.array(thirds), axis=0); t = t / t.sum()
-    return {'n_segs': int(round(np.quantile(nsegs, PRE_WATCH_PCTILE))),
-            'total_pause_s': float(np.quantile(pauses, PRE_WATCH_PCTILE)),
+    return {'segs_per_mi': float(np.quantile(segs_pm, PRE_WATCH_PCTILE)),
+            'pause_s_per_mi': float(np.quantile(pause_pm, PRE_WATCH_PCTILE)),
             'thirds': tuple(t)}
 
 
+def eroded_deff(date_str, d_m, gate, rate, is_watch=True):
+    """Demonstrated effective distance after PAUSE-UNCERTAINTY erosion.
+
+    Not a physical recovery model — it encodes that a paused long run is less
+    trustworthy as proof of continuous capability. Every SECOND of a pause erodes
+    ALL subsequent moving distance, weighted by how LATE the pause is: a pause of
+    P seconds at fraction L of the run multiplies the credit of everything after
+    it by exp(-gate·rate·P·L). Consequences, by design:
+      • pause LENGTH drives erosion, not count — a 20s stop is ~nil, a 5-min stop
+        is large, and it can't be gamed by resuming and re-pausing;
+      • a LATE pause (high L) bites far harder per mile than an early one (the
+        factor is linear in run-fraction-before-the-pause);
+      • no lower bound — every second contributes, infinitesimally.
+    `gate` is the effort-gated scale (0 for easy runs → full distance, rising to 1
+    as the run pace nears the CS-predicted race pace at its distance), `rate` the
+    per-(second·lateness) erosion rate. Watch runs use measured stops; pre-watch
+    the imputed structure."""
+    if not (gate > 0 and rate > 0 and d_m > 0):
+        return d_m
+    segs = load_segments().get(date_str) if is_watch else _impute_segments(d_m)
+    if not segs:
+        return d_m
+    tot = sum(s[0] for s in segs)
+    if tot <= 0:
+        return d_m
+    k = d_m / tot                            # rescale measured segs to corrected distance
+    cum = 0.0
+    expo = 0.0
+    d_eff = 0.0
+    for sd, rest in segs:
+        d_eff += sd * k * math.exp(-expo)
+        cum += sd * k
+        if rest > 0:
+            expo += gate * rate * rest * (cum / d_m)   # lateness-weighted, per second
+    return d_eff
+
+
+def imputed_pause_total_s(d_m):
+    """Total imputed pause (s) for a PRE-WATCH run of distance `d_m` — the
+    per-mile PRE_WATCH_PCTILE pause rate scaled to the run's length (matches the
+    total _impute_segments distributes). None when there's no watch corpus."""
+    p = _pre_watch_profile()
+    return None if not p else p['pause_s_per_mi'] * (d_m / METERS_PER_MILE)
+
+
 def _impute_segments(d_m):
-    """Synthesize [(seg_dist_m, rest_after_s)] for a PRE-WATCH run from the
-    uniform P95 profile: equal-distance segments with the profile's stop count,
-    total pause distributed across thirds (late-loaded, so the heavy late stops
+    """Synthesize [(seg_dist_m, rest_after_s)] for a PRE-WATCH run by scaling the
+    per-mile profile to the run's distance: stop count and total pause both grow
+    with length, distributed across thirds (late-loaded, so the heavy late stops
     land where they carry W' leverage). Returns None when no profile exists."""
     p = _pre_watch_profile()
     if not p:
         return None
-    n = max(int(p['n_segs']), 2)
-    total = p['total_pause_s']; thirds = p['thirds']
+    miles = d_m / METERS_PER_MILE
+    n = max(int(round(p['segs_per_mi'] * miles)), 2)
+    total = p['pause_s_per_mi'] * miles; thirds = p['thirds']
     seg = d_m / n
     pos = [i / n for i in range(1, n)]                  # n-1 internal stops
     tb = [0 if x < 1/3 else (1 if x < 2/3 else 2) for x in pos]
@@ -229,7 +275,8 @@ def _fastest_feasible(segs, with_stops, d_m, cs0, dp):
 
 def pause_advantage_s_per_mi(date_str, d_m, avg_speed_mps, cs0_mps, dp_m,
                              is_watch=True):
-    """Marginal pace (s/mi) the run's stops bought over running it continuously:
+    """LEGACY (display-only; see module header) — superseded by `eroded_deff`.
+    Marginal pace (s/mi) the run's stops bought over running it continuously:
     pace(fastest feasible WITHOUT stops) - pace(fastest feasible WITH this run's
     stops). Zero for a continuous run (no stops) at any durability, and zero
     when the run sits far enough below effective CS that the stops reconstitute

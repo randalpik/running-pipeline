@@ -180,70 +180,36 @@ distance. The CS refit on the WA-grounded races came out ~5 s/mi faster in
 recent years (HMs now credited as the strength they are) and smooth.
 
 Implementation: `src/shared/wa_scoring.py` (coefficients, `wa_points`,
-`wa_5k_equiv_time`, distance interpolation on the dense road ladder
-5K/10K/15K/20K/HM/25K/30K/marathon). The long-run pause penalty (below) lives
+`wa_5k_equiv_time`). Non-anchor distances interpolate on a **monotone cubic
+(PCHIP) through the real race anchors — 5K/10K/HM/marathon — in log-distance/
+log-time**; the intermediate WA road tabs (15/20/25/30 k) were dropped as a
+track/road mix that made the curve non-monotone at the HM tab (a spike that could
+let the long-run erosion below backfire). The smooth curve is exact at the four
+anchors, so no race conversion moved. The long-run pause handling (below) lives
 separately in `src/shared/durability.py`.
 
-### Long-run pause penalty (durability + W′-balance, marginal)
+### Long-run pause handling (pause-uncertainty erosion)
 
-Long runs (all > 5K → WA) carry one adjustment a continuous race doesn't: a
-paused run's **moving** pace overstates the pace it could sustain *without* the
-stops, because mid-run stops reconstitute the W′ reservoir that running above
-critical speed draws down. The penalty is the **marginal effect of that run's
-own stops** — implemented in `src/shared/durability.py`, added to the time
-before the WA score:
+Long runs are usually **paused** (stoplights, water, regroups), and a paused run
+cannot be trusted as proof of continuous capability the way an unbroken one can.
+The projection therefore **erodes the demonstrated distance** before the WA score
+(`durability.eroded_deff`): each pause shrinks all *subsequent* confirmed distance
+by `exp(−gate · RATE · pause_sec · lateness)` — driven by pause **LENGTH** (not
+count) and **LATENESS**, scaled by an **uncapped effort gate** so only
+near/over-race-pace runs are touched and the easy cloud rides on pace. Watch runs
+use measured stops; pre-watch runs impute the global **P90** stop structure (the
+uncertainty of an unobserved run).
 
-```
-pause_advantage (s/mi) = pace(fastest feasible WITHOUT stops)
-                       − pace(fastest feasible WITH this run's stops)   (≥ 0)
-```
+This is an **uncertainty model, not a physical recovery model.** A prior
+"physical" pause penalty — a durability + W′-balance marginal-stop-value
+simulation — was **retired**: priced at the W′-limited redline it over-credited
+*every* long run, violated conservation, and was non-monotone. (It also
+superseded an even earlier fixed-cadence cardiovascular-drift formula, since
+removed.)
 
-Both "fastest feasible" paces come from a **W′-balance simulation** over the run:
-- **Effective CS declines with time on feet** (durability). Accelerating,
-  delayed-onset polynomial: `CS_eff(t) = CS₀·(1 − D(t))`, `D(t) = a·max(t −
-  0.75 h, 0)^1.6`, capped 25%, with `a` set so `D(2 h) = 12%` (Stevenson 2024
-  durability — near-flat first ~45 min, then ramps; ~5% by 1.5 h, 12% by 2 h).
-- **D′ declines on the same curve, scaled** (`D′_eff = D′·(1 − 1.67·D(t))`,
-  floor 0.30·D′; W′ falls faster than CP — Clark 2018/Evans 2025).
-- **Running above CS_eff drains D′; a stop reconstitutes it** with τ ≈ 110 s
-  (full stop, Vassallo running W′bal) / 200 s (slow). "Fastest feasible" = the
-  fastest constant pace keeping the W′-balance ≥ 0 over the run.
-
-Why this shape is right, and what it buys:
-- **A continuous run (no stops) has identical with/without sims → penalty
-  exactly 0, at any durability.** Continuous runs are ground truth and are never
-  touched — the penalty is purely the *marginal* value of the stops.
-- It is self-targeting on the three drivers Max wanted: stop **magnitude**,
-  **proximity to the end** (late stops land when CS_eff has fallen and W′ is
-  being drawn — early stops, W′ full, buy nothing), and pace **proximity to CS**
-  (a run far below CS_eff never draws W′, so its stops are worthless).
-- Each run is **self-contained** — its own day's CS/D′ and its own stop timing.
-  Nothing about one run constrains another (no cross-era contamination).
-- The advantage is **mechanism-capped at ~D′** (~25 s/mi in this corpus) — it
-  cannot be made arbitrarily large by a heavier stop profile.
-
-**Inputs are the reliable quantities only:** the corrected average pace and the
-button-press pause **timestamps** from the rich detail cache. The noisy
-per-second GPS pace is not used; the run's pace fade is represented by the
-declining CS, not the corrupted trace.
-
-**Pre-watch runs (no measured stops)** impute an aggressive *uniform* stop
-structure — the **P90** of the watch-era corpus (stop count + total pause +
-late-loaded thirds distribution), applied to every pre-watch run regardless of
-route (`PRE_WATCH_PCTILE`, dial by feel). The goal there is explicitly to push
-old, unmeasured long runs off the demonstrated-capability frontier, not to
-analyse them accurately; P90 was tuned so the late-2020 long runs land at/above
-the poorly-paced 2:30 marathon TT that followed them (their pre-watch distance
-also carries the 1.05 Nashville route correction — see
-training-quality-reference.md). Continuous watch runs and the watch frontier are
-unaffected.
-
-> Supersedes the earlier cardiovascular-drift penalty (a fixed-cadence
-> `r_eff`/`i₀`/`temp_amp` formula). That version assigned a drift cost from
-> hand-set coefficients without ever consuming the per-run pause data or asking
-> whether the stops were *needed*; the W′-balance model does both. The
-> `reset_fraction`/`PEN_*` machinery was removed from `wa_scoring.py`, which is
-> now purely the WA cross-distance conversion.
+> **Full model, the rejected physical attempts, the knobs, the monotone-WA fix,
+> and the 2020-11-06 hard case: `docs/long-run-pause-uncertainty-reference.md`.
+> Read it before changing long-run pause handling.**
 
 ### CS line interpretation
 

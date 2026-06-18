@@ -10,15 +10,17 @@ given fitness predicts you could run those distances.
 Displayed distance and pace are the WATCH-CORRECTED source of truth that
 project_long_runs computed (calibrated watch measurements; route-era
 deflation for pre-watch mislogged routes); the originally-logged value
-appears in the tooltip as a secondary line only. The Normalize toggle (on
-by default) subtracts route and training-state effects to the equivalent
-flat / sea-level pace. The Show-tags toggle (off by default — the distance
-gradient is the primary encoding) overlays halo rings: light blue = snow,
-yellow = partner-paced (both excluded from Training, matching the
-workout/recovery exclusion methodology), gray = watch-enriched, red =
-uncertain accuracy (rule-corrected, no watch data), amber = points the TQ
-fit's MAD prune excluded (tooltip carries the residual). Corrections are
-display/projection-side only — the log columns are never rewritten.
+appears in the tooltip as a secondary line only when it differs materially
+(≥0.2 mi); otherwise the two collapse into a single corrected row. The
+Normalize toggle (off by default) subtracts route and training-state effects
+to the equivalent flat / sea-level pace; the Adjust-for-pauses toggle (off by
+default) adds the run's pause advantage to show the equivalent continuous
+effort (watch-measured or imputed). The Show-tags toggle (off by default —
+the distance gradient is the primary encoding) overlays halo rings: light
+blue = snow, yellow = partner-paced (both excluded from Training, matching the
+workout/recovery exclusion methodology), gray = watch-enriched, amber = points
+the TQ fit's MAD prune excluded (tooltip carries the residual). Corrections
+are display/projection-side only — the log columns are never rewritten.
 
 Marker color encodes distance via a continuous lavender→deep-purple gradient,
 bracketed at the dataset's miles min/max.
@@ -87,7 +89,6 @@ LR_TAG_LEGEND = {
     'snow':               'Snow',
     'partners':           'Partner run',
     'enriched':           'Watch-enriched',
-    'uncertain accuracy': 'Uncertain accuracy',
     'outlier':            'Pruned outlier',
 }
 
@@ -97,12 +98,12 @@ def lr_tag(r):
     plot's session_tag: category exclusions (snow, partner-paced — both
     dropped from Training, matching the workout/recovery methodology) win,
     then the TQ fit's MAD-pruned outliers (the ring answers "why is this
-    excluded"), then informational tags: 'enriched' means the projection
-    used calibrated watch values (the size of the adjustment is visible via
-    the Watch-correction toggle); 'uncertain accuracy' marks rule-corrected
-    days with NO watch data (the route-era ratio is a population estimate,
-    not a measurement). Out-of-slice runs stay unringed — showing them at
-    absolute pace is this plot's whole point."""
+    excluded"), then the informational 'enriched' tag: the projection used
+    calibrated watch values (the size of the adjustment is visible via the
+    Watch-correction toggle). Rule-corrected pre-watch days are unringed — the
+    logged-vs-corrected tooltip rows already convey the correction. Out-of-slice
+    runs stay unringed — showing them at absolute pace is this plot's whole
+    point."""
     er = r.get('excluded_reason')
     if er == 'snow':
         return 'snow'
@@ -112,23 +113,22 @@ def lr_tag(r):
         return 'outlier'
     if r.get('lr_watch'):
         return 'enriched'
-    if r.get('lr_rule'):
-        return 'uncertain accuracy'
     return None
 
 
 LR_TAG_NOTE = {
     'snow':               'Excluded from Training: snow',
     'partners':           'Excluded from Training: partner-paced',
-    'uncertain accuracy': 'Uncertain accuracy — known mislogged route',
 }
 
 
 def long_run_hover(r):
     """Tooltip html for one long run. The watch-corrected figures are the
-    displayed source of truth and lead; the originally-logged value moves to
-    a secondary line. Uncorrected rows show only the logged line. Temp is
-    omitted on log-only days (no watch sync → NaN)."""
+    displayed source of truth and lead; the originally-logged value moves to a
+    secondary line ONLY when it differs materially (≥0.2 mi) — otherwise the two
+    collapse into a single corrected row. The paused time (watch-measured, or
+    'est.' for an imputed pre-watch pause that actually moved the pace) rides the
+    corrected/main line. Temp is omitted on log-only days (no watch sync → NaN)."""
     title = f"Long run{route_paren(r.get('display_name'), r.get('city_state'))}"
     logged = (f"{r['miles']:.1f} mi @ "
               f"{sec_to_mss(float(r['recovery_pace_sec_per_mi']))}/mi")
@@ -136,13 +136,22 @@ def long_run_hover(r):
     corr = (f"{r['corr_miles']:.1f} mi @ "
             f"{sec_to_mss(float(r['corr_pace_sec_per_mi']))}/mi"
             if has_corr else '')
+    # Paused time — one home, the corrected/main line. Watch days show the
+    # measured pause (≥30s); pre-watch days show the imputed estimate only where
+    # the pause actually bought pace (pause_adv_s_per_mi > 0).
     pause = ''
     if r.get('lr_watch') and pd.notna(r.get('pause_s')) and r['pause_s'] >= 30:
         pause = f" · {sec_to_mss(float(r['pause_s']))} paused"
-    if has_corr:
-        main, alt = corr, f"<b>Logged:</b> {logged}{pause}"
+    elif (not r.get('lr_watch') and float(r.get('pause_adv_s_per_mi') or 0) > 0
+          and pd.notna(r.get('est_pause_s'))):
+        pause = f" · est. {sec_to_mss(float(r['est_pause_s']))} paused"
+    if has_corr and abs(float(r['miles']) - float(r['corr_miles'])) < 0.2:
+        # Corrected ≈ logged: collapse to a single row.
+        main, alt = f"{corr}{pause}", ''
+    elif has_corr:
+        main, alt = f"{corr}{pause}", f"<b>Logged:</b> {logged}"
     else:
-        main, alt = logged, ''
+        main, alt = f"{logged}{pause}", ''
     tag = lr_tag(r)
     note = ''
     if tag == 'outlier':
@@ -232,6 +241,18 @@ def main():
         if np.abs(adj).max() > 0.05:
             norm_adj = adj
 
+    # ---------- pause adjustment (continuous-effort equivalent) ----------
+    # Adjust-for-pauses ADDS the run's pause advantage (s/mi, watch-measured or
+    # P-pctile-imputed; src/shared/durability.pause_advantage_s_per_mi) back to
+    # the displayed pace — the run would have had to be this much slower to run
+    # the same distance continuously. This is exactly the term project_long_runs
+    # folds into the time before the WA 5K conversion, so toggling it ON brings
+    # the Long Runs graph in line with Training's pause handling. Default OFF.
+    pause_adj = None
+    _padj = lr['pause_adv_s_per_mi'].fillna(0).to_numpy()
+    if np.abs(_padj).max() > 0.05:
+        pause_adj = _padj
+
     # Training's actual exclusions for the amber ring — the shared
     # track-relative prune (written by plot_training_quality, which runs
     # earlier in run_plots.sh), NOT the covariate fit above. The ring shows
@@ -273,16 +294,11 @@ def main():
 
     # Long-run markers: single trace, continuous purple gradient by distance.
     # y/color are the watch-corrected display (the source of truth); meta.disp_y
-    # carries that un-normalized base so plot_long_runs.js can re-derive the
-    # Normalize toggle without recomputing. Normalize ships ON, so the initial
-    # y is the normalized base (Python-baked → correct on first paint, no JS
-    # recompute needed; toggling off restores disp_y).
+    # carries that base so plot_long_runs.js can re-derive the Normalize /
+    # Adjust-for-pauses toggles without recomputing. Both toggles ship OFF, so
+    # the initial y is the raw corrected base; toggling re-derives from disp_y.
     disp_base_y = _y_safe(disp_pace.values)
-    if norm_adj is not None:
-        init_y = [None if v is None else v - norm_adj[i] / 60.0
-                  for i, v in enumerate(disp_base_y)]
-    else:
-        init_y = disp_base_y
+    init_y = disp_base_y
     cd = [long_run_hover(r) for _, r in lr.iterrows()]
     fig.add_trace(go.Scatter(
         x=lr['date'], y=init_y,
@@ -337,14 +353,20 @@ def main():
     # marks enclosing all plotted data — the two CS reference curves and the
     # long-run markers. Data-driven so it fits each profile (Max's data already
     # spans the former fixed 4:30–8:30 bounds, so his axis is unchanged).
+    # Envelope must enclose every reachable view: the raw base, Normalize on
+    # (subtracts cost → faster), Adjust-for-pauses on (adds advantage → slower),
+    # and both on. Build the four corners so no toggle combo pushes a point
+    # off-axis.
+    _base = disp_pace.to_numpy(dtype=float)
+    _n = norm_adj / 60.0 if norm_adj is not None else 0.0
+    _p = pause_adj / 60.0 if pause_adj is not None else 0.0
     _ys = np.concatenate([
         np.asarray(front_mar_pace_min, dtype=float),
         np.asarray(front_hm_pace_min, dtype=float),
-        # Displayed (corrected) paces and their normalized values — Normalize
-        # ships ON, and normalized paces run faster, so include both bases so
-        # neither the default view nor toggling pushes a point off-axis.
-        np.asarray(disp_pace.values, dtype=float),
-        np.asarray([np.nan if v is None else v for v in init_y], dtype=float),
+        _base,
+        _base - _n,
+        _base + _p,
+        _base - _n + _p,
     ])
     _ys = _ys[np.isfinite(_ys)]
     _lo, _hi = (float(_ys.min()), float(_ys.max())) if len(_ys) else (4.5, 8.5)
@@ -405,18 +427,29 @@ def main():
         norm_section = (
             widgets.divider()
             + widgets.checkbox_rows([('normalize', 'Normalize')],
-                                    data_attr='lrnorm', checked=True)
+                                    data_attr='lrnorm', checked=False)
             + widgets.subtitle('Subtract route and training effects to show the equivalent flat, paved, non-fatigued pace at sea level in good conditions.')
+        )
+    pause_section = ''
+    if pause_adj is not None:
+        pause_section = (
+            widgets.divider()
+            + widgets.checkbox_rows([('pauses', 'Adjust for pauses')],
+                                    data_attr='lrpause', checked=False)
+            + widgets.subtitle('Show the equivalent pace of a true continuous effort, accounting for watch-derived or estimated pauses.')
         )
     overlay_html = widgets.sidebar(
         'lr-gradient',
-        body=gradient_bar + norm_section + tags_section,
+        body=gradient_bar + norm_section + pause_section + tags_section,
         compact=True, width_px=GRADIENT_BOX_WIDTH,
     )
+    _globals = {}
     if norm_adj is not None:
-        overlay_html = (widgets.js_globals(
-            {'LR_NORM_ADJ': [round(float(v), 2) for v in norm_adj]})
-            + '\n' + overlay_html)
+        _globals['LR_NORM_ADJ'] = [round(float(v), 2) for v in norm_adj]
+    if pause_adj is not None:
+        _globals['LR_PAUSE_ADJ'] = [round(float(v), 2) for v in pause_adj]
+    if _globals:
+        overlay_html = widgets.js_globals(_globals) + '\n' + overlay_html
 
     # ---------- cursor-tooltip payload ----------
     js_epoch = pd.Timestamp('1970-01-01')
@@ -435,6 +468,8 @@ def main():
              'html': long_run_hover(r)}
         if norm_adj is not None:
             s['adj'] = round(float(norm_adj[i]), 1)
+        if pause_adj is not None:
+            s['padj'] = round(float(pause_adj[i]), 1)
         sessions.append(s)
     sessions.sort(key=lambda s: s['day'])
 
@@ -522,6 +557,12 @@ function buildTooltip(day, isSnap, pointHtml) {
       html += '<div class="tt-row"><span>Normalized adjustment</span><b>' +
               (sh >= 0 ? '+' : '−') + Math.abs(sh).toFixed(1) +
               ' s/mi</b></div>';
+    }
+    if (window.__lrPauseOn && run && run.padj != null && run.padj > 0) {
+      // Pauses ADD to the point (y = … + padj): the equivalent continuous
+      // effort is this much slower per mile.
+      html += '<div class="tt-row"><span>Pause adjustment</span><b>+' +
+              run.padj.toFixed(1) + ' s/mi</b></div>';
     }
     html += '</div>';
   }

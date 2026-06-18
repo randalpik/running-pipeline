@@ -4,12 +4,14 @@
 // baked in by plot_long_runs.py. meta.disp_y carries that un-normalized
 // corrected base so this toggle can re-derive without recomputing.
 //
-// Normalize (ON by default) subtracts the full flat / sea-level race-
+// Normalize (OFF by default) subtracts the full flat / sea-level race-
 // equivalent adjustment via window.__PLOT_LR_NORM_ADJ (sec/mi): physical
 // route (grade, off-road footing, altitude) + training-state (temperature,
-// race fatigue), the same decomposition the Training page applies. Python
-// bakes the normalized y into the initial trace (so first paint is correct
-// with no JS recompute); toggling off restores meta.disp_y.
+// race fatigue), the same decomposition the Training page applies.
+// Adjust-for-pauses (OFF by default) ADDS the run's pause advantage via
+// window.__PLOT_LR_PAUSE_ADJ (sec/mi) to show the continuous-effort
+// equivalent. Both ship off, so the initial trace is the raw corrected base
+// (meta.disp_y); each toggle re-derives y from that base.
 //
 // The condition-tag halo rings are separate traces whose meta.idx maps
 // each ring point to its marker-trace position; their y is recomputed from
@@ -22,11 +24,14 @@
 // (keyed by day in plot_long_runs.py's payload) can render the matching
 // "Normalized adjustment" line.
 (function () {
-  window.__lrNormOn = true;
+  window.__lrNormOn = false;
+  window.__lrPauseOn = false;
   var ADJ = window.__PLOT_LR_NORM_ADJ;
+  var PAUSE = window.__PLOT_LR_PAUSE_ADJ;
   var normCb = document.querySelector('#lr-gradient input[data-lrnorm]');
+  var pauseCb = document.querySelector('#lr-gradient input[data-lrpause]');
   var tagsCb = document.querySelector('#lr-gradient input[data-lrtags]');
-  if (!normCb && !tagsCb) return;
+  if (!normCb && !pauseCb && !tagsCb) return;
 
   function getPlot() { return document.querySelector('.plotly-graph-div'); }
 
@@ -42,13 +47,20 @@
     if (main < 0) return;
     var meta = plot.data[main].meta;
     var normOn = !!(normCb && normCb.checked);
+    var pauseOn = !!(pauseCb && pauseCb.checked);
     window.__lrNormOn = normOn;
+    window.__lrPauseOn = pauseOn;
 
     var base = meta.disp_y;
     var y = [];
     for (var k = 0; k < base.length; k++) {
       var v = base[k];
-      if (v != null && normOn && ADJ && ADJ[k] != null) v = v - ADJ[k] / 60;
+      if (v != null) {
+        // Normalize subtracts route/state cost (faster); pauses add the
+        // advantage (slower continuous-equivalent). They compose.
+        if (normOn && ADJ && ADJ[k] != null) v = v - ADJ[k] / 60;
+        if (pauseOn && PAUSE && PAUSE[k] != null) v = v + PAUSE[k] / 60;
+      }
       y.push(v);
     }
     Plotly.restyle(plot, { y: [y] }, [main]);
@@ -66,5 +78,6 @@
   }
 
   if (normCb) normCb.addEventListener('change', update);
+  if (pauseCb) pauseCb.addEventListener('change', update);
   if (tagsCb) tagsCb.addEventListener('change', update);
 })();

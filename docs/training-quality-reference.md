@@ -139,21 +139,22 @@ sits next to CS without feeding back into it.
   run AS IF IT WERE A RACE of its distance, **down-converted to 5K via the
   World Athletics tables** (June 2026 — replaces the old β_long un-bias;
   long runs are all >5K). It carries one extra adjustment a race doesn't: a
-  **durability + W′-balance PAUSE PENALTY** added to the (physically-corrected)
-  time before the WA score (`src/shared/durability.py`). It is the **marginal
-  value of the run's own stops** — pace(fastest constant pace feasible WITHOUT
-  the stops) − pace(fastest feasible WITH them) — under a W′-balance sim where
-  effective CS declines with time on feet (accelerating polynomial, 12%@2h),
-  running above CS_eff drains D′, and each stop reconstitutes it (τ ≈ 110 s).
-  A continuous run (no stops) gets **exactly 0 at any durability** — ground
-  truth, untouched — and the penalty self-targets stop magnitude × proximity to
-  the end × proximity to CS (capped at ~D′, ~25 s/mi). Watch runs use their real
-  measured stops; **pre-watch runs (no stops) impute the P90 watch-era stop
-  structure** uniformly. The hardest long runs land near CS on their own (the
-  all-time fastest, a low-pause 2024 Boulder run, displays right at the best HM
-  ~14:30); easy and heavily-paused ones read honestly slow; era effort policy
-  stays visible. See cs-model-reference.md for the full mechanism; it
-  **supersedes** the old fixed-cadence cardiovascular-drift formula. The model's PHYSICAL + STATE terms ARE always applied (Max,
+  **pause-uncertainty erosion** of the demonstrated distance before the WA score
+  (`durability.eroded_deff`). A paused long run is less trustworthy as proof of
+  continuous capability, so each pause erodes all *subsequent* confirmed distance
+  by `exp(−gate · RATE · pause_sec · lateness)` — driven by pause **LENGTH** (not
+  count) and **lateness**, scaled by an **UNCAPPED effort gate** so only
+  near/over-race-pace runs are touched and the easy cloud rides on pace alone
+  (`LR_EROSION_RATE = 0.001`, `LR_EFFORT_E0 = 0.95`). Watch runs use measured
+  stops; pre-watch runs impute the global **P90** stop structure (the uncertainty
+  of an unobserved run). **This is an uncertainty model, not a physical recovery
+  model** — the earlier durability + W′-balance "pause penalty" (and the crossover
+  and longest-segment attempts) over-credited every run at the W′-redline, were
+  non-monotone, and were retired. The companion WA conversion is now a monotone
+  PCHIP through the real race anchors (5K/10K/HM/marathon), dropping the
+  inconsistent 15/20/25/30 k tabs. **See `long-run-pause-uncertainty-reference.md`
+  for the full model, the rejected alternatives, and the calibration (incl. the
+  2020-11-06 hard case).** The model's PHYSICAL + STATE terms ARE always applied (Max,
   June 2026): resid = raw − (elev + temp + race-fatigue contributions) —
   verified, physically grounded effects, the same family as the hills'
   Minetti term. Only the INTERCEPT (the long-run effort level,

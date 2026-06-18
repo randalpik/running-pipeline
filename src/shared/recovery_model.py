@@ -259,9 +259,10 @@ STRIDE_SUFFIX_RX = re.compile(r'/\s*(?:\d+\s*x\s*)?\d+\s*(?:st|sp)\b',
 # runs. Per-route (not flat across ALL routes): Lake Samm's watch ratio is
 # 1.007 (accurately logged), so it gets NO correction — a blanket pre-watch
 # haircut would wrongly deflate it. This correction handles only DISTANCE; the
-# pre-watch PAUSE penalty is separate (durability.py imputes the P95 watch-era
-# stop structure onto pre-watch runs). Together they pull the pre-watch Nashville
-# long runs off the demonstrated-capability frontier. Distance error is a route
+# pre-watch pause-uncertainty erosion is separate (durability.py imputes the
+# global P90 watch-era stop structure onto pre-watch runs; see
+# docs/long-run-pause-uncertainty-reference.md). Together they pull the pre-watch
+# Nashville long runs off the demonstrated-capability frontier. Distance error is a route
 # property, so the factor also applies to the routes' recovery rows; applied
 # back to 2018; watch enrichment, when present, wins over the rule. Lives here
 # (not workouts.py) so both the long-run projection and the recovery fit consume
