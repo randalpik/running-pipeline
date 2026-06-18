@@ -258,7 +258,8 @@ def main():
     hills     = hills[hills['excluded_reason'].isna()].drop(columns=['excluded_reason']).copy()
     if hill_reps.empty:
         hill_reps = hill_reps.assign(raw_resid=pd.Series(dtype=float),
-                                     p5k_cs_min=pd.Series(dtype=float))
+                                     p5k_cs_min=pd.Series(dtype=float),
+                                     loop=pd.Series(dtype=object))
     else:
         for _, r in hill_reps[hill_reps['p5k_min'].notna()
                               & hill_reps['excluded_reason'].notna()].iterrows():
