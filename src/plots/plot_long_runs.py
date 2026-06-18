@@ -13,9 +13,7 @@ deflation for pre-watch mislogged routes); the originally-logged value
 appears in the tooltip as a secondary line only when it differs materially
 (≥0.2 mi); otherwise the two collapse into a single corrected row. The
 Normalize toggle (off by default) subtracts route and training-state effects
-to the equivalent flat / sea-level pace; the Adjust-for-pauses toggle (off by
-default) adds the run's pause advantage to show the equivalent continuous
-effort (watch-measured or imputed). The Show-tags toggle (off by default —
+to the equivalent flat / sea-level pace. The Show-tags toggle (off by default —
 the distance gradient is the primary encoding) overlays halo rings: light
 blue = snow, yellow = partner-paced (both excluded from Training, matching the
 workout/recovery exclusion methodology), gray = watch-enriched, amber = points
@@ -138,12 +136,12 @@ def long_run_hover(r):
             if has_corr else '')
     # Paused time — one home, the corrected/main line. Watch days show the
     # measured pause (≥30s); pre-watch days show the imputed estimate only where
-    # the pause actually bought pace (pause_adv_s_per_mi > 0).
+    # those imputed stops actually erode the run (pause_erosion_gate > 0).
     pause = ''
     if r.get('lr_watch') and pd.notna(r.get('pause_s')) and r['pause_s'] >= 30:
         pause = f" · {sec_to_mss(float(r['pause_s']))} paused"
-    elif (not r.get('lr_watch') and float(r.get('pause_adv_s_per_mi') or 0) > 0
-          and pd.notna(r.get('est_pause_s'))):
+    elif (not r.get('lr_watch') and pd.notna(r.get('est_pause_s'))
+          and float(r.get('pause_erosion_gate') or 0) > 0):
         pause = f" · est. {sec_to_mss(float(r['est_pause_s']))} paused"
     if has_corr and abs(float(r['miles']) - float(r['corr_miles'])) < 0.2:
         # Corrected ≈ logged: collapse to a single row.
@@ -240,18 +238,6 @@ def main():
         # Omit a dead checkbox (profile where every adjustment is ~0).
         if np.abs(adj).max() > 0.05:
             norm_adj = adj
-
-    # ---------- pause adjustment (continuous-effort equivalent) ----------
-    # Adjust-for-pauses ADDS the run's pause advantage (s/mi, watch-measured or
-    # P-pctile-imputed; src/shared/durability.pause_advantage_s_per_mi) back to
-    # the displayed pace — the run would have had to be this much slower to run
-    # the same distance continuously. This is exactly the term project_long_runs
-    # folds into the time before the WA 5K conversion, so toggling it ON brings
-    # the Long Runs graph in line with Training's pause handling. Default OFF.
-    pause_adj = None
-    _padj = lr['pause_adv_s_per_mi'].fillna(0).to_numpy()
-    if np.abs(_padj).max() > 0.05:
-        pause_adj = _padj
 
     # Training's actual exclusions for the amber ring — the shared
     # track-relative prune (written by plot_training_quality, which runs
@@ -353,20 +339,15 @@ def main():
     # marks enclosing all plotted data — the two CS reference curves and the
     # long-run markers. Data-driven so it fits each profile (Max's data already
     # spans the former fixed 4:30–8:30 bounds, so his axis is unchanged).
-    # Envelope must enclose every reachable view: the raw base, Normalize on
-    # (subtracts cost → faster), Adjust-for-pauses on (adds advantage → slower),
-    # and both on. Build the four corners so no toggle combo pushes a point
-    # off-axis.
+    # Envelope must enclose both reachable views: the raw base and Normalize on
+    # (subtracts cost → faster), so neither pushes a point off-axis.
     _base = disp_pace.to_numpy(dtype=float)
     _n = norm_adj / 60.0 if norm_adj is not None else 0.0
-    _p = pause_adj / 60.0 if pause_adj is not None else 0.0
     _ys = np.concatenate([
         np.asarray(front_mar_pace_min, dtype=float),
         np.asarray(front_hm_pace_min, dtype=float),
         _base,
         _base - _n,
-        _base + _p,
-        _base - _n + _p,
     ])
     _ys = _ys[np.isfinite(_ys)]
     _lo, _hi = (float(_ys.min()), float(_ys.max())) if len(_ys) else (4.5, 8.5)
@@ -430,26 +411,14 @@ def main():
                                     data_attr='lrnorm', checked=False)
             + widgets.subtitle('Subtract route and training effects to show the equivalent flat, paved, non-fatigued pace at sea level in good conditions.')
         )
-    pause_section = ''
-    if pause_adj is not None:
-        pause_section = (
-            widgets.divider()
-            + widgets.checkbox_rows([('pauses', 'Adjust for pauses')],
-                                    data_attr='lrpause', checked=False)
-            + widgets.subtitle('Show the equivalent pace of a true continuous effort, accounting for watch-derived or estimated pauses.')
-        )
     overlay_html = widgets.sidebar(
         'lr-gradient',
-        body=gradient_bar + norm_section + pause_section + tags_section,
+        body=gradient_bar + norm_section + tags_section,
         compact=True, width_px=GRADIENT_BOX_WIDTH,
     )
-    _globals = {}
     if norm_adj is not None:
-        _globals['LR_NORM_ADJ'] = [round(float(v), 2) for v in norm_adj]
-    if pause_adj is not None:
-        _globals['LR_PAUSE_ADJ'] = [round(float(v), 2) for v in pause_adj]
-    if _globals:
-        overlay_html = widgets.js_globals(_globals) + '\n' + overlay_html
+        overlay_html = widgets.js_globals(
+            {'LR_NORM_ADJ': [round(float(v), 2) for v in norm_adj]}) + '\n' + overlay_html
 
     # ---------- cursor-tooltip payload ----------
     js_epoch = pd.Timestamp('1970-01-01')
@@ -468,8 +437,6 @@ def main():
              'html': long_run_hover(r)}
         if norm_adj is not None:
             s['adj'] = round(float(norm_adj[i]), 1)
-        if pause_adj is not None:
-            s['padj'] = round(float(pause_adj[i]), 1)
         sessions.append(s)
     sessions.sort(key=lambda s: s['day'])
 
@@ -557,12 +524,6 @@ function buildTooltip(day, isSnap, pointHtml) {
       html += '<div class="tt-row"><span>Normalized adjustment</span><b>' +
               (sh >= 0 ? '+' : '−') + Math.abs(sh).toFixed(1) +
               ' s/mi</b></div>';
-    }
-    if (window.__lrPauseOn && run && run.padj != null && run.padj > 0) {
-      // Pauses ADD to the point (y = … + padj): the equivalent continuous
-      // effort is this much slower per mile.
-      html += '<div class="tt-row"><span>Pause adjustment</span><b>+' +
-              run.padj.toFixed(1) + ' s/mi</b></div>';
     }
     html += '</div>';
   }

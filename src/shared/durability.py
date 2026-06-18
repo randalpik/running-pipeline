@@ -12,13 +12,10 @@ the easy cloud is untouched. It is an UNCERTAINTY model, not a physical recovery
 model. Watch runs use measured stops (`load_segments`); pre-watch runs impute the
 global P90 stop structure (`_pre_watch_profile` / `_impute_segments`).
 
-LEGACY — DO NOT REVIVE (`pause_advantage_s_per_mi` + the W'-balance sim
-`_min_wbal` / `_fastest_feasible` and the DUR_*/TAU_* constants): the original
-"physical" pause penalty — the marginal value of a run's stops at the W'-limited
-redline. It over-credited EVERY long run (priced at a redline the easy long-run
-pace never reached), violated conservation, and was non-monotone; it was REPLACED
-by `eroded_deff`. The code survives only to feed the Long Runs plot's display
-toggle and is slated for removal — see the reference doc for why it failed.
+HISTORY — the original "physical" pause model (a durability + W'-balance
+marginal-stop-value simulation, `pause_advantage_s_per_mi`) was REMOVED. Priced at
+the W'-limited redline it over-credited every long run, violated conservation, and
+was non-monotone. Do not reintroduce it; the reference doc records why it failed.
 """
 from __future__ import annotations
 import functools
@@ -31,32 +28,11 @@ import pandas as pd
 from src.shared.paths import DATA_DIR
 from src.shared.units import METERS_PER_MILE
 
-# --- durability: effective-CS decline over time on feet ---
-DUR_LOSS_2H = 0.12      # fractional CS loss at 2 h (the conservatism dial)
-DUR_ONSET_H = 0.75      # near-flat below this, then accelerates
-DUR_EXP     = 1.6       # accelerating polynomial exponent (Stevenson 2024)
-DUR_CAP     = 0.25      # max fractional CS loss (ultra-duration floor)
-# --- D' (W') decline + reconstitution ---
-WPRIME_LOSS_2H = 0.20   # fractional D' loss at 2 h (rides the same curve, scaled)
-DP_FLOOR       = 0.30   # D' never falls below this fraction of fresh
-TAU_STOP_S     = 110.0  # W' reconstitution time const at a full stop (Vassallo running)
-TAU_SLOW_S     = 200.0  # ... while moving below CS
-_DT = 2.0               # simulation step (s)
-
-_A = DUR_LOSS_2H / (2.0 - DUR_ONSET_H) ** DUR_EXP
-_DECLINE = 0.0 if DUR_LOSS_2H <= 0 else WPRIME_LOSS_2H / DUR_LOSS_2H
-
 _DETAIL_DIRS = [DATA_DIR / 'profiles' / 'coros' / 'details',
                 DATA_DIR / 'profiles' / 'maddy' / 'details',
                 DATA_DIR / 'details']
 _WATCH_DAILY = DATA_DIR / 'watch_daily.csv'
 _DAILY = DATA_DIR / 'daily.csv'
-
-
-def _dfrac(tof_hr):
-    """Durability fraction at `tof_hr` hours on feet (0 below onset, then the
-    accelerating polynomial, capped)."""
-    return min(DUR_CAP, _A * max(tof_hr - DUR_ONSET_H, 0.0) ** DUR_EXP)
 
 
 def _find_detail(label):
@@ -227,80 +203,3 @@ def _impute_segments(d_m):
     return [[seg, rests[i]] for i in range(n - 1)] + [[seg, 0.0]]
 
 
-def _min_wbal(phases, cs0, dp, dt=_DT):
-    """Minimum W'-balance (m) over a run given [(speed_mps, seconds), ...].
-    Durability clock = cumulative MOVING time (stops add no fatigue)."""
-    dbal = dp; mn = dp; tof = 0.0
-    for v, secs in phases:
-        for _ in range(int(round(secs / dt))):
-            if v > 0.05:
-                tof += dt
-            D = _dfrac(tof / 3600.0)
-            cs_e = cs0 * (1.0 - D)
-            dp_e = dp * (1.0 - _DECLINE * D)
-            if dp_e < DP_FLOOR * dp:
-                dp_e = DP_FLOOR * dp
-            if v > cs_e:
-                dbal -= (v - cs_e) * dt
-            else:
-                tau = TAU_STOP_S if v < 0.5 else TAU_SLOW_S
-                dbal += (dp_e - dbal) * (1.0 - math.exp(-dt / tau))
-            if dbal > dp_e:
-                dbal = dp_e
-            if dbal < mn:
-                mn = dbal
-    return mn
-
-
-def _fastest_feasible(segs, with_stops, d_m, cs0, dp):
-    """Fastest constant speed (m/s) that keeps W'bal >= 0 over the run, either
-    with this run's stop structure or run straight through."""
-    lo, hi = cs0 * 0.4, cs0 * 1.15
-    for _ in range(18):
-        v = (lo + hi) / 2.0
-        if with_stops:
-            phases = []
-            for sd, rest in segs:
-                phases.append((v, sd / v))
-                if rest > 0:
-                    phases.append((0.0, rest))
-        else:
-            phases = [(v, d_m / v)]
-        if _min_wbal(phases, cs0, dp) >= 0:
-            lo = v
-        else:
-            hi = v
-    return lo
-
-
-def pause_advantage_s_per_mi(date_str, d_m, avg_speed_mps, cs0_mps, dp_m,
-                             is_watch=True):
-    """LEGACY (display-only; see module header) — superseded by `eroded_deff`.
-    Marginal pace (s/mi) the run's stops bought over running it continuously:
-    pace(fastest feasible WITHOUT stops) - pace(fastest feasible WITH this run's
-    stops). Zero for a continuous run (no stops) at any durability, and zero
-    when the run sits far enough below effective CS that the stops reconstitute
-    nothing.
-
-    Watch runs use their REAL measured stops (is_watch True; a continuous watch
-    run with <2 segments returns 0 — ground truth, untouched). PRE-WATCH runs
-    (is_watch False — no segment data) impute the aggressive uniform P95 stop
-    structure via _impute_segments(d_m). Returns 0 with no usable segments /
-    invalid CS-D'."""
-    if not (cs0_mps > 0 and dp_m > 0 and d_m > 0):
-        return 0.0
-    if is_watch:
-        segs = load_segments().get(date_str)
-    else:
-        segs = _impute_segments(d_m)
-    if not segs or len(segs) < 2:
-        return 0.0
-    tot = sum(s[0] for s in segs)
-    if tot <= 0:
-        return 0.0
-    k = d_m / tot                                  # rescale to corrected distance
-    segs = [(s[0] * k, s[1]) for s in segs]
-    v_wp = _fastest_feasible(segs, True, d_m, cs0_mps, dp_m)
-    v_np = _fastest_feasible(segs, False, d_m, cs0_mps, dp_m)
-    adv = METERS_PER_MILE / v_np - METERS_PER_MILE / v_wp
-    return max(0.0, adv)

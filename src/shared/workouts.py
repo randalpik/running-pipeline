@@ -831,25 +831,12 @@ def project_long_runs(cs, epoch):
     # the old beta_long un-bias) — scored NOT at the full distance but at the
     # PAUSE-UNCERTAINTY-eroded demonstrated distance (the model is below; full
     # rationale in docs/long-run-pause-uncertainty-reference.md).
-    # NOTE: `pause_adv_s_per_mi` / `est_pause_s` computed just below are LEGACY,
-    # kept only for the Long Runs plot's display toggle — NOT used by the
-    # projection (that uses durability.eroded_deff). See durability.py header.
     from src.shared.wa_scoring import wa_5k_equiv_time, wa_equiv_time_at
-    from src.shared.durability import (pause_advantage_s_per_mi,
-                                       imputed_pause_total_s, eroded_deff)
-    cs_mps_t = np.interp(lr['day'], cs['day'].values, cs['cs_mps_med'].values)
-    miles = lr['d_m'].to_numpy(float) / METERS_PER_MILE
-    avg_speed = lr['d_m'].to_numpy(float) / lr['t_run'].to_numpy(float)
+    from src.shared.durability import imputed_pause_total_s, eroded_deff
     is_watch = lr['lr_watch'].to_numpy()
-    adv = np.array([pause_advantage_s_per_mi(d.strftime('%Y-%m-%d'), dm, sp, c0, dp0, bool(w))
-                    for d, dm, sp, c0, dp0, w in zip(
-                        lr['date'], lr['d_m'].to_numpy(float), avg_speed,
-                        cs_mps_t, lr['dp_t'].to_numpy(float), is_watch)])
-    lr['pause_adv_s_per_mi'] = adv
-    # Estimated pause time for the tooltip: watch days carry the measured
-    # `pause_s`; pre-watch (non-watch) days get the imputed P-pctile pause SCALED
-    # to the run's distance (durability.imputed_pause_total_s) so the tooltip can
-    # show "est. m:ss paused" where the imputed stops actually moved the pace.
+    # est_pause_s — imputed pause time for the Long Runs tooltip on pre-watch days
+    # (watch days carry the measured `pause_s`); distance-scaled via
+    # durability.imputed_pause_total_s.
     _est = np.array([imputed_pause_total_s(dm) or np.nan
                      for dm in lr['d_m'].to_numpy(float)])
     lr['est_pause_s'] = np.where(is_watch, np.nan, _est)
@@ -860,8 +847,7 @@ def project_long_runs(cs, epoch):
     # tail by (1-f) per stop, so a heavily-paused frontier run loses distance
     # while the cloud and near-continuous runs are untouched. No hard cap — the
     # erosion alone places long runs; how far below the frontier they fall is the
-    # model's verdict, not a clamp. (pause_adv_s_per_mi above is now display-only
-    # for the Long Runs plot — the projection no longer uses the W'-rescue term.)
+    # model's verdict, not a clamp.
     v_flat = lr['d_m'].to_numpy(float) / t_run_flat.to_numpy(float)
     run_pace = METERS_PER_MILE / v_flat                                  # s/mi, flat
     t5k_cs = lr['p5k_cs_min'].to_numpy(float) * 60.0 * 5000.0 / METERS_PER_MILE
