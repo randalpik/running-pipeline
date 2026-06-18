@@ -120,6 +120,11 @@ sits next to CS without feeding back into it.
   watch profiles degrade to an intercept-only fit.
 - **τ = 210 sec/mi for workout D_eff decay.** Calibrated so 6×1600 @ 3:00/mi
   rest gives D_eff ≈ 5000m (anchor preserved from earlier work).
+  *(Superseded June 2026: the connected accumulator's flat decay became
+  `RECON_TAU_S=540`s, then the intensity-dependent `recon_tau(v/cs)` =
+  662·exp(−3·(v/cs−1)) clamped to Skiba [316,862] — see Stage 2. The flat 540
+  remains only for long-run segments; the legacy /210 uniform formula survives
+  only as the no-watch fallback.)*
 - **Reps excluded from the smoother.** *(Superseded June 2026: reps
   re-entered scatter-weighted once the g(d) anaerobic correction landed —
   see Stage 5a.)*
@@ -301,6 +306,14 @@ older `workout_vdot_v6.csv`, with these rule changes:
   hardcoded ladder).
 - **Default rests**: tempo 60 s/mi, interval 140 s/mi (800m) or 180 s/mi
   (other), rep 420 s/mi, continuous_fartlek 0.
+- **Rest estimation** (`build_rest_model` / `effective_rest_per_mile`): rest per
+  rep drives the connected-accumulator decay, so it matters. Policy: **2020+**
+  interval/rep rest = this profile's OWN watch-measured median by 100 m rep-
+  distance bin; **pre-2020** trusts the logged rest when present; **pre-2020 with
+  NO logged rest** now falls back to that same **watch per-rep-distance median**
+  (June 2026) — keyed by rep distance, so a `10×500` gets far more rest/mile than
+  a `4×1600`, instead of the old flat per-type median that under-rested short-rep
+  days logged as intervals. The hardcoded defaults above are the last resort.
 
 Decomposer-level prunes (24 rows go to `workout_pruned_v7.csv`):
 2016-07-11 anomaly; tempos with paces over 10:00/mi; `qd < 100`; continuous
@@ -318,19 +331,34 @@ Per workout (in the plot pipeline):
 5. `P5K = t_5K · 1609.344 / 5000` (sec/mi)
 6. `raw_resid = P5K − CS_implied_5K_pace_at_t` (sec/mi)
 
-Steps 1–3 are the legacy uniform-rep path (no watch data, untrusted rest).
-Trusted/enriched days carry `d_eff_m`/`t_eff_s` from the connected
-accumulator (`parse_workouts._connected_core`), which since June 2026
-applies the **effort-aware anaerobic deflation** in place of g(d): each
-rep's supra-CS speed is scaled by `t/(t+τ)` (`τ = D′₃/(v_max − CS)`), CS
-being the workout's own implied CS solved as a fixed point, first rep
-exempt. The workout side uses its own `WORKOUT_VMAX_MPS = 8.7`
-(workouts.py) — a measurement calibration anchored to the watch rep
-corpus, deliberately distinct from cs_projection's conservative race
-edges (evidence 9.5 / prediction 8.3); see the short-effort plan's
-Outcome section for why the race edges exist and what the split costs
-(the exact race≡rep invariant holds within each layer, approximately
-across them).
+Steps 1–3 are the legacy uniform-rep FALLBACK (no watch data, untrusted
+rest; `/210` is a flat per-mile decay). Trusted/enriched days instead
+carry `d_eff_m`/`t_eff_s` from the connected accumulator
+(`parse_workouts._connected_core`) — the primary path — which uses TWO
+distinct time constants (don't conflate them):
+
+- **Reconstitution τ (intensity-dependent, June 2026):** between reps the
+  carried-over "connection" decays by `exp(−rest_s / recon_tau(v/cs))`,
+  where `recon_tau` SHRINKS as the rep sits further above CS — deep-
+  anaerobic reps (W′/PCr) reconstitute fast (small τ → connection resets →
+  small D_eff → cool); near-CS efforts reconstitute slow (large τ → D_eff
+  preserved). `τ = 662·exp(−3.0·(v/cs−1))`, clamped to Skiba's
+  reconstitution band [316, 862] s. CS-relative, so it self-normalizes with
+  fitness. See the `recon_tau` block in `workouts.py` for the physiology and
+  the non-Max-profile defensibility. (Replaced a flat τ, which decayed by
+  absolute rest and cooled a near-CS 1000 m interval as hard as an all-out
+  400 m rep off the same rest.)
+- **Deflation τ (CP3, unchanged):** each rep's supra-CS speed is scaled by
+  `t/(t+τ_defl)`, `τ_defl = D′₃/(v_max−CS)`, CS the workout's own implied CS
+  solved as a fixed point (D_eff now inside that fixed point), first rep
+  exempt — the effort-aware anaerobic deflation that replaced g(d).
+
+The workout `v_max` is **pinned to cs_projection's race evidence edge**
+(`vmax_evidence()`, 9.5 for Max). The separate measured 8.7 was retired
+(June 2026): above ~800 m it proved empirically inert in the 5K-equiv (the
+deflation and projection channels cancel), so a distinct workout value
+bought nothing. Other profiles still scale by their own CS until they have
+a race corpus.
 
 ### Stage 3 — Long run projection
 
@@ -494,47 +522,45 @@ scatter-weighted (`(σ_ref/σ)²` clipped to [0.1, 1.0], σ_ref = non-rep
 workout residual SD), recomputed inside the prune loop — currently reps
 0.79, hills pooled 0.55.
 
-**Course-verification gate ("uncertain accuracy", June 2026 —
-sign-blind).** The projection is only as trustworthy as the course
-measurement, and mismeasurement cuts both ways (a short course reads
-fast, a long one slow). The prior that exposed it: workouts should
-nearly always read SLOWER than CS — the sub-max effort gap is the very
-thing TQ measures — so faster-than-CS points on unverifiable courses
-were scrutinized first, then the rule was made consistent on both
-sides. A workout is trusted outright if **watch-verified** (status
-exact/watch-only), on a **track** (`terrain_type == 'track'` — also
-covers 2016-17 quality days under the "education hill" catch-all that
-were really rhs track once relabeled), or **non-solo** (partners
-verify the course). Within the unverified remainder, two rescues:
-**continuous efforts (0 rest)** — mismeasurement bites on back-and-
-forth reps with badly marked start/finish lines, not a single unbroken
-course — and **pre-2018 staples** (`5000t`/`6400t`/`4800f` strings).
-Everything else is flagged `uncertain accuracy` (all 10 powerline 2 —
-measured short: gravel yet not slower than surrounding work, and never
-replicated post-watch; 9 education hill rest-interval days; 8 hartman;
-centennial, powerline mid, east boulder ×1), including all three
-previously watch-disqualified road-anomaly days.
+**Two independent gates (June 2026 redesign).** A workout enters TQ and may
+bind the frontier only if it clears BOTH. (Replaces the earlier single
+"uncertain accuracy" course gate + implausibility ceiling.)
 
-**Implausibility ceiling (same tag).** The watch-verified corpus bounds
-how much a genuine workout can beat SAME-DAY CS — currently 8.6 s/mi
-(2022-12-05, mid-peak; the real "workouts lead the smoothed CS curve"
-effect). A non-verified day beating CS by more is a bad decomposition
-the log string can't recover (reps that may have included 100s/150s,
-intervals that included 800s) and is flagged regardless of
-track/partners/staple trust — only watch verification shields
-(2017-03-28, varsity, read 4:46/mi: faster than any capability ever
-demonstrated, six years before the actual peak). The margin is
-data-derived and self-adjusts as the verified corpus grows. Catches 7
-days beyond the course gate (the 2016-17 varsity outliers −8.8..−18.9)
-and independently re-catches 7 of the course-gate cuts. An era-window
-(±1yr best-CS) variant was tested and rejected: it missed look-ahead
-cases (2016-04-11 hides under the 2017 peak) and over-cut
-explicitly-verified keeps at zero margin. 37 days carry the flag in
-total; all stay visible on the Workouts plot with the tag.
+**Gate 1 — uncertain COURSE (where did it happen?).** The projection is only as
+trustworthy as the course measurement, and mismeasurement cuts both ways (solo
+2020 Powerline intervals read fast on a short gravel course, never replicated
+once the watch arrived). Trusted iff **watch-verified** (status exact/watch-only)
+∨ **track** (`terrain_type=='track'`) ∨ **varsity partners**. Generic training
+partners are NOT enough — a casual group run on an unmarked course is as
+mismeasurable as a solo one (this tightened the old "any non-solo" rule). Two
+course-known rescues persist: **continuous efforts (0 rest)** — one unbroken
+course can't be mismeasured like back-and-forth reps — and the **pre-2018
+staples** (`5000t`/`6400t`/`4800f`, run on the HS-era "education hill" that was
+really the RHS track; the `≤2017` cap bounds that *location* inference, NOT the
+decomposition — see Gate 2). Else → `uncertain course`, dropped from TQ.
 
-The Workouts plot annotates every TQ-excluded session in its hover
-(`training_quality_exclusions.csv`): snow flag, `uncertain accuracy`,
-or `residual +X > +thr cutoff` for outliers (track-relative).
+**Gate 2 — uncertain STRUCTURE (do we know the rep layout?), binding-
+conditioned.** Replaces the implausibility ceiling. Structure is KNOWN only from
+watch data, an EXPLICIT `Nx` log (legacy "10x500i" style — vs a bare total like
+"2800f" the parser must GUESS into reps), a continuous effort, or a **hardcoded
+fixed decomposition**: the `5000t`/`6400t`/`4800f` staple codes in **any year**
+(4800f is Max's standard ladder, `parse_workouts.LADDER_4800`) and the
+continuous-fartlek 500/300 pattern. Estimated structure is ACCEPTED for the bulk;
+it is distrusted ONLY when the workout would **bind** the frontier. Mechanism
+(`performance_frontier.gate_estimated_binders`): build the frontier floor from
+VERIFIED-structure demos only (kept races + verified-structure workouts); any
+estimated-structure, course-OK workout poking above that floor → `uncertain
+structure` (excluded, non-binding). Rationale: a guessed layout claiming a
+frontier-defining result probably hid shorter reps (e.g. 2017-03-28 varsity read
+4:46/mi, years before the real peak; a `2800f` fartlek the parser split into
+7×400). Estimated workouts sitting below the floor ride along untouched.
+
+Both flags stay visible on the Workouts plot (`uncertain course` red-orange,
+`uncertain structure` magenta); `training_quality_exclusions.csv` annotates every
+TQ-excluded session (snow, uncertain course/structure, or outlier cutoff). One-off
+mislabels are fixed at the SOURCE (recategorize the log + refreeze) rather than
+with code exceptions — e.g. a 2017-04-25 session logged `4800f` but not actually
+the ladder was relogged `4800i`, which the structure gate then handles on its own.
 
 ### Stage 5b — Long-run model (covariates only)
 

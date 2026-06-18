@@ -84,8 +84,9 @@ CONDITIONS_CF_COLORS = {
 #     always read as the same signal. 'xc' deliberately reuses the XC surface
 #     green — it marks XC-corrected sessions that stay in Training. ---
 TAG_COLORS = {
-    'uncertain accuracy': '#FF4500',         # bright red-orange (kept clearly
+    'uncertain course':    '#FF4500',        # bright red-orange (kept clearly
                                              # off the carrot-orange rep fill)
+    'uncertain structure': '#C71585',        # magenta — distinct from course red
     'snow':               '#8FD3FF',         # light blue
     'outlier':            '#E8A33C',         # amber — matches the exclusion
                                              # tooltip text; distinct from the

@@ -70,11 +70,12 @@ HILL_REP_COLOR  = CAT_COLORS['hill_rep']
 TAG_RING_SIZE  = 10.5
 TAG_RING_WIDTH = 1     # the halo offset does the work; thin stroke suffices
 TAG_LEGEND = {
-    'uncertain accuracy': 'Uncertain accuracy',
-    'snow':               'Snow',
-    'outlier':            'Slow outlier',
-    'xc':                 'XC-corrected',
-    'enriched':           'Watch-enriched',
+    'uncertain course':    'Uncertain course',
+    'uncertain structure': 'Uncertain structure',
+    'snow':                'Snow',
+    'outlier':             'Slow outlier',
+    'xc':                  'XC-corrected',
+    'enriched':            'Watch-enriched',
 }
 
 
@@ -85,8 +86,8 @@ def session_tag(r):
     lowest-priority: a non-excluded session whose watch enrichment succeeded
     (failures are visible by its ABSENCE on watch-era quality days)."""
     er = r.get('excluded_reason')
-    if er == 'uncertain accuracy':
-        return 'uncertain accuracy'
+    if er in ('uncertain course', 'uncertain structure'):
+        return er
     if er == 'snow':
         return 'snow'
     if r.get('tq_outlier'):

@@ -48,7 +48,7 @@ import pandas as pd
 from src.shared.paths import DATA_DIR
 from src.shared.units import METERS_PER_MILE
 from src.shared.cs_projection import (project_races_to_5k_pace,
-                                      pace5k_series_to_anchor)
+                                      pace5k_series_to_anchor, load_cs_outputs)
 
 # FORWARD: first-order relaxation into the floor — excess decays at a rate
 # proportional to its current distance from the reference line. tau from
@@ -98,6 +98,25 @@ def standard_demos(daily_summary, beta_long, d_thresh, xc_correction,
     corpus: pass a prebuilt corpus frame (plot_training_quality has one
     in-memory) to skip the artifact read; default reads the CSV.
     """
+    race_demos = _race_demos(daily_summary, beta_long, d_thresh, xc_correction,
+                             races_path, exclusions_path)
+    if corpus is None:
+        corpus = load_corpus_demos()
+    return pd.concat([race_demos, corpus], ignore_index=True)
+
+
+def _race_demos(daily_summary, beta_long, d_thresh, xc_correction,
+                races_path=None, exclusions_path=None):
+    """Kept-race demonstrations (fit conventions: hard eligibility, auto-
+    exclusions, XC correction, projection) as (date, pace_min, src, category,
+    detail). Shared by standard_demos and the structure gate.
+
+    time ≥ 120 s: every race of 2+ minutes is frontier evidence — 800s included
+    and may bind (a ≥1500 m cutoff was tried and reverted June 2026: the
+    2017-03-30 800 was a coherent lifetime-best peak, not an aberration). Only
+    sub-120 s 400s stay out — pure sprints, displayed but never defining
+    aerobic capability.
+    """
     races_path = races_path or (DATA_DIR / 'races.csv')
     exclusions_path = exclusions_path or (DATA_DIR / 'bayes_cs_auto_exclusions.csv')
     races = pd.read_csv(races_path, parse_dates=['date'])
@@ -105,18 +124,6 @@ def standard_demos(daily_summary, beta_long, d_thresh, xc_correction,
         races['fatigued'] = False
     if 'surface' not in races.columns:
         races['surface'] = 'Unknown'
-    # time ≥ 120 s: every race of 2+ minutes is frontier evidence — 800s
-    # INCLUDED, and they may bind. A distance ≥ 1500 m cutoff was tried and
-    # reverted the same day (June 2026): Max initially read his 800s
-    # binding the frontier as the model overrating his short distances,
-    # but the 2017-03-30 800 case resolved it — it genuinely was his best
-    # lifetime effort to that point, superseded three weeks later by three
-    # 1600s and an interval workout (a coherent peak, not an aberration).
-    # The "3200s set me apart in HS" perception was competition density
-    # (more proficient HS milers than 2-milers), not absolute capability.
-    # Only sub-120 s races (400s) stay out: pure-sprint efforts read via
-    # the conservative evidence-edge v_max, displayed but never defining
-    # aerobic capability.
     elig = races[(~races['fatigued'].astype(bool))
                  & (races['surface'] != 'Downhill')
                  & (races['time_sec'] >= 120)].copy()
@@ -133,7 +140,7 @@ def standard_demos(daily_summary, beta_long, d_thresh, xc_correction,
     elig = project_races_to_5k_pace(
         elig, daily_summary, beta_long, d_thresh,
         apply_xc_correction=True, xc_correction=xc_correction)
-    race_demos = pd.DataFrame({
+    return pd.DataFrame({
         'date': elig['date'],
         'pace_min': elig['pace_norm_min'],
         'src': 'race',
@@ -141,9 +148,48 @@ def standard_demos(daily_summary, beta_long, d_thresh, xc_correction,
         'detail': (elig['event'].fillna('(no event)').astype(str)
                    if 'event' in elig.columns else '(race)'),
     })
-    if corpus is None:
-        corpus = load_corpus_demos()
-    return pd.concat([race_demos, corpus], ignore_index=True)
+
+
+def gate_estimated_binders(workouts):
+    """Gate 2 (Max, June 2026): flag ESTIMATED-structure, course-OK workouts
+    that would BIND the frontier as 'uncertain structure'. Returns a boolean
+    mask aligned to ``workouts.index`` (True = flag).
+
+    The frontier floor is built from VERIFIED-structure demos ONLY — kept races
+    plus verified-structure, course-trusted workouts. Any estimated-structure
+    workout whose 5K-equiv pokes above that floor is distrusted: a guessed
+    decomposition (e.g. a bare "2800f" the parser split into 7×400) cannot
+    claim a frontier-defining result — it probably hid shorter reps. Estimated
+    workouts sitting below the floor ride along untouched (the accepted bulk).
+    Long runs are omitted from this floor — they don't bind at workout dates.
+    """
+    mask = pd.Series(False, index=workouts.index)
+    if 'structure_verified' not in workouts.columns or workouts.empty:
+        return mask
+    sv = workouts['structure_verified'].astype(bool)
+    ok = workouts['excluded_reason'].isna() & workouts['p5k_min'].notna()
+    est = (~sv) & ok
+    if not est.any():
+        return mask
+    # Load the canonical CS frame ourselves (the caller's may be stripped of
+    # derived columns like dp3_evid_med / p5k_implied_min).
+    daily, bl, dt, xc = load_cs_outputs(str(DATA_DIR))
+    verw = workouts[sv & ok]
+    ver_demos = pd.concat([
+        _race_demos(daily, bl, dt, xc)[['date', 'pace_min']],
+        pd.DataFrame({'date': verw['date'], 'pace_min': verw['p5k_min']}),
+    ], ignore_index=True)
+    grid = pd.DatetimeIndex(daily['date'])
+    vfront, _ = build_frontier(ver_demos, grid,
+                               daily['p5k_implied_min'].to_numpy(float))
+    gd = grid.to_numpy('datetime64[D]').astype(float)
+    fp = vfront['frontier_pace_min'].to_numpy(float)
+    for i in workouts.index[est]:
+        d = np.datetime64(pd.Timestamp(workouts.at[i, 'date']), 'D').astype(float)
+        floor = float(np.interp(d, gd, fp))
+        if workouts.at[i, 'p5k_min'] < floor - 1e-9:   # faster than floor → would bind
+            mask.at[i] = True
+    return mask
 
 
 def frontier_at_anchor(frontier, daily_summary, anchor_m, beta_long, d_thresh):

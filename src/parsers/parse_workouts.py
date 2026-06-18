@@ -250,9 +250,17 @@ def effective_rest_per_mile(rtype, rep_dist, year, logged_rpm, rest_model):
                 return s * MILE_M / rep_dist, True       # 2020+: watch median
         if logged_rpm is not None:
             return logged_rpm, True                       # pre-2020: trust the log
+        # pre-2020, NO logged rest: estimate from the watch per-rep-distance
+        # median (short reps -> far more rest/mile than long, e.g. 10x500 vs
+        # 4x1600), keyed by rep distance — not the flat per-type median, which
+        # under-rested short-rep days logged as intervals. Falls back to the
+        # per-type early median only when no watch data exists for any distance.
+        s = _watch_rest_s(rep_dist, rest_model['watch'])
+        if s is not None:
+            return s * MILE_M / rep_dist, True            # pre-2020, no log: watch median
         early = rest_model['early'].get(rtype)
         if early is not None:
-            return early, True                            # pre-2020, no log: early median
+            return early, True                            # pre-2020, no log, no watch: type median
     if logged_rpm is not None:                            # tempo/fartlek: real
         return logged_rpm, True
     dflt = default_rest_per_mile(rtype, rep_dist)

@@ -64,19 +64,57 @@ CS_PATH       = DATA_DIR / 'bayes_cs_summary.csv'
 # arbitrariness no longer touches the enriched corpus.
 TAU = 210.0
 DECAY_FLOOR = 0.17
-# Connected-fatigue reconstitution time constant (REAL seconds), used by the
-# enriched per-rep D_eff. Fit June 2026 by minimizing SSE of workout-implied
-# CS vs race-fit CS over Max's 58 enriched days (best of a 120-1200s grid;
-# residual mean +0.8, sd 8.4 s/mi). Lands inside the W' reconstitution
-# literature range (Skiba ~316-862s) — independent corroboration, not a free
-# knob. Unlike the legacy decay this needs no floor: the accumulator is
-# bounded in [longest rep, total] by construction. Provisional pending the
-# race-residual weighting step (workout effort runs sub-max vs races — a
-# longest-rep-correlated bias, +0.25 Spearman, still in the residual).
-# Re-checked June 2026 under the CP3 + effort-aware-deflation model: 540
-# remains the RMS optimum on the enriched corpus (rms 8.15 s/mi, vs
-# 8.51/8.52 at 420/660) — the anchor held without refitting.
+# Connected-fatigue reconstitution time constant (REAL seconds). Recovery is a
+# wall-clock process (decay = exp(-rest_s / tau)); the question is what sets tau.
+# WORKOUTS use an INTENSITY-DEPENDENT tau(v/cs) (June 2026) — see recon_tau().
+#
+# PHYSICAL MEANING. How far above CS a rep is run sets the metabolic CHARACTER of
+# its fatigue, and different fatigue reconstitutes at different rates:
+#   - far above CS -> heavily anaerobic (W'/PCr): the FAST-recovering component
+#     (PCr resynthesis on tens of seconds; W' reconstitutes quickly) -> SMALL tau;
+#   - near CS      -> aerobic/threshold fatigue (glycogen, H+, neuromuscular):
+#     SLOW-recovering -> LARGE tau (toward AT_CS).
+# So tau shrinks as v/cs rises. A FLAT tau was wrong because it decays by absolute
+# rest — cooling a near-CS 1000m interval off 90s rest as hard as an all-out 400m
+# rep off the same 90s, when the deep-anaerobic 400 genuinely recovers faster.
+# Net on D_eff: hard short reps recover fast (connection resets each rest -> small
+# D_eff -> cool); near-CS intervals recover slow (rest barely dents it -> D_eff
+# preserved). CS-RELATIVE, so it self-normalizes with fitness and subsumes the
+# duration intuition (you can't hold 400-pace for 1600m, so long reps sit nearer
+# CS automatically).
+#
+# CALIBRATION. tau = AT_CS * exp(-K*(v/cs - 1)), clamped to Skiba's W'-
+# reconstitution range [316, 862] s. AT_CS = 662 (mid-Skiba: tau at threshold).
+# K = 3.0 — flattened from an initial 4.26 once the course/structure GATES took
+# over excluding flawed reps, so tau no longer has to drag bad points down. At
+# K=3: a 400m rep (v/cs~1.14) -> tau~435; a 1600m interval (v/cs~1.05) -> tau~570.
+#
+# OTHER PROFILES. The SHAPE transfers honestly: v/cs is CS-relative (a rep "14%
+# over CS" is a comparable intensity for any runner) and the anaerobic-fast /
+# aerobic-slow recovery split is universal physiology. AT_CS / K are Max-anchored
+# but sit squarely in the cross-athlete Skiba range, so they're a defensible
+# DEFAULT until a profile has its own watch-rep corpus. The one known population
+# dependence is training status (better-trained -> faster W' reconstitution ->
+# smaller tau), making a per-profile AT_CS the natural future refit. Already
+# better-grounded than the prior flat 540, which had no cross-profile rationale.
+RECON_TAU_AT_CS = 662.0   # tau at v/cs = 1 (threshold); mid-Skiba reconstitution
+RECON_TAU_K     = 3.0     # supra-CS decay rate: tau = AT_CS * exp(-K*(v/cs - 1))
+RECON_TAU_MIN   = 316.0   # Skiba reconstitution-range clamp (fast end)
+RECON_TAU_MAX   = 862.0   # Skiba reconstitution-range clamp (slow end)
+
+# LONG RUNS keep a FLAT tau (src/coros/long_runs.py): their "reps" are easy
+# segments around CS (v/cs ~ 1), where the dynamic curve is ~AT_CS anyway, and
+# they have no per-rep implied-CS machinery. Held at the historical 540.
 RECON_TAU_S = 540.0
+
+
+def recon_tau(v_mps, cs_mps):
+    """Per-rep reconstitution tau (s) from supra-CS intensity v/cs. Vectorized;
+    clamped to the Skiba reconstitution band. cs is the workout's OWN implied CS
+    (keeps the accumulator self-contained — no race-fit input)."""
+    ratio = np.asarray(v_mps, float) / cs_mps
+    tau = RECON_TAU_AT_CS * np.exp(-RECON_TAU_K * (ratio - 1.0))
+    return np.clip(tau, RECON_TAU_MIN, RECON_TAU_MAX)
 # v_max for the WORKOUT side of CP3 — the accumulator's effort-aware
 # deflation and the TQ projections (workouts / long runs / hills). This is
 # deliberately NOT one of cs_projection's conservative race edges: it's a
@@ -139,7 +177,15 @@ def workout_vmax():
     if env:
         return float(env)
     if os.environ.get('RP_PROFILE', 'max') == 'max':
-        return WORKOUT_VMAX_MAX
+        # Pinned to the RACE evidence-edge v_max (cs_projection.vmax_evidence).
+        # Workouts read efforts as evidence exactly like races, and a SEPARATE
+        # measured workout v_max (the old 8.7) proved empirically inert in the
+        # 5K-equivalent above ~800 m — the deflation and projection channels
+        # cancel — so maintaining a distinct value bought nothing. Other
+        # profiles still scale by their own CS (below) until they have a race
+        # corpus. (June 2026.)
+        from src.shared.cs_projection import vmax_evidence
+        return vmax_evidence()
     ref = _profile_ref_cs()
     return WORKOUT_VMAX_CS_RATIO * ref if ref is not None else WORKOUT_VMAX_MAX
 
@@ -150,9 +196,11 @@ def _connected_core(dists, times, rests, dp3=None):
     June 2026 — replaces the distance-only g(d) pace add).
 
     Each rep extends a running "connected" effort by its distance; the rest
-    AFTER it dissipates the accumulated connection by exp(-rest_s/RECON_TAU_S).
-    Rest is ACTUAL seconds — reconstitution is a wall-clock process, NOT
-    per-mile-normalized (per-mile would misweight ladders). D_eff is the
+    AFTER it dissipates the accumulated connection by exp(-rest_s/tau), where
+    tau = recon_tau(v_rep/cs) shrinks with the rep's supra-CS intensity (hard
+    reps reconstitute fast -> small D_eff; near-CS efforts slow -> connection
+    persists). Rest is ACTUAL seconds — reconstitution is a wall-clock process,
+    NOT per-mile-normalized (per-mile would misweight ladders). D_eff is the
     deepest connected distance reached, bounded in [longest rep, total] with
     no floor (no rest -> total; full recovery -> longest rep).
 
@@ -180,35 +228,51 @@ def _connected_core(dists, times, rests, dp3=None):
     dists = np.asarray(dists, float)
     times = np.asarray(times, float)
     rests = np.asarray(rests, float)
-    conn = d_eff = 0.0
-    for i in range(len(dists)):
-        conn += dists[i]
-        if conn > d_eff:
-            d_eff = conn
-        if i < len(rests):
-            conn *= math.exp(-rests[i] / RECON_TAU_S)
-
     t_total = float(times.sum())
+    v = dists / times                                    # per-rep speeds
+
+    def accumulate(tau_arr):
+        """Deepest connected distance; each rest decays the connection by
+        exp(-rest/tau) with a per-rep tau."""
+        conn = de = 0.0
+        for i in range(len(dists)):
+            conn += dists[i]
+            if conn > de:
+                de = conn
+            if i < len(rests):
+                conn *= math.exp(-rests[i] / tau_arr[i])
+        return de
+
+    # No CS context (no fit artifact) or a single rep: can't form v/cs, so fall
+    # back to a FLAT tau (the long-run constant) and skip the deflation.
     if dp3 is None or len(dists) < 2:
+        d_eff = accumulate(np.full(len(dists), RECON_TAU_S))
         return d_eff, d_eff * t_total / dists.sum()
 
     vmax = workout_vmax()
-    v = dists / times                                    # per-rep speeds
+    # Fixed point over the workout's OWN implied CS: it sets BOTH the per-rep
+    # reconstitution tau (recon_tau(v/cs) -> the D_eff accumulation) AND the
+    # anaerobic deflation (-> t_eff). Bootstrap cs from a flat-tau pass.
+    d_eff = accumulate(np.full(len(dists), RECON_TAU_AT_CS))
     t_corr = times.copy()
-    for _ in range(20):
+    cs = float(cp3_implied_cs(d_eff, d_eff * t_corr.sum() / dists.sum(), dp3, vmax))
+    if not np.isfinite(cs):
+        return d_eff, d_eff * t_total / dists.sum()      # off-model: no deflation
+    for _ in range(40):
+        d_eff = accumulate(recon_tau(v, cs))             # intensity-aware decay
         t_eff = d_eff * t_corr.sum() / dists.sum()       # D_eff / mean speed
-        cs = float(cp3_implied_cs(d_eff, t_eff, dp3, vmax))
-        if not np.isfinite(cs):
-            return d_eff, d_eff * t_total / dists.sum()  # off-model: no deflation
-        tau = dp3 / (vmax - cs)
+        cs_new = float(cp3_implied_cs(d_eff, t_eff, dp3, vmax))
+        if not np.isfinite(cs_new):
+            return d_eff, d_eff * t_total / dists.sum()
+        tau = dp3 / (vmax - cs_new)
         # Deflate supra-CS speed only; sub-CS reps carry no anaerobic assist.
-        v_corr = np.where(v > cs, cs + (v - cs) * times / (times + tau), v)
+        v_corr = np.where(v > cs_new, cs_new + (v - cs_new) * times / (times + tau), v)
         t_new = dists / v_corr
         t_new[0] = times[0]                              # first rep exempt
-        if np.allclose(t_new, t_corr, rtol=1e-6):
-            t_corr = t_new
+        if abs(cs_new - cs) < 1e-5 and np.allclose(t_new, t_corr, rtol=1e-6):
+            cs, t_corr = cs_new, t_new
             break
-        t_corr = t_new
+        cs, t_corr = cs_new, t_new
     return d_eff, d_eff * t_corr.sum() / dists.sum()
 
 
@@ -583,52 +647,61 @@ def project_workouts(cs, epoch):
     # scatter-weighted; sub-threshold/outlier workouts are removed by
     # Training's own track-relative prune, not a category flag.
     #
-    # Course-verification gate (Max, June 2026 — sign-blind): the projection
-    # is only as trustworthy as the course measurement, and mismeasurement
-    # cuts both ways (a short course reads fast, a long one slow — solo 2020
-    # Powerline intervals were measured short: gravel yet not slower than
-    # surrounding workouts, and never replicated once the watch arrived).
-    # A workout needs watch verification, a track location, or partners
-    # (non-solo) to be trusted outright. Within the unverified remainder,
-    # two rescues:
-    #   - continuous efforts (0 rest): mismeasurement bites on back-and-
-    #     forth reps with badly marked start/finish lines, not on a single
-    #     unbroken course;
-    #   - pre-2018 well-understood staples (5000t / 6400t / 4800f strings —
-    #     these were likely rhs track under the education-hill catch-all).
-    # Everything else is flagged 'uncertain accuracy' (shown on the
-    # Workouts plot, dropped from Training).
+    # ===== Two independent gates (Max, June 2026) =====
+    # GATE 1 — uncertain COURSE (where did it happen?): the projection is only
+    # as trustworthy as the course measurement, and mismeasurement cuts both
+    # ways (solo 2020 Powerline intervals measured short — gravel, not slower
+    # than neighbours, never replicated once the watch arrived). Trusted iff
+    # watch-verified ∨ track ∨ VARSITY partners (generic training partners are
+    # NOT enough — a casual group run on an unmarked course is as mismeasurable
+    # as a solo one) ∨ a course-known rescue: continuous efforts (0 rest — one
+    # unbroken course can't be mismeasured like back-and-forth reps) or the
+    # pre-2018 track staples. Else → 'uncertain course', dropped from TQ.
     verified = _watch_verified_dates()
     partners = w['partners'].astype(str).str.strip().str.lower()
-    non_solo = partners.ne('solo') & partners.ne('') & partners.ne('nan')
+    varsity = partners.str.contains('varsity', na=False)
     # Mismatch-demoted days don't count as verified — see watch_log_demotions.
     watch = w['date'].dt.strftime('%Y-%m-%d').isin(verified - watch_log_demotions())
-    unverified = ~watch & ~w['is_track'] & ~non_solo
     continuous = w['rest_per_mile'].fillna(-1) == 0
     staple = ((w['date'].dt.year <= 2017)
               & w['workout_raw'].astype(str).str.contains(
                   r'5000t@|6400t@|4800f@', regex=True, na=False))
-    suspect = unverified & ~continuous & ~staple
+    course_trusted = watch | w['is_track'] | varsity | continuous | staple
 
-    # Implausibility ceiling (Max, June 2026): the watch-verified corpus
-    # bounds how much a genuine workout can beat SAME-DAY CS (currently
-    # 8.6 s/mi, 2022-12-05, mid-peak — the real "workouts lead the smoothed
-    # CS curve" effect). A non-verified day beating CS by more is a bad
-    # decomposition the string can't recover (reps that included 100s/150s,
-    # intervals that included 800s) — only watch verification shields here,
-    # NOT track/partners/staple trust (2017-03-28, varsity, read 4:46/mi —
-    # faster than any capability ever demonstrated). Margin is data-derived
-    # and self-adjusts as the verified corpus grows; skipped when no
-    # verified rows exist to establish the bound. (Demoted days already left
-    # the watch mask above — rejected watch data can't anchor the bound.)
-    if watch.any():
-        vmax = float(-w.loc[watch, 'raw_resid'].min())
-        suspect |= ~watch & (w['raw_resid'] < -vmax)
+    # GATE 2 prep — uncertain STRUCTURE (do we know the rep decomposition?):
+    # known only from watch data, an EXPLICIT "Nx" log (the legacy "10x500i"
+    # style — vs a bare total like "2800f" the parser must GUESS into reps),
+    # or the continuous/staple cases. Estimated structure is accepted for the
+    # bulk; it's distrusted ONLY when the workout would BIND the frontier (a
+    # guessed layout claiming a frontier-defining result probably hid shorter
+    # reps — pure sprints — and is neither accurate nor relevant). That
+    # binding-conditioned 'uncertain structure' flag is applied downstream in
+    # the frontier layer (performance_frontier.gate_estimated_binders), where
+    # the verified-only floor is known. Here we only record verified/estimated.
+    explicit_nx = w['workout_raw'].astype(str).str.contains(
+        r'\d+\s*[xX]\s*\d+', regex=True, na=False)
+    # Known FIXED decompositions, YEAR-INDEPENDENT (structure is certain whenever
+    # they appear): the three staple codes — 5000t/6400t tempos and the 4800f
+    # ladder, whose exact layout is hardcoded (parse_workouts.LADDER_4800) — plus
+    # the continuous-fartlek 500/300 pattern. The year cap on `staple` above is a
+    # COURSE/location concern only (HS-era "education hill" = RHS track); the
+    # decomposition itself is known in any year, on any course.
+    known_struct = (w['workout_raw'].astype(str).str.contains(
+                        r'5000t@|6400t@|4800f@', regex=True, na=False)
+                    | (w['type'].astype(str) == 'continuous_fartlek'))
+    w['structure_verified'] = (watch | explicit_nx | continuous | known_struct).to_numpy()
+
     snow_w = w['workout_raw'].astype(str).str.contains('snow', case=False, na=False)
     snow_c = w['conditions'].astype(str).str.contains('snow', case=False, na=False)
     w['excluded_reason'] = None
-    w.loc[suspect, 'excluded_reason'] = 'uncertain accuracy'
+    w.loc[~course_trusted, 'excluded_reason'] = 'uncertain course'
     w.loc[snow_w | snow_c, 'excluded_reason'] = 'snow'
+
+    # GATE 2 application: estimated-structure, course-OK workouts that would
+    # bind the frontier (built from verified demos only) are 'uncertain
+    # structure' — a guessed rep layout can't claim a frontier-defining result.
+    from src.shared.performance_frontier import gate_estimated_binders
+    w.loc[gate_estimated_binders(w), 'excluded_reason'] = 'uncertain structure'
 
     return w
 
