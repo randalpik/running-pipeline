@@ -1,6 +1,7 @@
 __pycache__/
 .vscode/
 .claude/
+.codegraph/
 pyrightconfig.json
 
 # local secrets (Coros credentials etc.) — CI uses GHA repo secrets instead

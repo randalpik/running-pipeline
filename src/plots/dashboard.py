@@ -40,7 +40,7 @@ from src.shared.workouts import (
     load_cs, project_long_runs,
 )
 from src.shared.long_run_model import fit_long_run_model
-from src.shared.cs_projection import (load_cs_outputs, _beta_long_factor,
+from src.shared.cs_projection import (load_cs_outputs, t5k_to_anchor_time,
                                       cp3_dprime, cp3_implied_cs, cp3_time,
                                       vmax_predict)
 from src.shared.performance_frontier import (standard_demos,
@@ -442,8 +442,7 @@ def _invert_projection(make_efforts, t5k_target, dp3, lo=200.0, hi=600.0):
     return (lo + hi) / 2
 
 
-def compute_workout_predictions(daily_summary, front_med,
-                                beta_long=0.0, d_thresh=10000.0):
+def compute_workout_predictions(daily_summary, front_med):
     """Direct frontier projections (Max, June 2026): "the fastest I could
     physically run this workout given the current frontier". Each structured
     prediction INVERTS the exact projection the TQ corpus applies to that
@@ -482,19 +481,20 @@ def compute_workout_predictions(daily_summary, front_med,
     pace_cf_hard = (pace_fartlek * 8000.0
                     / (hards + CF_FLOAT_HARD_RATIO * floats))
 
-    # --- Long run = the fastest LR_PRED_HOURS-hour effort: the race-equivalent
-    #     projection with the long-distance fade, but inverted for a TIME target
-    #     instead of a fixed distance. Bisect for the distance whose projected
-    #     time equals the target (the projection is monotone in distance), then
-    #     report its pace. Self-scales per runner (no fixed-distance assumption);
-    #     v_max is irrelevant at this range. Same CS-derived projection as before.
+    # --- Long run = the fastest LR_PRED_HOURS-hour effort: the canonical
+    #     5K-equiv → anchor projection (t5k_to_anchor_time — World Athletics at
+    #     this >5K range, same as the HM/marathon race predictions and the long
+    #     runs' own frontier curves), inverted for a TIME target instead of a
+    #     fixed distance. Bisect for the distance whose projected time equals the
+    #     target (the projection is monotone in distance), then report its pace.
+    #     Self-scales per runner (no fixed-distance assumption). The former
+    #     cp3_time × β_long path predicted faster-than-CS at multi-hour efforts
+    #     once β_long was retired to 0 — bare CP3 asymptotes to CS from above.
     vp = vmax_predict()
     dp3_p = float(latest['dp3_pred_med'])
-    cs_mps_f = float(cp3_implied_cs(5000.0, t5k_front, dp3_p, vp))
 
     def _t_long(d):
-        return (float(cp3_time(d, cs_mps_f, dp3_p, vp))
-                * _beta_long_factor(d, beta_long, d_thresh))
+        return float(t5k_to_anchor_time(t5k_front, dp3_p, d, vp))
 
     target_long = LR_PRED_HOURS * 3600.0
     lo_d, hi_d = 1000.0, 80000.0      # 1–80 km brackets any 2-hr effort
@@ -728,8 +728,7 @@ def main():
     prs = compute_prs(races)
     race_preds = compute_race_predictions(summary_asof, beta_long, d_thresh,
                                           front_med, front_lo, front_hi)
-    workout_preds = compute_workout_predictions(summary_asof, front_med,
-                                                beta_long, d_thresh)
+    workout_preds = compute_workout_predictions(summary_asof, front_med)
 
     snapshot_path = DATA_DIR / 'drive_snapshot.csv'
     # Anchor the timestamp in UTC at build time. The dashboard JS hydrates

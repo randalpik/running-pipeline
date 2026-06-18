@@ -436,16 +436,8 @@ def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
             cs_imp = float(cp3_implied_cs(d_race, t_race, dp3, vmax))
             t1500 = float(cp3_time(CP3_IAAF_BOUNDARY_M, cs_imp, dp3, vmax))
             t5k = wa_5k_equiv_time(CP3_IAAF_BOUNDARY_M, t1500)
-        # Leg 2  5K-equiv -> requested anchor: identity at 5K; >=1500m anchors
-        #   via WA up-conversion; sub-1500 anchors via WA 5K->1500 then CP3.
-        if abs(norm_dist_m - 5000.0) < 1.0:
-            t_anchor = t5k
-        elif norm_dist_m >= CP3_IAAF_BOUNDARY_M:
-            t_anchor = wa_equiv_time_at(norm_dist_m, t5k)
-        else:
-            t1500_a = wa_equiv_time_at(CP3_IAAF_BOUNDARY_M, t5k)
-            cs2 = float(cp3_implied_cs(CP3_IAAF_BOUNDARY_M, t1500_a, dp3, vmax))
-            t_anchor = float(cp3_time(norm_dist_m, cs2, dp3, vmax))
+        # Leg 2  5K-equiv -> requested anchor: the canonical hybrid projection.
+        t_anchor = t5k_to_anchor_time(t5k, dp3, norm_dist_m, vmax)
         if not np.isfinite(t_anchor):
             return np.nan
         return t_anchor / (norm_dist_m / METERS_PER_MILE) / 60.0
@@ -456,12 +448,51 @@ def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
     return df
 
 
+def t5k_to_anchor_time(t5k_s, dp3, anchor_dist_m, vmax):
+    """5K-equiv time (s) -> total time (s) at anchor_dist_m, the **1500m-WA**
+    convention: identity at 5K; ≥CP3_IAAF_BOUNDARY_M (1500m) via World
+    Athletics; <1500m via WA down to 1500m then the CP3 physical supplement.
+    dp3/vmax are used only on the sub-1500m leg (WA owns ≥1500m). Scalar in
+    anchor_dist_m; t5k_s/dp3 may be scalars or aligned arrays.
+
+    Use this for race-EVIDENCE placement (project_races_to_5k_pace leg-2 — the
+    down-conversion's mirror) and for >5K predictions (where it is pure WA, the
+    same as the prediction path). Do NOT use it for ≤5K *predictions*: an
+    up-conversion of the 5K capability to a short distance must stay on
+    CP3+v_max (cs_line_at_anchor / pace5k_series_to_anchor), because WA
+    up-conversion to short distances assumes population-typical leg speed and
+    over-predicts a distance specialist. The boundary asymmetry (1500m here vs
+    5000m there) is deliberate."""
+    from src.shared.wa_scoring import wa_equiv_time_at
+    if abs(anchor_dist_m - 5000.0) < 1.0:
+        return t5k_s
+    # wa_equiv_time_at is scalar (math-based); map it over arrays, leave the
+    # CP3 supplement (numpy-vectorized) to handle arrays directly.
+    def _wa(dist, t):
+        if np.ndim(t):
+            return np.array([wa_equiv_time_at(dist, float(v))
+                             for v in np.asarray(t, float)])
+        return wa_equiv_time_at(dist, t)
+    if anchor_dist_m >= CP3_IAAF_BOUNDARY_M:
+        return _wa(anchor_dist_m, t5k_s)
+    t1500 = _wa(CP3_IAAF_BOUNDARY_M, t5k_s)
+    cs = cp3_implied_cs(CP3_IAAF_BOUNDARY_M, t1500, dp3, vmax)
+    return cp3_time(anchor_dist_m, cs, dp3, vmax)
+
+
 def cs_line_at_anchor(daily_summary, anchor_dist_m, beta_long, d_thresh_long):
     """CS-predicted total time (seconds) at anchor_dist_m for each daily date.
     Hybrid (June 2026): anchors ≤5K via the CP3 forward solve on (CS, D′₃);
     anchors >5K via World Athletics up-conversion of the CS-implied 5K time
     (replaces the retired β_long fade). Forward direction → prediction edge.
-    (beta_long/d_thresh_long retained for signature compat; ignored.)"""
+    (beta_long/d_thresh_long retained for signature compat; ignored.)
+
+    NB the WA/CP3 split is at 5K here, NOT the 1500m split that
+    t5k_to_anchor_time (the *evidence* down-conversion) uses: a prediction is
+    an UP-conversion of the 5K capability, and WA up-conversion to short
+    distances assumes population-typical leg speed — invalid for a distance
+    specialist. CP3+v_max caps short predictions at the athlete's own
+    demonstrated v_max instead. The asymmetry is deliberate."""
     vmax = vmax_predict()
     cs_mps = daily_summary['cs_mps_med'].values
     dp3 = daily_summary['dp3_pred_med'].values
@@ -477,14 +508,18 @@ def pace5k_series_to_anchor(p5k_min, daily_summary, anchor_dist_m,
     """Project an arbitrary 5K-equivalent pace series (min/mi, aligned to
     daily_summary) to total time (s) at anchor_dist_m via the CP3
     prediction-edge curve: back out the implied CS at each date from the 5K
-    pace against D′₃(date), then forward-solve the anchor time with the
-    β_long factor.
+    pace against D′₃(date), then forward-solve the anchor time. Anchors >5K
+    up-convert via World Athletics (replaces the retired β_long fade).
 
     Generalizes cs_line_at_anchor to any 5K-pace floor (e.g. the blended
     hiatus-floor + CS-implied line the race plots draw). For a pace series
     that equals the model's own p5k_implied_min, the result matches
     cs_line_at_anchor exactly (the D′₃ bridge preserves the 5K solve).
-    Forward direction → prediction edge."""
+    Forward direction → prediction edge. The ≤5K leg stays on CP3+v_max, NOT
+    the 1500m-WA split t5k_to_anchor_time uses: this is an UP-conversion of the
+    5K capability, and WA up-conversion to short distances assumes population
+    leg speed (invalid for a specialist) — see cs_line_at_anchor. (beta_long/
+    d_thresh_long retained for signature compat; ignored.)"""
     t5k = np.asarray(p5k_min, float) * 60.0 * 5000.0 / METERS_PER_MILE
     if anchor_dist_m > 5000.0:   # hybrid: >5K up-converts via World Athletics
         from src.shared.wa_scoring import wa_equiv_time_at
