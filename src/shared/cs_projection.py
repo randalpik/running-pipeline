@@ -144,6 +144,47 @@ def vmax_predict():
     return VMAX_PRED_BY_PROFILE.get(profile, VMAX_PRED_DEFAULT)
 
 
+# ---------------------------------------------------------------------------
+# CP3 ↔ IAAF hybrid boundary (June 2026 redesign). World Athletics tables own
+# cross-distance equivalence in the AEROBIC range where they're validated
+# against Max's own event hierarchy (≥1500 m — IAAF puts his mile just behind
+# his 3200, matching self-knowledge, whereas a single CP2 hyperbola over-rates
+# the mile). CP3 + v_max owns only the true-sprint range (<1500 m), where
+# IAAF's population-average anaerobic↔aerobic balance distorts a distance
+# specialist. A sub-1500 race converts in two legs: CP3 + v_max race→1500 m,
+# then WA 1500 m→5K. Continuous at 1500 m (a 1500 m race converts identically
+# either way). The boundary used to sit at 5K; the investigation showed CP3
+# over-rates short races vs IAAF monotonically (−2.5 s/mi @3200, −10 @1600,
+# −22 @800) and the error vanishes only at 5K, so IAAF was extended down.
+CP3_IAAF_BOUNDARY_M = 1500.0
+
+# D' is no longer a fitted time-series. Once every aerobic race (≥1500 m) is
+# IAAF-homogenized to a 5K-equivalent, the CP2 hyperbola is degenerate (only
+# (5000−D')/CS is identified, not CS and D' separately), so the CS fit became a
+# single latent 5K-equiv FITNESS curve (src/models/bayes_cs_fit.py). The old
+# fitted D'(t) was already flat (~149±3 m over 13 years — its time-variation was
+# unidentified). D' now survives ONLY as a fixed constant doing two jobs:
+#   (a) the CP3 sub-1500 sprint leg's anaerobic reservoir (via cp3_dprime), and
+#   (b) backing out a nominal bare-CS = (5000−D')/t5k for the recovery /
+#       long-run baselines.
+# 150 m ≈ the historical fitted median (148.6); the 800-corpus CP2-implied D' is
+# ~139 m. 150 preserves the bare-CS scale the recovery/long-run models expect.
+# Per-profile, like v_max; RP_DPRIME overrides for sweeps.
+DPRIME_FIXED_M_DEFAULT = 150.0
+DPRIME_FIXED_M_BY_PROFILE = {
+    'max': 150.0,
+}
+
+
+def dprime_fixed():
+    """The active profile's fixed D' (m). RP_DPRIME overrides for sweeps."""
+    env = os.environ.get('RP_DPRIME')
+    if env:
+        return float(env)
+    profile = os.environ.get('RP_PROFILE', 'max')
+    return DPRIME_FIXED_M_BY_PROFILE.get(profile, DPRIME_FIXED_M_DEFAULT)
+
+
 def cp3_dprime(dp2, cs_mps, vmax):
     """CP3 full anaerobic reservoir D′₃ from the CP2 fit's (D′₂, CS) — the
     5K-preserving bridge (see module docstring). vmax must be the SAME edge
@@ -384,17 +425,26 @@ def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
         #   leg 2  5K-equiv -> requested anchor: identity at 5K, >5K via WA
         #          up-conversion, <=5K via CP3.
         from src.shared.wa_scoring import wa_5k_equiv_time, wa_equiv_time_at
-        if d_race > 5000.0:
+        # Leg 1  race -> 5K-equiv: aerobic (>=1500m) via World Athletics
+        #   (validated cross-distance equivalence); sub-1500 sprints via CP3 +
+        #   v_max to 1500m, then WA 1500->5K. Boundary at 1500m (was 5K), since
+        #   IAAF beats a single CP2 curve across 1500-5K and CP3+v_max is only
+        #   needed for the specialist-distorted sprint end. Continuous at 1500m.
+        if d_race >= CP3_IAAF_BOUNDARY_M:
             t5k = wa_5k_equiv_time(d_race, t_race)
         else:
             cs_imp = float(cp3_implied_cs(d_race, t_race, dp3, vmax))
-            t5k = float(cp3_time(5000.0, cs_imp, dp3, vmax))
+            t1500 = float(cp3_time(CP3_IAAF_BOUNDARY_M, cs_imp, dp3, vmax))
+            t5k = wa_5k_equiv_time(CP3_IAAF_BOUNDARY_M, t1500)
+        # Leg 2  5K-equiv -> requested anchor: identity at 5K; >=1500m anchors
+        #   via WA up-conversion; sub-1500 anchors via WA 5K->1500 then CP3.
         if abs(norm_dist_m - 5000.0) < 1.0:
             t_anchor = t5k
-        elif norm_dist_m > 5000.0:
+        elif norm_dist_m >= CP3_IAAF_BOUNDARY_M:
             t_anchor = wa_equiv_time_at(norm_dist_m, t5k)
         else:
-            cs2 = float(cp3_implied_cs(5000.0, t5k, dp3, vmax))
+            t1500_a = wa_equiv_time_at(CP3_IAAF_BOUNDARY_M, t5k)
+            cs2 = float(cp3_implied_cs(CP3_IAAF_BOUNDARY_M, t1500_a, dp3, vmax))
             t_anchor = float(cp3_time(norm_dist_m, cs2, dp3, vmax))
         if not np.isfinite(t_anchor):
             return np.nan

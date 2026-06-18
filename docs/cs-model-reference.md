@@ -45,49 +45,66 @@ script location.
 
 ## Model architecture
 
-### Hierarchical CS GP
+### Hierarchical latent-fitness GP
+
+The fit is a **single latent process on log 5K-equivalent TIME** (June 2026
+redesign — it was two GPs, CS(t) and D'(t), with a hyperbolic likelihood):
 
 ```
-log_cs(t) = mu_cs + log_cs_trend(t) + log_cs_dev(t)
+log_t5k(t) = mu_fit + log_fit_trend(t) + log_fit_dev(t)
 ```
 
-- `log_cs_trend`: long-scale Matérn-5/2 GP, ℓ_long ~ LogNormal(log 5y, 0.5).
-  Captures multi-year fitness drift. Posterior amplitude ~0.29.
-- `log_cs_dev`: short-scale Matérn-5/2 GP, ℓ_dev ~ LogNormal(log 0.25y, 0.4).
-  Captures training-cycle wiggles within seasons. Posterior amplitude ~0.06.
+- `log_fit_trend`: long-scale Matérn-5/2 GP, ℓ_long ~ LogNormal(log 5y, 0.5).
+  Multi-year fitness arc. Posterior amplitude ~0.3.
+- `log_fit_dev`: short-scale Matérn-5/2 GP, ℓ_dev ~ LogNormal(log 0.25y, 0.4).
+  Training-cycle wiggles within seasons. Posterior amplitude ~0.04.
 - HSGP basis sizes: m=100 for dev, m=33 for long.
 
-**Why hierarchical**: at boundaries (past last race, before first race), the
-short GP decays to zero quickly while the long trend persists, anchoring
-extrapolations to a smooth fitness trajectory rather than letting them
-follow the most recent dip.
+**Why hierarchical**: at boundaries (past last race, before first race) the
+short GP decays to zero while the long trend persists, anchoring extrapolation
+to a smooth trajectory rather than the most recent dip.
 
-### D' (anaerobic capacity) GP
+### Why a single 5K-equiv fitness curve (D' retired as a fitted parameter)
 
-`log_dp(t) = mu_dp + GP_dp(t)` with Matérn-5/2 kernel, ℓ_dp ~ LogN(log 0.5y).
-Posterior median ~174m, **near-constant** across the timeline (range 169-177m,
-std 1.5m). 95% CI is ~73m wide — the data lacks leverage to pin D' down
-because Max has few sub-1500m races. D' is hidden from hover; it's a
-necessary model parameter but not informative for the user.
+The model used to fit two GPs — CS(t) and D'(t) — through the CP2 hyperbola
+`t=(d−D')/CS`. Two findings retired that:
+
+1. **D' time-variation was never identified.** Its GP amplitude posterior hugged
+   zero; fitted D'(t) was flat (~149±3 m over 13 years). Pinning a time-varying
+   D' needs several distances clustered in time, which Max's racing rarely gives.
+2. **A single hyperbola can't match IAAF's empirical shape across 800 m–5K**, so
+   it over-rated short races (the mile read ~10 s/mi fitter than IAAF, the 800
+   ~22). Once every aerobic race is IAAF-homogenized to a 5K-equivalent (below),
+   all observations sit at one distance and the hyperbola is degenerate — only
+   `(5000−D')/CS` is identified, not CS and D' separately.
+
+So the fit is now a single latent 5K-equiv fitness curve. **D' survives only as
+a fixed constant** (`cs_projection.dprime_fixed`, 150 m for Max — the historical
+fitted median) doing two jobs: backing out a nominal bare-CS = `(5000−D')/t5k`
+for the recovery/long-run baselines, and feeding the CP3 sub-1500 sprint leg.
 
 ### Likelihood
 
 ```
-expected_t = (d - D') / CS          (pure CP2; no fade term)
-log τ ~ Normal(log(expected_t), σ_per_race)
+log t5k_i ~ Normal(log T5K(t_i), σ_base)
 ```
 
-with `σ_per_race = σ_base · (d/5000)^α` — distance-dependent noise
-(σ_base ≈ 0.028, α ≈ 0.03).
+where `t5k_i` is each AEROBIC race (≥1500 m) down-converted to its
+5K-equivalent via the World Athletics tables (identity at 5K). σ is **uniform**
+now — every observation is a 5K-equiv at one distance, so the old
+distance-scaling term α is retired (σ_base ≈ 0.037).
 
-**`β_long` is RETIRED (June 2026 — the IAAF hybrid, see "Cross-distance
-equivalence" below).** The fit no longer carries a long-distance fade term.
-Instead, every race **above 5K is down-converted to its 5K-equivalent via the
-World Athletics scoring tables BEFORE the fit** (in the race-ingestion block of
-`bayes_cs_fit.py`), so the model only ever sees efforts ≤ 5K and `bias_factor`
-is identically 1. `bayes_cs_params.csv` still writes `beta_long_med = 0.0`
-(no-op) for the handful of consumers that still unpack it from
-`load_cs_outputs`; that plumbing is vestigial.
+**Sub-1500 m sprints (400/800) are EXCLUDED from the fit** — IAAF's
+population-average equivalence distorts a distance specialist there, and they're
+frontier demos, not aerobic-fitness anchors. **`β_long` is also retired** (every
+race >5K already down-converts to 5K-equiv); `bayes_cs_params.csv` still writes
+`beta_long_med = 0.0` (no-op) for vestigial consumers.
+
+### Output schema (legacy compatibility)
+
+The summary keeps the old column names so downstream code is unchanged:
+`cs_mps_med = (5000−D'_fixed)/t5k`, `dp_med = D'_fixed` (constant), and
+`load_cs_outputs` derives `p5k_implied =` the latent 5K-equiv pace.
 
 ### XC pre-correction
 
@@ -135,17 +152,19 @@ sits at/behind the frontier by construction); forward solves (dashboard
 predictions, lines-at-anchor) use the LOW edge (400/800 predictions never
 beat the lifetime PRs at any date in the sweep).
 
-**CP3 + v_max is the UP-conversion only (effective distance ≤ 5K).** For races
-at/below 5K, solve the race's own implied CS (closed-form quadratic —
-SELF-consistent, the fit's CS never enters) and forward-solve the 5K time on
-that curve. The fit's D′ is bridged per date as the effective anaerobic
-distance at 5K (`D′₃ = D′₂/(1 − D′₂/((v_max−CS)·t5K))`, per edge), which
-preserves the fit's 5K prediction exactly and keeps the models within ~1 s/mi
-over 3000m–10K; miles read ~2.5–4 s/mi fitter than under CP2; sub-800m efforts
-are where the bend really acts.
+**CP3 + v_max is the UP-conversion for the SPRINT leg only (< 1500 m).** The
+IAAF↔CP3 boundary moved from 5K to **1500 m** (June 2026 redesign): IAAF beats a
+single CP2 curve across 1500 m–5K — it puts Max's mile just behind his 3200,
+matching self-knowledge, whereas one hyperbola over-rated the mile by ~10 s/mi —
+so CP3 + v_max is now reserved for the specialist-distorted sprint end. A
+sub-1500 race converts in **two legs**: solve the race's own implied CS
+(closed-form quadratic — SELF-consistent, the fitness curve never enters),
+forward-solve to 1500 m on that curve, then hand off to the WA tables
+1500 m → 5K. Continuous at 1500 m. The reservoir uses the FIXED D′
+(`dprime_fixed`, 150 m), bridged per edge (`D′₃ = D′₂/(1 − D′₂/((v_max−CS)·t5K))`).
 
-**Above 5K, the DOWN-conversion is World Athletics, not CP3** (see "Cross-
-distance equivalence"). The old `β_long` un-bias is gone.
+**At and above 1500 m, the conversion is World Athletics** (see "Cross-distance
+equivalence"). The old `β_long` un-bias is gone.
 
 - Race time IS the data — diamonds preserve race-to-race deviations.
 - The bend makes 400m/800m diamonds and predictions honest with ONE
@@ -157,21 +176,27 @@ distance equivalence"). The old `β_long` un-bias is gone.
 The single rule that homogenises every effort (race, long run, workout) to a
 5K-equivalent — replacing the fitted `β_long` fade entirely:
 
-- **Effective distance > 5K → World Athletics down-conversion.** Score the
-  (corrected) time on the WA 2025 men's tables, then read the equivalent 5K
-  time at the same score. Aerobic-to-aerobic, empirical, no fitted parameter.
-- **Effective distance ≤ 5K → CP3 + v_max up-conversion** (above).
-- **5K is the shared anchor** — both regimes give 5K = 5K, so they meet
-  continuously; no kink at the boundary.
+- **Distance ≥ 1500 m → World Athletics.** Score the (corrected) time on the WA
+  2025 men's tables, read the equivalent 5K time at the same score. Identity at
+  5K; **Riegel power-law fallback** for performances off the bottom of the table
+  (the WA points parabola vertexes at ~24:00 for a 5K — slower early-career
+  races would otherwise clamp to a ~7:00/mi floor). Aerobic-to-aerobic,
+  empirical, no fitted parameter.
+- **Distance < 1500 m → CP3 + v_max → 1500 m, then WA → 5K** (above).
+- **1500 m is the boundary** — a 1500 m race converts identically either way, so
+  the two regimes meet continuously; no kink.
 
-**Why the split, not all-IAAF.** WA tables equate *specialists across events*
-(a world-class 400 and a world-class 5K both score ~1300). Using them to
-convert one athlete's 400 to their 5K assumes a population-average
-anaerobic↔aerobic balance, which a distance specialist doesn't have — it under-
-rates his short races by ~1–2 min of 5K-equivalent (his 57s 400 → 16:58, not a
-fitness statement). The equivalence is only valid where both efforts tax the
-*same* system. So WA handles the aerobic (>5K) side it's good at; CP3 + v_max —
-calibrated on his own corpus — handles the short side IAAF can't.
+**Why the split, and why the boundary is 1500 m (not 5K).** WA tables equate
+*specialists across events* (a world-class 400 and a world-class 5K both score
+~1300). Using them to convert a distance specialist's true SPRINT (400/800) to
+5K assumes a population-average anaerobic↔aerobic balance he doesn't have — it
+under-rates those by ~1–2 min of 5K-equivalent (his 57 s 400 → 16:58, not a
+fitness statement), so CP3 + v_max — calibrated on his own corpus — owns the
+sprint leg. But that distortion is a *sprint* phenomenon: across 1500 m–5K both
+efforts are aerobic and IAAF is validated against his own event hierarchy
+(mile↔3200↔5K), where it beats a single CP2 curve. The earlier 5K boundary
+applied sprint logic to the mile and over-rated it; 1500 m is where IAAF becomes
+trustworthy.
 
 This fixed three things at once that the single-`β_long`-log couldn't:
 over-credited HMs, a 10K "cliff" (10K projecting slower than both its 5K and HM
@@ -280,16 +305,15 @@ frontier−CS-5K excess at/below zero). Workouts: purple 5K line. Long runs:
 frontier marathon (bright purple) + HM (faint purple) — the gold CS pair
 is REMOVED (frontier lines only; tooltip rows are frontier values).
 Recovery: deliberately untouched (recovery calibrates against sustainable
-physiology, not peak capability). **Demo eligibility: time ≥ 120 s — 800s
-bind by design** (June 2026; a ≥ 1500 m cutoff was tried and reverted the
-same day). Max's 800s bind in 5 of 7 non-fatigued cases; the
-investigation showed this is the fit's own small D′ speaking (relative to
-HIS anaerobic capacity a 2:04.1 really is peak-level — the IAAF "weak at
-short" comparison is population-relative and already encoded in D′), and
-Max verified the binding cases are coherent peaks (the 2017-03-30 800 was
-his genuine lifetime best to that point, superseded weeks later by
-1600s). Only sub-120 s sprints stay display-only, read via the
-conservative evidence-edge v_max. **Dashboard: predictions are direct
+physiology, not peak capability). **Demo eligibility: time ≥ 120 s** (800s
+included). **Under the 1500 m-boundary redesign (June 2026) the 800s no
+longer bind the frontier** — they now convert via CP3 + v_max → 1500 m → WA,
+which reads them ~4 s/mi slower than the old CP3-straight-to-5K, so they sit
+just *behind* the frontier rather than on it. (History: an earlier model had
+them binding 5 of 7 non-fatigued cases — the fit's small D′ speaking — and a
+≥ 1500 m demo cutoff was tried and reverted; the 1500 m conversion boundary
+supersedes that, leaning on IAAF for the aerobic read.) Only sub-120 s sprints
+stay display-only, read via the conservative evidence-edge v_max. **Dashboard: predictions are direct
 frontier projections** — "the fastest I could physically run this, given
 the current frontier", no empirical residual offsets (the old
 recency-weighted long-run residual machinery is gone) — evaluated AS OF

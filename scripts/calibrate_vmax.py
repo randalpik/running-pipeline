@@ -21,6 +21,16 @@ a separate measurement calibration and is NOT derived here.
 Usage: python scripts/calibrate_vmax.py     (uses data/ artifacts)
 Re-run after a CS refit; copy results into cs_projection's
 VMAX_EVID_BY_PROFILE / VMAX_PRED_BY_PROFILE.
+
+FOLLOW-UP (June 2026 1500 m-boundary redesign): the `implied_vmax` /
+`sweep_min_pred` SOLVERS below still model a sub-1500 race as CP3 straight to
+5K, but the live projection now goes CP3 → 1500 m → WA → 5K (two legs). So the
+"400-corpus envelope" number this prints is computed on the OLD path and is not
+directly comparable to the registry edge — TODO: update the solvers to the
+two-leg path. The "audits at registry edges" section IS trustworthy: it calls
+the live `project_races_to_5k_pace`, and it confirms the registry v_max
+(9.5 / 8.3) still satisfies both invariants (0 short races past the frontier;
+400/800 predictions respect the PRs). So the constants need no change today.
 """
 import os
 import sys

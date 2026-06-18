@@ -1,9 +1,26 @@
-"""Bayesian latent-process model for CS(t) and D'(t) — standalone runner.
+"""Bayesian latent-process model for aerobic 5K-equivalent FITNESS — standalone runner.
 
-Generative model:
-    log CS(t) ~ GP(μ_CS, Matern52(σ_f_CS, ℓ_CS))
-    log D'(t) ~ GP(μ_D', Matern52(σ_f_D', ℓ_D'))
-    log τ_i  ~ Normal(log[(d_i - D'(t_i)) / CS(t_i)], σ_obs)
+Generative model (June 2026 redesign):
+    log T5K(t) ~ μ + GP_trend(σ_f_long, ℓ_long) + GP_dev(σ_f_dev, ℓ_dev)
+    log t5k_i  ~ Normal(log T5K(t_i), σ_obs)
+
+where t5k_i is each AEROBIC race (≥1500 m) down-converted to its 5K-equivalent
+time via the World Athletics tables (identity at 5K). The fit is a single
+latent 5K-equiv fitness curve — NOT the old two-parameter CP2 (CS, D') model.
+
+Why: once every aerobic race is homogenized to one distance (5000 m), the CP2
+hyperbola t=(d−D')/CS is degenerate — only (5000−D')/CS is identified, not CS
+and D' separately. The old fitted D'(t) was already flat (its time-variation
+was unidentified), and a single hyperbola can't match IAAF's empirical shape
+across 800 m–5K, which over-rated short races. So D' is demoted to a fixed
+constant (src/shared/cs_projection.dprime_fixed) used only to back out a
+nominal bare-CS = (5000−D')/T5K for the recovery/long-run baselines and to feed
+the CP3 sub-1500 sprint projection. Sub-1500 sprints (400/800) are EXCLUDED
+from this fit — they're frontier demos, not aerobic-fitness anchors.
+
+Outputs keep the legacy schema (cs_pace/cs_mps/dp_med) for downstream
+compatibility: cs_mps = (5000−D'_fixed)/T5K, dp_med = D'_fixed (constant), and
+load_cs_outputs derives p5k_implied = the latent 5K-equiv pace.
 
 Uses HSGP (Hilbert space approximation) to make the GP tractable on a long
 time series — full-rank Latent GP is O(N³) per leapfrog and infeasible at
@@ -51,6 +68,8 @@ from src.shared.paths import DATA_DIR, DEBUG_DIR
 from src.shared.units import METERS_PER_MILE
 from src.shared.plot_window import pad_range
 from src.shared.recovery_model import race_physical_correction
+from src.shared.cs_projection import dprime_fixed, CP3_IAAF_BOUNDARY_M
+from src.shared.wa_scoring import wa_5k_equiv_time
 
 
 DEFAULT_RACES   = str(DATA_DIR / 'races.csv')
@@ -300,10 +319,11 @@ def main():
                    help='LogNormal location (in years) for ell_cs (default 0.25)')
     p.add_argument('--ell-cs-sigma', type=float, default=0.4,
                    help='LogNormal scale (log-space) for ell_cs (default 0.4)')
-    p.add_argument('--xc-correction', type=float, default=0.08,
+    p.add_argument('--xc-correction', type=float, default=0.06,
                    help='Multiplicative correction applied to XC race times '
-                        'before fitting (default 0.08 = 8%% terrain-effect '
-                        'compensation). Pre-model adjustment: XC time_sec is '
+                        'before fitting (default 0.06 = 6%% terrain-effect '
+                        'compensation, literature-supported). Pre-model '
+                        'adjustment: XC time_sec is '
                         'divided by (1+c) so XC races enter the model as if '
                         'they were equivalent flat-course times. Set to 0 to '
                         'disable. Iterate based on visual fall-vs-spring '
@@ -341,6 +361,12 @@ def main():
     # don't clobber each other's outputs. Computed early because the
     # auto-exclusions audit file is the first artifact written.
     suffix = f"_{args.tag}" if args.tag else ""
+
+    # Fixed D' (m): the CP2 (CS,D') decomposition was retired (see module
+    # docstring); D' is a constant used only to back out a nominal bare-CS from
+    # the latent 5K-equiv fitness and to feed the CP3 sub-1500 sprint leg.
+    D_FIXED = dprime_fixed()
+    print(f"Fixed D' (nominal bare-CS backout + sprint leg): {D_FIXED:.0f} m")
 
     # ---------- load + auto-derive exclusions + filter ----------
     elig_full = build_eligible(args.races)
@@ -451,31 +477,36 @@ def main():
     n_grid = len(grid_dates)
     print(f"Inference grid: {n_grid} points (every {args.grid_step}d)")
 
+    # ---------- fit corpus: aerobic races only, IAAF-homogenized to 5K --------
+    # The fit is now a single latent 5K-equivalent FITNESS curve (see module
+    # docstring). Every aerobic race (>=1500m) is down-converted to its 5K-equiv
+    # via the World Athletics tables (identity at 5K) and enters as one
+    # observation; sub-1500 sprints (400/800) are EXCLUDED — IAAF's population
+    # equivalence distorts a distance specialist there, and they're frontier
+    # demos, not fitness anchors (Max, June 2026). All observations now sit at
+    # one distance, so the old CP2 (CS,D') hyperbola is degenerate; D' is no
+    # longer fitted (fixed constant, used only downstream).
+    fit_df = elig[elig['distance_m'] >= CP3_IAAF_BOUNDARY_M].reset_index(drop=True)
+    n_sprint = int((elig['distance_m'] < CP3_IAAF_BOUNDARY_M).sum())
+    print(f"Fit corpus: {len(fit_df)} aerobic races (>={CP3_IAAF_BOUNDARY_M:.0f}m); "
+          f"{n_sprint} sub-1500 sprints excluded (frontier demos only)")
+
     # Map race dates to grid indices (nearest grid point)
     race_grid_idx = np.array([
         min(int(round((rd - first_d).days / args.grid_step)), n_grid - 1)
-        for rd in elig['date']
+        for rd in fit_df['date']
     ])
 
-    race_distances = elig['distance_m'].to_numpy().astype(float)
-    race_times = elig['time_sec'].to_numpy().astype(float)
-    # Hybrid 5K-equivalence (June 2026): efforts ABOVE 5K down-convert via the
-    # World Athletics tables (aerobic-to-aerobic — replaces the old beta_long
-    # fade) and enter the fit as 5000m anchors; efforts at/below 5K stay raw and
-    # are fit by the CP3 hyperbola + v_max (up-conversion, where IAAF's
-    # cross-athlete equivalence is invalid for a distance specialist). Times are
-    # already physical/XC-corrected above, so the WA score sees the corrected
-    # time. With every race now <=5000m, log_d_ratio below is 0 for all rows, so
-    # beta_long is inert (written as 0 to params); it survives only as dead code.
-    from src.shared.wa_scoring import wa_5k_equiv_time
-    long_mask = race_distances > 5000.0
-    for i in np.flatnonzero(long_mask):
-        race_times[i] = wa_5k_equiv_time(float(race_distances[i]), float(race_times[i]))
-    race_distances[long_mask] = 5000.0
-    if int(long_mask.sum()):
-        print(f"Hybrid: {int(long_mask.sum())} races >5K down-converted to "
-              f"5K-equivalent via World Athletics tables (beta_long retired).")
-    log_race_times = np.log(race_times)
+    # Original distance/time kept for diagnostics; the likelihood sees the
+    # 5K-equivalent time. Times are already physical/XC-corrected above, so the
+    # WA score sees the corrected time.
+    race_distances = fit_df['distance_m'].to_numpy().astype(float)
+    race_times = fit_df['time_sec'].to_numpy().astype(float)
+    t5k_equiv = np.array([wa_5k_equiv_time(float(d), float(t))
+                          for d, t in zip(race_distances, race_times)])
+    log_t5k = np.log(t5k_equiv)
+    print(f"IAAF 5K-equiv: {len(fit_df)} aerobic races homogenized "
+          f"(identity at 5K; WA tables for 1500m-marathon).")
 
     # ---------- optional near-race workout observations (spike) ----------
     wobs = None
@@ -500,98 +531,60 @@ def main():
 
     # ---------- model ----------
     with pm.Model() as model:
-        mu_cs = pm.Normal('mu_cs', mu=np.log(4.0), sigma=0.3)
-        mu_dp = pm.Normal('mu_dp', mu=np.log(250.0), sigma=0.5)
+        # Single latent log-5K-equivalent-time fitness curve (additive GPs):
+        #   log T5K(t) = mu_fit + log_fit_trend(t) + log_fit_dev(t)
+        # trend = slow career arc (years scale); dev = training-cycle wiggles
+        # (months scale). At boundaries (before first / past last data) the
+        # SHORT dev GP decays to zero while the LONG trend persists, anchoring
+        # extrapolation to a smooth trajectory rather than the most recent dip.
+        # (Replaces the old two-GP CS+D' hyperbolic model — see module docstring.)
+        mu_fit = pm.Normal('mu_fit', mu=np.log(950.0), sigma=0.3)
 
-        # Hierarchical CS structure (additive GPs):
-        #   log_cs(t) = mu_cs + log_cs_trend(t) + log_cs_dev(t)
-        # log_cs_trend captures slow long-term fitness trajectory (years scale).
-        # log_cs_dev captures faster training-cycle wiggles (months scale).
-        # Why this matters: at boundaries (past last race, before first race)
-        # the SHORT-scale GP decays to zero quickly, but the LONG-scale trend
-        # persists, anchoring extrapolated predictions to a smooth fitness
-        # trajectory rather than letting them follow the most recent dip.
-        sf_cs_long  = pm.HalfNormal('sf_cs_long',  sigma=0.3)
-        ell_cs_long = pm.LogNormal('ell_cs_long', mu=np.log(5.0), sigma=0.5)
-        sf_cs_dev   = pm.HalfNormal('sf_cs_dev',   sigma=0.10)
-        ell_cs_dev  = pm.LogNormal('ell_cs_dev',
+        sf_fit_long  = pm.HalfNormal('sf_fit_long',  sigma=0.3)
+        ell_fit_long = pm.LogNormal('ell_fit_long', mu=np.log(5.0), sigma=0.5)
+        sf_fit_dev   = pm.HalfNormal('sf_fit_dev',   sigma=0.10)
+        ell_fit_dev  = pm.LogNormal('ell_fit_dev',
                                     mu=np.log(args.ell_cs_mu),
                                     sigma=args.ell_cs_sigma)
 
-        sf_dp = pm.HalfNormal('sf_dp', sigma=0.5)
-        ell_dp = pm.LogNormal('ell_dp', mu=np.log(0.5), sigma=0.5)
-
-        # Distance-dependent observation noise. See earlier comment block;
+        # Observation noise. UNIFORM now: every observation is a 5K-equivalent
+        # at one distance, so the old distance-scaling term (alpha_sig) is gone.
         # CLI-controlled via --sigma-base-prior. Default HN(0.02).
+        # (XC/physical bias is still handled OUTSIDE the model via time
+        # pre-correction; >5K and 1500-5K aerobic conversion is the WA table.)
         sigma_base = pm.HalfNormal('sigma_base', sigma=args.sigma_base_prior)
-        alpha_sig = pm.HalfNormal('alpha_sig', sigma=0.3)
-        D_REF = 5000.0
-        sigma_per_race = sigma_base * (race_distances / D_REF) ** alpha_sig
 
-        # Long-distance bias: RETIRED (June 2026). The old in-model fade term
-        # (1 + beta_long*log(d/d_thresh)) corrected marathons that pure CS theory
-        # times too fast. It's gone — every race >5K is now down-converted to its
-        # 5K-equivalent via the World Athletics tables BEFORE the fit (see the
-        # race-ingestion block above), so the fit only ever sees efforts <=5K and
-        # there is no fade to apply. bias_factor is identically 1.
-        #
-        # XC bias is still handled OUTSIDE the model via pre-correction of XC
-        # times (see --xc-correction CLI flag): the model can't separate terrain
-        # from fitness in fall XC clusters, so we pre-correct and fit naturally.
-        bias_factor = 1.0
-
-        # HSGP — Hilbert space approximation, much cheaper than full Latent
-        cov_cs_long = sf_cs_long ** 2 * pm.gp.cov.Matern52(input_dim=1, ls=ell_cs_long)
-        cov_cs_dev  = sf_cs_dev  ** 2 * pm.gp.cov.Matern52(input_dim=1, ls=ell_cs_dev)
-        cov_dp = sf_dp ** 2 * pm.gp.cov.Matern52(input_dim=1, ls=ell_dp)
-
-        # Long-scale trend uses fewer basis functions: ratio of m to L tracks
-        # how short of a wavelength the GP can express. With ell_long ~ 5y and
-        # m_long = 15-20 we cover the whole timeline with smooth modes.
+        # HSGP — Hilbert space approximation, much cheaper than full Latent.
+        cov_long = sf_fit_long ** 2 * pm.gp.cov.Matern52(input_dim=1, ls=ell_fit_long)
+        cov_dev  = sf_fit_dev  ** 2 * pm.gp.cov.Matern52(input_dim=1, ls=ell_fit_dev)
+        # Long-scale trend uses fewer basis functions (ell_long ~5y, smooth modes).
         m_long = max(20, args.m_basis // 3)
-        gp_cs_long = pm.gp.HSGP(m=[m_long], L=[L], cov_func=cov_cs_long)
-        gp_cs_dev  = pm.gp.HSGP(m=[args.m_basis], L=[L], cov_func=cov_cs_dev)
-        gp_dp = pm.gp.HSGP(m=[args.m_basis], L=[L], cov_func=cov_dp)
+        gp_long = pm.gp.HSGP(m=[m_long], L=[L], cov_func=cov_long)
+        gp_dev  = pm.gp.HSGP(m=[args.m_basis], L=[L], cov_func=cov_dev)
 
-        log_cs_trend = gp_cs_long.prior('log_cs_trend', X=X_grid)
-        log_cs_dev   = gp_cs_dev.prior('log_cs_dev',   X=X_grid)
-        log_dp = gp_dp.prior('log_dp', X=X_grid)
+        log_fit_trend = gp_long.prior('log_fit_trend', X=X_grid)
+        log_fit_dev   = gp_dev.prior('log_fit_dev',   X=X_grid)
+        log_t5k_total = mu_fit + log_fit_trend + log_fit_dev
 
-        log_cs_total = mu_cs + log_cs_trend + log_cs_dev
-        log_dp_total = log_dp + mu_dp
+        # Likelihood: each aerobic race's log 5K-equiv time ~ N(latent, sigma).
+        pm.Normal('obs', mu=log_t5k_total[race_grid_idx], sigma=sigma_base,
+                  observed=log_t5k)
 
-        cs_at_race = cast(Any, pm.math.exp(log_cs_total[race_grid_idx]))
-        dp_at_race = cast(Any, pm.math.exp(log_dp_total[race_grid_idx]))
-
-        # Hyperbolic likelihood: t = (d - D')/CS, then long-distance correction
-        expected_time = (race_distances - dp_at_race) / cs_at_race
-        expected_time_corrected = expected_time * bias_factor
-        log_expected = pm.math.log(expected_time_corrected)
-
-        pm.Normal('obs', mu=log_expected, sigma=sigma_per_race, observed=log_race_times)
-
-        # Near-race workout observations (spike): 5K-equivalent efforts with
-        # D' FIXED at the race-fit median (wobs_dp), so the gradient flows
-        # into the CS GPs only — races remain the sole anchor for D' and
-        # beta_long (which doesn't apply at 5000m anyway). sigma_obs is a
-        # per-row constant measured empirically (pair-based repeatability),
-        # not a fitted parameter.
+        # Near-race workout observations (spike; experimental, off by default):
+        # 5K-equivalent efforts entering the same latent-fitness likelihood.
         if wobs is not None:
-            cs_at_wobs = cast(Any, pm.math.exp(log_cs_total[wobs_grid_idx]))
-            expected_t_w = (5000.0 - wobs_dp) / cs_at_wobs
-            pm.Normal('obs_workout', mu=pm.math.log(expected_t_w),
+            pm.Normal('obs_workout', mu=log_t5k_total[wobs_grid_idx],
                       sigma=wobs_sigma, observed=wobs_log_t)
 
     # ---------- prior predictive ----------
     print("\nRunning prior predictive (200 samples)...")
     with model:
         prior_pred: Any = pm.sample_prior_predictive(samples=200, random_seed=args.seed)
-    log_cs_pp = (prior_pred.prior['log_cs_trend'].values +
-                 prior_pred.prior['log_cs_dev'].values +
-                 prior_pred.prior['mu_cs'].values[..., None])
-    cs_pp = np.exp(log_cs_pp)
-    pace_pp = METERS_PER_MILE / cs_pp / 60
-    print(f"  Prior CS pace (min/mi): "
+    log_t5k_pp = (prior_pred.prior['log_fit_trend'].values +
+                  prior_pred.prior['log_fit_dev'].values +
+                  prior_pred.prior['mu_fit'].values[..., None])
+    pace_pp = np.exp(log_t5k_pp) / (5000.0 / METERS_PER_MILE) / 60
+    print(f"  Prior 5K-equiv pace (min/mi): "
           f"5%={np.percentile(pace_pp,5):.2f}  median={np.median(pace_pp):.2f}  "
           f"95%={np.percentile(pace_pp,95):.2f}")
 
@@ -650,11 +643,10 @@ def main():
                             f"{str(r.get('event',''))[:40]}\n")
 
             f.write(f"\n=== Hyperparameter posterior summary ===\n")
-            summ = az.summary(trace, var_names=['mu_cs', 'mu_dp',
-                                                 'sf_cs_long', 'ell_cs_long',
-                                                 'sf_cs_dev',  'ell_cs_dev',
-                                                 'sf_dp', 'ell_dp',
-                                                 'sigma_base', 'alpha_sig'])
+            summ = az.summary(trace, var_names=['mu_fit',
+                                                 'sf_fit_long', 'ell_fit_long',
+                                                 'sf_fit_dev',  'ell_fit_dev',
+                                                 'sigma_base'])
             f.write(summ.to_string())
             f.write("\n\n")
             n_div = int(trace.sample_stats['diverging'].sum())
@@ -667,17 +659,21 @@ def main():
         print(f"Wrote {diag_path}")
 
     # ---------- posterior summary on grid ----------
-    log_cs_trend_post = trace.posterior['log_cs_trend'].values
-    log_cs_dev_post   = trace.posterior['log_cs_dev'].values
-    mu_cs_post        = trace.posterior['mu_cs'].values[..., None]
-    log_cs_post       = mu_cs_post + log_cs_trend_post + log_cs_dev_post
-    log_dp_post = trace.posterior['log_dp'].values + trace.posterior['mu_dp'].values[..., None]
+    # Latent quantity is log 5K-equivalent TIME. Back out the legacy schema:
+    #   cs_mps = (5000 - D_FIXED)/t5k   (nominal bare-CS for recovery/long-run)
+    #   dp_med = D_FIXED (constant; D' no longer fitted)
+    # load_cs_outputs then derives p5k_implied = the latent 5K-equiv pace.
+    log_t5k_trend_post = trace.posterior['log_fit_trend'].values
+    log_t5k_dev_post   = trace.posterior['log_fit_dev'].values
+    mu_fit_post        = trace.posterior['mu_fit'].values[..., None]
+    log_t5k_post       = mu_fit_post + log_t5k_trend_post + log_t5k_dev_post
 
-    cs_flat       = np.exp(log_cs_post).reshape(-1, n_grid)
-    # Trend-only (mu_cs + slow component) for separate visualization/diagnostic
-    cs_trend_flat = np.exp((mu_cs_post + log_cs_trend_post)).reshape(-1, n_grid)
-    dp_flat = np.exp(log_dp_post).reshape(-1, n_grid)
-    pace_flat = METERS_PER_MILE / cs_flat / 60
+    t5k_flat       = np.exp(log_t5k_post).reshape(-1, n_grid)            # 5K-equiv time (s)
+    # Trend-only (mu + slow component) for separate visualization/diagnostic
+    t5k_trend_flat = np.exp(mu_fit_post + log_t5k_trend_post).reshape(-1, n_grid)
+    cs_flat        = (5000.0 - D_FIXED) / t5k_flat                       # nominal bare CS (m/s)
+    cs_trend_flat  = (5000.0 - D_FIXED) / t5k_trend_flat
+    pace_flat       = METERS_PER_MILE / cs_flat / 60
     pace_trend_flat = METERS_PER_MILE / cs_trend_flat / 60
 
     summary_rows = []
@@ -694,11 +690,13 @@ def main():
             'cs_pace_trend_med':  np.median(pace_trend_flat[:, i]),
             'cs_pace_trend_lo95': np.percentile(pace_trend_flat[:, i], 2.5),
             'cs_pace_trend_hi95': np.percentile(pace_trend_flat[:, i], 97.5),
-            'dp_med':       np.median(dp_flat[:, i]),
-            'dp_lo50':      np.percentile(dp_flat[:, i], 25),
-            'dp_hi50':      np.percentile(dp_flat[:, i], 75),
-            'dp_lo95':      np.percentile(dp_flat[:, i], 2.5),
-            'dp_hi95':      np.percentile(dp_flat[:, i], 97.5),
+            # D' is a fixed constant now (not fitted) — emit it flat so the
+            # schema and dp_med consumers (cp3_dprime, p5k_implied) keep working.
+            'dp_med':  D_FIXED,
+            'dp_lo50': D_FIXED,
+            'dp_hi50': D_FIXED,
+            'dp_lo95': D_FIXED,
+            'dp_hi95': D_FIXED,
         })
     summary_df = pd.DataFrame(summary_rows)
     summary_df.to_csv(summary_path, index=False)
@@ -706,25 +704,24 @@ def main():
 
     # ---------- per-race residuals + posterior predictive (diagnostics only) ----------
     if args.diagnostics:
+        # Residual = observed 5K-equiv time vs the latent fitness prediction at
+        # the race date. t5k_flat is the latent 5K-equiv time; cs_flat is the
+        # nominal bare-CS backed out from it (see summary block).
+        t5k_pred_med = np.median(t5k_flat[:, race_grid_idx], axis=0)
         cs_at_race_med = np.median(cs_flat[:, race_grid_idx], axis=0)
-        dp_at_race_med = np.median(dp_flat[:, race_grid_idx], axis=0)
-        # Apply long-distance bias correction (matching the likelihood model).
-        # XC races already had their times pre-corrected, and >5K races are
-        # pre-converted to 5K-equivalent — so the prediction is pure CP3 (no fade).
-        pred_t = (race_distances - dp_at_race_med) / cs_at_race_med
-        pct_resid = (race_times / pred_t - 1) * 100
+        pct_resid = (t5k_equiv / t5k_pred_med - 1) * 100
 
         resid_df = pd.DataFrame({
-            'date': elig['date'].values,
+            'date': fit_df['date'].values,
             'distance_m': race_distances,
-            'actual_sec': race_times,
-            'actual_sec_original': elig['time_sec_original'].values,
-            'surface': elig['surface'].values if 'surface' in elig.columns else [''] * len(elig),
-            'predicted_sec': pred_t,
+            'actual_sec': t5k_equiv,                  # 5K-equiv that entered the fit
+            'actual_sec_original': fit_df['time_sec_original'].values,
+            'surface': fit_df['surface'].values if 'surface' in fit_df.columns else [''] * len(fit_df),
+            'predicted_sec': t5k_pred_med,            # latent 5K-equiv prediction
             'pct_resid': pct_resid,
             'cs_pace_med_at_race': METERS_PER_MILE / cs_at_race_med / 60,
-            'dp_med_at_race': dp_at_race_med,
-            'event': elig['event'].values if 'event' in elig.columns else [''] * len(elig),
+            'dp_med_at_race': D_FIXED,
+            'event': fit_df['event'].values if 'event' in fit_df.columns else [''] * len(fit_df),
         })
         resid_df.to_csv(resid_path, index=False)
         print(f"Wrote {resid_path}")
@@ -760,29 +757,21 @@ def main():
             # Coverage: % of races where the actual log(time) falls in the 50%
             # and 95% intervals of this distribution. A well-calibrated model has
             # 50%-coverage ≈ 50% and 95%-coverage ≈ 95%.
-            cs_post = cs_flat[:, race_grid_idx]   # (samples, races)
-            dp_post = dp_flat[:, race_grid_idx]   # (samples, races)
-            # σ_per_race posterior: σ_base * (d/D_REF)^α, sample by sample
+            # Posterior-predictive log-time mean = the latent 5K-equiv time at
+            # each race date; σ is uniform (sigma_base) now (no distance scaling).
+            t5k_post = t5k_flat[:, race_grid_idx]   # (samples, races)
             sb_post = trace.posterior['sigma_base'].values.reshape(-1)
-            a_post  = trace.posterior['alpha_sig'].values.reshape(-1)
-            # Broadcast σ across races: shape (samples, races)
-            D_REF_arr = 5000.0
-            ratio = (race_distances[None, :] / D_REF_arr) ** a_post[:, None]
-            sig_per_race = sb_post[:, None] * ratio   # (samples, races)
-            # Posterior-predictive log-time mean — pure CP3 (no fade; >5K
-            # pre-converted to 5K-equiv, XC pre-corrected).
-            expected_t_pp = (race_distances[None, :] - dp_post) / cs_post
-            mean_log_t = np.log(expected_t_pp)  # (samples, races)
+            mean_log_t = np.log(t5k_post)  # (samples, races)
             # Draw one log_t per (sample, race): mean + σ * N(0,1)
             rng = np.random.default_rng(args.seed)
             eps = rng.standard_normal(mean_log_t.shape)
-            pp_log_t = mean_log_t + sig_per_race * eps   # (samples, races)
+            pp_log_t = mean_log_t + sb_post[:, None] * eps   # (samples, races)
             # Per-race quantiles
             q025 = np.percentile(pp_log_t, 2.5, axis=0)
             q975 = np.percentile(pp_log_t, 97.5, axis=0)
             q25  = np.percentile(pp_log_t, 25,   axis=0)
             q75  = np.percentile(pp_log_t, 75,   axis=0)
-            actual_log_t = np.log(race_times)
+            actual_log_t = np.log(t5k_equiv)
             in_95 = (actual_log_t >= q025) & (actual_log_t <= q975)
             in_50 = (actual_log_t >= q25)  & (actual_log_t <= q75)
 
