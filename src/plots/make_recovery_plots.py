@@ -6,10 +6,10 @@ Two side-by-side panels in one HTML:
 
 Both panels are anchored to the watch/route-corrected pace (``pace_for_fit``
 in recovery_model — calibrated watch measurement where one exists, route-era
-deflation for pre-watch mislogged routes, logged pace otherwise), the same
-canonical source of truth the fit and the Long Runs plot use. The
-originally-logged pace appears only as a secondary tooltip line. The residual
-panel therefore equals (absolute corrected pace − CS) point-for-point.
+deflation for over-measured pre-watch routes, logged pace otherwise), the same
+canonical source of truth the fit and the Long Runs plot use. Corrected pace is
+the only pace shown; the originally-logged value lives in the raw logs. The
+residual panel therefore equals (absolute corrected pace − CS) point-for-point.
 
 A right-sidebar checkbox UI applies normalization factors. Most factors
 adjust BOTH panels simultaneously (subtracting β × x from each point's
@@ -219,15 +219,16 @@ def main():
         # smooth-mode "Nearest run" section. The cursor scaffold renders the
         # date and the CS-pace/Trend-pace/CS-residual/Trend-residual rows
         # itself, so this content focuses on what's run-specific.
-        # Watch/route-rule corrected pace is the displayed source of truth and
-        # leads (matching the Long Runs tooltip); the originally-logged value
-        # moves to a secondary line. corr_pace_sec_per_mi is the value the FIT
-        # used and what the marker is plotted at (pace_for_fit). The Logged
-        # line — with pauses — only appears when the correction meaningfully
-        # differs (>= 1 s/mi): the distance bracket pins many under-logged days
-        # to corr_pace ≈ logged, where a redundant line is noise. A rule day on
-        # a strides route carries pace only (corr_miles NaN — distance polluted
-        # by both the route over-estimate and the strides).
+        # Watch/route corrected pace is the displayed source of truth and the
+        # only pace shown (matching the Long Runs tooltip); corr_pace_sec_per_mi
+        # is the value the FIT used and what the marker is plotted at
+        # (pace_for_fit). The originally-logged pace is recoverable from the raw
+        # logs and is intentionally not shown here. A [watch-measured] /
+        # [corrected route] tag flags the source when the correction meaningfully
+        # differs (>= 1 s/mi); the distance bracket pins many under-logged days
+        # to corr_pace ≈ logged, where no tag is warranted. A corrected day on a
+        # strides route carries pace only (corr_miles NaN — distance polluted by
+        # both the route over-estimate and the strides).
         logged_pace = row['recovery_pace_sec_per_mi']
         corr_p = row.get('corr_pace_sec_per_mi')
         has_corr = pd.notna(corr_p)
@@ -246,17 +247,9 @@ def main():
             if row.get('rec_watch'):
                 tag = ' <span style="color:#888">[watch-measured]</span>'
             elif row.get('rec_rule'):
-                tag = ' <span style="color:#888">[mislogged route]</span>'
+                tag = ' <span style="color:#888">[corrected route]</span>'
         parts = [f"Pace: {sec_to_mss(disp_pace)}/mi{disp_dist}{tag}"]
 
-        if meaningful:
-            pause = ''
-            if (row.get('rec_watch') and pd.notna(row.get('pause_s'))
-                    and row['pause_s'] >= 30):
-                pause = f" · {sec_to_mss(float(row['pause_s']))} paused"
-            parts.append(
-                f"<b>Logged:</b> {sec_to_mss(logged_pace)}/mi  "
-                f"({row['miles']:.1f} mi){pause}")
         if pd.notna(row.get('temp_c')):
             parts.append(f"Temp: {row['temp_c']:.0f}°C")
         if pd.notna(row.get('wind_mph')):
@@ -425,8 +418,11 @@ def main():
 
     # Absolute-pace axis: nice ticks over the central 99.8% of recovery paces,
     # clamped to a sane [3:00, 12:00] window. target=7 → the former 30s spacing
-    # over Max's span, adapting the interval to any profile's range.
-    _llo = max(180.0, float(rec['pace_for_fit'].quantile(0.001)))
+    # over Max's span, adapting the interval to any profile's range. The fast
+    # bound also takes in the 5K-fitness line's peak (faster than any recovery
+    # run) so that reference curve never clips off the top of the panel.
+    _llo = max(180.0, min(float(rec['pace_for_fit'].quantile(0.001)),
+                          float(cs_for_plot['cs_pace_sec'].min())))
     _lhi = min(720.0, float(rec['pace_for_fit'].quantile(0.999)))
     left_ticks, _ = nice_time_ticks(_llo, _lhi, target=7)
     left_y_lo, left_y_hi = left_ticks[0], left_ticks[-1]
