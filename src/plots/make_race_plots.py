@@ -241,8 +241,8 @@ def build_hover_anchored(row, anchor_m):
         cs_sec = float(cs_sec)
         delta = float(row['time_norm_sec']) - cs_sec
         side = 'under (faster)' if delta < 0 else 'over (slower)'
-        parts.append(f"CS prediction: {sec_to_mss_full(cs_sec)}")
-        parts.append(f"Δ vs CS: {delta:+.1f}s {side}")
+        parts.append(f"Fitness prediction: {sec_to_mss_full(cs_sec)}")
+        parts.append(f"Δ vs fitness: {delta:+.1f}s {side}")
     parts.append(f"Surface: {row.get('surface') or '—'}")
     if row.get('location') and str(row['location']) != 'nan':
         parts.append(f"Location: {row['location']}")
@@ -551,7 +551,7 @@ def main():
     fig1 = go.Figure()
     fig1.add_trace(go.Scatter(
         x=daily_summary['date'], y=cs_line_5k,
-        mode='lines', name='CS-derived 5K pace',
+        mode='lines', name='5K fitness',
         line=dict(color=CS_LINE, width=CS_LINE_WIDTH),
         hoverinfo='skip', showlegend=True, legendgroup='cs',
         legendrank=2000))
@@ -625,7 +625,7 @@ function buildTooltip(day, isSnap, pointHtml) {
 
   // Section 1: trend info — CS-derived 5K pace at this date.
   html += '<div class="tt-section">';
-  html += '<div class="tt-row"><span>CS 5K pace</span><b>' + paceMSS(P.cs_pace[idx]) + '/mi</b></div>';
+  html += '<div class="tt-row"><span>5K fitness</span><b>' + paceMSS(P.cs_pace[idx]) + '/mi</b></div>';
   html += '</div>';
 
   // Section 2: race details. Smooth = nearest race within window.
@@ -675,7 +675,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         title_slug='race_pace_all',
         page_title='Races',
         title='Lifetime races: 5K-equivalent pace',
-        subtitle='5K races at actual pace, others converted by 3-parameter Critical Speed projection',
+        subtitle='5K races at actual pace; 1500 m and up converted to 5K-equivalent via World Athletics scoring, shorter races via Critical Speed projection — compared to modeled 5K fitness',
         cursor_tooltip=CursorTooltip(
             payload=payload_all,
             build_js=smooth_build_js_all,
@@ -821,7 +821,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         #    first subplot puts the entry in the legend.
         fig2.add_trace(go.Scatter(
             x=daily_summary['date'], y=front_times,
-            mode='lines', name='CS-derived',
+            mode='lines', name='5K fitness',
             line=dict(color=CS_LINE, width=CS_LINE_WIDTH),
             hoverinfo='skip', legendgroup='cs',
             showlegend=(not cs_legend_drawn),
@@ -968,7 +968,7 @@ function buildTooltip(day, isSnap, pointHtml, ctx) {
     return mn + ':' + (sc < 10 ? '0' : '') + sc;
   }
   function distLabel(m) {
-    if (Math.abs(m - METERS_PER_MILE) < 5) return '1 mi';
+    if (Math.abs(m - 1609.344) < 5) return '1 mi';
     if (Math.abs(m - 3218.688) < 5) return '2 mi';
     if (m >= 19410 && m <= 22785) return 'half marathon';
     if (m >= 38819 && m <= 45570) return 'marathon';
@@ -987,7 +987,7 @@ function buildTooltip(day, isSnap, pointHtml, ctx) {
 
   // Section 1: per-panel CS prediction at the panel's anchor distance.
   html += '<div class="tt-section">';
-  html += '<div class="tt-row"><span>CS ' + distLabel(panel.anchor_m) + '</span><b>'
+  html += '<div class="tt-row"><span>Fitness ' + distLabel(panel.anchor_m) + '</span><b>'
         + timeFmt(panel.cs_pred_sec[idx]) + '</b></div>';
   html += '</div>';
 
@@ -1038,7 +1038,7 @@ function buildTooltip(day, isSnap, pointHtml, ctx) {
         title_slug='race_pace_by_distance',
         page_title='Races by distance',
         title='Lifetime races by distance',
-        subtitle='All races projected to the nearest standard distance, compared to the Critical Speed prediction',
+        subtitle='Races grouped by standard distance, each compared to modeled 5K fitness projected to that distance (Critical Speed at 5K and below, World Athletics scoring above)',
         cursor_tooltip=CursorTooltip(
             payload=payload_by_dist,
             build_js=smooth_build_js_by_dist,

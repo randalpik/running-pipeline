@@ -194,7 +194,7 @@ def main():
     fig.add_trace(go.Scatter(
         x=summary_plot['date'], y=summary_plot['cs_pace_med'],
         mode='lines', line=dict(color=rgba('#ffb450', 0.55), width=2.0),
-        name='Posterior median CS', hoverinfo='skip', showlegend=True,
+        name='Projected Critical Speed', hoverinfo='skip', showlegend=True,
         legendrank=4))
     # Frontier-swept 95% prediction band: the frontier recomputed with the
     # floor at the CS lo95/hi95 5K predictions. Collapses onto the line
@@ -215,7 +215,7 @@ def main():
     fig.add_trace(go.Scatter(
         x=summary_plot['date'], y=summary_plot['p5k_implied_min'],
         mode='lines', line=dict(color='rgb(255,180,80)', width=2.5),
-        name='CS 5K prediction', hoverinfo='skip', showlegend=True,
+        name='5K fitness', hoverinfo='skip', showlegend=True,
         legendrank=3))
     # Performance frontier — demonstrated 5K capability (5K-equiv pace space,
     # same space as the race diamonds; the gold CS line is asymptotic pace).
@@ -473,7 +473,7 @@ function buildTooltip(day, isSnap, pointHtml) {
   if (P.fr_lo && P.fr_lo[idx] != null && P.fr_hi && P.fr_hi[idx] != null) {
     html += '<div class="tt-row"><span>95% band</span>' + paceMSS(P.fr_lo[idx]) + '–' + paceMSS(P.fr_hi[idx]) + '/mi</div>';
   }
-  html += '<div class="tt-row"><span>CS median</span>' + paceMSS(P.cs_med[idx]) + '/mi</div>';
+  html += '<div class="tt-row"><span>Projected Critical Speed</span>' + paceMSS(P.cs_med[idx]) + '/mi</div>';
   html += '</div>';
 
   // Section 2: race details. Smooth = nearest within window.
@@ -522,9 +522,9 @@ function buildTooltip(day, isSnap, pointHtml) {
     render_plot(
         fig, out_html,
         title_slug=f'cs_timeline{suffix}',
-        page_title='CS fitness',
-        title='Fitness trend as Critical Speed over time',
-        subtitle='Posterior median and 5K prediction from Bayesian latent-process model analysis, compared to actual performance',
+        page_title='5K fitness',
+        title='5K fitness over time',
+        subtitle='Posterior-median 5K fitness from a Bayesian latent-process model, with projected Critical Speed, compared to actual race performance',
         cursor_tooltip=CursorTooltip(
             payload=payload,
             build_js=build_js,

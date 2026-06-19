@@ -151,7 +151,7 @@ def workout_hover(r, single_type=False):
         f"<b>{title}</b>{xc_note}",
         body,
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
-        f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
+        f"<b>5K fitness:</b> {fmt_min(r['p5k_cs_min'])}/mi",
         residual_line(r['raw_resid'], r['resid']),
     ]
     return "<br>".join(p for p in parts if p)
@@ -191,7 +191,7 @@ def long_run_hover(r):
         dist_pace,
         lr_correction_line(r),
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
-        f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
+        f"<b>5K fitness:</b> {fmt_min(r['p5k_cs_min'])}/mi",
         # Race-equivalent raw vs model-adjusted (phys+cov, level untouched).
         residual_line(r['raw_resid'], r['resid']),
     ]
@@ -208,7 +208,7 @@ def hill_rep_hover(r):
         f"<b>{title}</b>",
         f"{n} {word} × {rt_str}",
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
-        f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
+        f"<b>5K fitness:</b> {fmt_min(r['p5k_cs_min'])}/mi",
         residual_line(r['raw_resid'], r['resid']),
     ]
     return "<br>".join(p for p in parts if p)
@@ -227,7 +227,7 @@ def hill_hover(r):
         f"{nreps} {loops_word}, {ft_gained} ft gained, {time_part}",
         f"<b>Actual pace:</b> {sec_to_mss(r['actual_pace_s'])}/mi",
         f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
-        f"<b>P5K from CS:</b> {fmt_min(r['p5k_cs_min'])}/mi",
+        f"<b>5K fitness:</b> {fmt_min(r['p5k_cs_min'])}/mi",
         residual_line(r['raw_resid'], r['resid']),
     ]
     return "<br>".join(p for p in parts if p)
@@ -619,7 +619,7 @@ def main():
     cs_norm = [0.0] * len(cs_plot)
     fig.add_trace(go.Scatter(
         x=cs_plot['date'], y=cs_norm,
-        mode='lines', name='CS-implied 5K',
+        mode='lines', name='5K fitness',
         line=dict(color=CS_LINE, width=2),
         hoverinfo='skip',
         meta={'raw_y': cs_raw, 'norm_y': cs_norm},
@@ -786,7 +786,7 @@ def main():
             daily_floor(),
             combined['date'].max() + pd.Timedelta(days=30),
         ),
-        yaxis=dict(title='Residual from CS (sec/mi)',
+        yaxis=dict(title='Residual from 5K fitness (sec/mi)',
                    range=norm_axis_range,
                    tickmode='array',
                    tickvals=norm_tickvals, ticktext=norm_ticktext,
@@ -884,7 +884,7 @@ function buildTooltip(day, isSnap, pointHtml) {
   // Section 1: trend info — race fitness from CS, training-quality
   // smoother, and their difference at this date.
   html += '<div class="tt-section">';
-  html += '<div class="tt-row"><span>Race fitness</span><b>' + fmtMin(cs) + '/mi</b></div>';
+  html += '<div class="tt-row"><span>5K fitness</span><b>' + fmtMin(cs) + '/mi</b></div>';
   html += '<div class="tt-row"><span>Training quality</span><b>' + fmtMin(sm) + '/mi</b></div>';
   if (diff !== null) {
     html += '<div class="tt-row"><span>Diff</span><b>' + fmtDiff(diff) + '</b></div>';
@@ -949,7 +949,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         'range': norm_axis_range,
         'tickvals': norm_tickvals,
         'ticktext': norm_ticktext,
-        'title': 'Residual from CS (sec/mi)',
+        'title': 'Residual from 5K fitness (sec/mi)',
     }
     # Normalize-to-CS toggle (small fixed pill in the upper-right area
     # — distinct from the legend-anchored model table below).
@@ -957,7 +957,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         '<div id="tq-norm-toggle" class="rp-sidebar rp-sidebar-compact" '
         'style="right:60px; top:20px">'
         '<label class="rp-row" style="margin:0">'
-        '<input type="checkbox" id="tq-norm-cb" checked> Normalize to CS'
+        '<input type="checkbox" id="tq-norm-cb" checked> Normalize to 5K fitness'
         '</label></div>'
     )
     # Long-run adjustments box: documents EVERYTHING subtracted from a long

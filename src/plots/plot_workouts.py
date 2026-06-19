@@ -159,7 +159,7 @@ def workout_hover(r, single_type=False):
 
     p5k_disp = r.get('p5k_display_min', r['p5k_min'])
     p5k_line = (f"<b>5K-equiv:</b> {fmt_min(p5k_disp)}/mi   "
-                f"<b>CS 5K:</b> {fmt_min(r['p5k_cs_min'])}/mi")
+                f"<b>5K fitness:</b> {fmt_min(r['p5k_cs_min'])}/mi")
     temp_line = (f"<b>Temp:</b> {r['temp_c']:.0f}°C"
                  if pd.notna(r.get('temp_c')) else '')
     parts = [f"{title}{xc_note}", body, temp_line, p5k_line]
@@ -207,7 +207,7 @@ def hill_cont_hover(r):
             temp_line,
             f"<b>Actual pace:</b> {sec_to_mss(r['actual_pace_s'])}/mi",
             f"<b>5K-equiv:</b> {fmt_min(r['p5k_display_min'])}/mi   "
-            f"<b>CS 5K:</b> {fmt_min(r['p5k_cs_min'])}/mi",
+            f"<b>5K fitness:</b> {fmt_min(r['p5k_cs_min'])}/mi",
         ] if p
     ]
     # Exclusion tags, same convention as flat workouts: category flags come
@@ -477,7 +477,7 @@ def main():
     cs_plot = clip_to_daily_floor(cs)
     fig.add_trace(go.Scatter(
         x=cs_plot['date'], y=_y_safe(cs_plot['p5k_implied_min'].values),
-        mode='lines', name='CS-implied 5K',
+        mode='lines', name='5K fitness',
         line=dict(color=CS_LINE, width=2),
         hoverinfo='skip',
     ))
@@ -679,7 +679,7 @@ function buildTooltip(day, isSnap, pointHtml) {
   var html = '';
   html += '<div class="tt-date">' + dateLabel(day) + '</div>';
   html += '<div class="tt-section">';
-  html += '<div class="tt-row"><span>CS 5K pace</span><b>' + fmtMin(P.cs_pace[idx]) + '/mi</b></div>';
+  html += '<div class="tt-row"><span>5K fitness</span><b>' + fmtMin(P.cs_pace[idx]) + '/mi</b></div>';
   html += '</div>';
 
   // Session section: snap shows the marker's own html; smooth shows the

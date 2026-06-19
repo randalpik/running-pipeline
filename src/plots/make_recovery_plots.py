@@ -301,13 +301,13 @@ def main():
     rec['_hover'] = rec.apply(build_hover, axis=1)
 
     fig = make_subplots(rows=1, cols=2,
-                         subplot_titles=('Absolute pace', 'Residual vs CS'),
+                         subplot_titles=('Absolute pace', 'Residual vs 5K fitness'),
                          horizontal_spacing=0.07)
 
     fig.add_trace(go.Scatter(
         x=cs_for_plot['date'], y=cs_for_plot['cs_pace_sec'],
         mode='lines', line=dict(color=CS_LINE, width=CS_LINE_WIDTH),
-        name='CS pace', hoverinfo='skip', showlegend=True,
+        name='5K fitness', hoverinfo='skip', showlegend=True,
         meta={'role': 'reference'},
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
@@ -452,7 +452,7 @@ def main():
     fig.update_yaxes(tickvals=right_ticks,
                       ticktext=[signed_sec(t) if t != 0 else '0' for t in right_ticks],
                       range=[right_y_hi, right_y_lo],
-                      title_text='Residual (sec/mi above CS)',
+                      title_text='Residual (sec/mi above 5K fitness)',
                       gridcolor=GRID,
                       zeroline=False,
                       row=1, col=2)
@@ -573,7 +573,7 @@ function buildTooltip(day, isSnap, pointHtml) {
 
   // Section 1: trend info for the absolute-pace panel.
   html += '<div class="tt-section">';
-  html += '<div class="tt-row"><span>CS pace</span><b>' + paceMSS(P.cs_pace[idx]) + '/mi</b></div>';
+  html += '<div class="tt-row"><span>5K fitness</span><b>' + paceMSS(P.cs_pace[idx]) + '/mi</b></div>';
   html += '<div class="tt-row"><span>Trend pace</span><b>' + paceMSS(P.trend_pace[idx]) + '/mi</b></div>';
   html += '</div>';
 
@@ -617,7 +617,7 @@ function buildTooltip(day, isSnap, pointHtml) {
                          :  dd2 + ' day' + (dd2 === -1 ? '' : 's'));
       html += '<div class="tt-section-title">Nearest run [' + lbl + ']</div>';
     }
-    html += '<div class="tt-row"><span>CS residual</span><b>' + signedSec(run.resid) + ' sec/mi</b></div>';
+    html += '<div class="tt-row"><span>Fitness residual</span><b>' + signedSec(run.resid) + ' sec/mi</b></div>';
     html += '<div class="tt-row"><span>Trend residual</span><b>' + signedSec(trResid) + ' sec/mi</b></div>';
     html += (isSnap && pointHtml ? pointHtml : run.html);
     html += '</div>';
