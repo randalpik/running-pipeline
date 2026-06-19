@@ -30,17 +30,26 @@
   var spike = document.querySelector('.rp-spike');
   if (!tt) return;
 
-  // Off-screen measurement clone. Width/height transitions on `tt` only
-  // fire when the inline pixel value changes — never when going through
-  // `auto`, since CSS doesn't interpolate auto↔px. So we measure the
-  // natural width/height on this hidden ghost (which always has
-  // width/height: auto) and pin those pixel values onto `tt`. The
-  // visible tooltip's width/height stay numeric the entire time, so
-  // `transition: width / height` actually animates.
+  // Off-screen measurement clone. Width/height transitions on `tt` only fire
+  // when the inline pixel value changes — never when going through `auto`,
+  // since CSS doesn't interpolate auto↔px. So we measure the natural size on
+  // this hidden ghost (always width/height: auto) and pin those pixels onto
+  // the outer `tt`, which then animates between sizes.
+  //
+  // The visible tooltip is two layers (see base.css): the outer `.rp-tooltip`
+  // is the animating box (border + clip + transition), the inner `.tt-inner`
+  // holds the text at its own `max-content` width. We mirror that here — the
+  // ghost is an outer clone (it keeps the `rp-tooltip` class, hence the
+  // border) wrapping a `.tt-inner`, and we measure the OUTER ghost so the
+  // pinned size includes the border. `overflow:visible` + position:absolute
+  // makes the ghost shrink-wrap its inner.
   var ghost = tt.cloneNode(false);
   ghost.style.cssText =
     'visibility:hidden;position:absolute;left:-9999px;top:0;' +
-    'transition:none;display:block;width:auto;height:auto;';
+    'transition:none;display:block;width:auto;height:auto;overflow:visible;';
+  var ghostInner = document.createElement('div');
+  ghostInner.className = 'tt-inner';
+  ghost.appendChild(ghostInner);
   document.body.appendChild(ghost);
 
   var rafScheduled = false;
@@ -56,16 +65,19 @@
       return;
     }
     if (pending.html !== lastContent) {
-      ghost.innerHTML = pending.html;
-      // getBoundingClientRect gives sub-pixel dims; ceil so the pinned width is
-      // never narrower than the natural layout the ghost measured. A rounded-down
-      // integer offsetWidth would shrink the content box by a fraction of a pixel
-      // and force `.tt-wrap` lines to wrap one word further than measured, then
-      // overflow the locked height.
+      ghostInner.innerHTML = pending.html;
+      // Measure the OUTER ghost (inner's max-content size + the 2px border).
+      // getBoundingClientRect gives sub-pixel dims; ceil so the pinned outer
+      // box is never narrower than the natural layout — a rounded-down width
+      // would shrink the content box by a fraction of a pixel and force
+      // `.tt-wrap` lines to wrap one word further than measured, overflowing.
       var grect = ghost.getBoundingClientRect();
       ttW = Math.ceil(grect.width);
       ttH = Math.ceil(grect.height);
-      tt.innerHTML = pending.html;
+      // Inner carries the text at its final (logical) width from frame 1; the
+      // outer box animates from its previous size to (ttW, ttH) and reveals /
+      // clips the inner as it goes, so the text never reflows mid-animation.
+      tt.innerHTML = '<div class="tt-inner">' + pending.html + '</div>';
       tt.style.width  = ttW + 'px';
       tt.style.height = ttH + 'px';
       lastContent = pending.html;

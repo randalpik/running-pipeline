@@ -268,8 +268,8 @@ def main():
         overlay_html=overlay_html,
         overlay_js_files=[_ANNUAL_JS],
         # Rows are just "swatch year | value" — release base.css's 200px
-        # min-width so the box hugs its content.
-        extra_head_css='.rp-tooltip { min-width: 0; }',
+        # min-width (on the inner text layer) so the box hugs its content.
+        extra_head_css='.rp-tooltip .tt-inner { min-width: 0; }',
         extra_head_css_files=[_ANNUAL_CSS],
         cursor_tooltip=CursorTooltip(
             payload=payload,

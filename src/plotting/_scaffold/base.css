@@ -58,36 +58,52 @@ input[type="checkbox"]:checked {
 }
 
 /* ===== Cursor-following tooltip =====
-   Width is pinned in JS each frame (cursor_tooltip.js sets style.width
-   from the natural size after innerHTML changes) so the width transition
-   below actually fires on content changes. min/max-width still constrain
-   the natural-width measurement. */
+   Two layers so text never reflows during the resize animation:
+
+   - OUTER `.rp-tooltip` is the visible animating box — border, background,
+     radius, shadow, clip (`overflow: hidden`) and the width/height transition
+     all live here. cursor_tooltip.js pins its pixel size each content change
+     (auto↔px doesn't interpolate, so px is required for the transition to
+     fire), and it animates from the previous size. Because the border, the
+     clip and the box shape are all on this one element, the edge and the clip
+     animate together.
+   - INNER `.tt-inner` is the text layer. Its `width: max-content` is INTRINSIC
+     — it ignores the parent's animating width — so line-wrapping is decided
+     the instant the content is set and never reflows. The outer box reveals /
+     clips it as it animates; the text bounds are left alone. */
 .rp-tooltip {
   position: fixed; top: 0; left: 0;
   box-sizing: border-box;
   background: rgba(26,26,26,0.96);
-  color: #eee;
   border: 1px solid #555;
-  padding: 10px 14px;
-  font-size: 13px;
-  line-height: 1.5;
   border-radius: 4px;
   pointer-events: none;
   z-index: 9999;
-  /* Note: with box-sizing: border-box, max-width counts the 14px×2 padding
-     + 1px×2 border, so content area = max-width − 30. */
-  min-width: 200px;
-  max-width: 360px;
-  /* Each line stays on one line; if it overflows the tooltip's max-width
-     it's clipped (overflow: hidden). Prevents reflow-induced text shift
-     when the box width animates between content sizes. Content that should
-     wrap instead of clipping (long watch rep lists) goes in a .tt-wrap
-     span, which restores normal wrapping inside the nowrap tooltip. */
-  white-space: nowrap;
   display: none;
   overflow: hidden;
   box-shadow: 0 4px 12px rgba(0,0,0,0.4);
   transition: width 100ms ease-out, height 100ms ease-out;
+}
+.rp-tooltip .tt-inner {
+  box-sizing: border-box;
+  color: #eee;
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  /* Sized to its own content, independent of the outer box's animated width,
+     so wrapping is fixed at content-set time. 358 + the 2px outer border =
+     360 total (the prior max box width); content area = 358 − 28 padding =
+     330, unchanged. */
+  width: max-content;
+  min-width: 200px;
+  max-width: 358px;
+  /* Each line stays on one line; a line wider than max-width is clipped
+     (overflow: hidden). Content that should wrap instead of clipping (long
+     watch rep lists) goes in a .tt-wrap span, which restores normal wrapping
+     at max-width — never narrower, since the inner width doesn't track the
+     animating outer box. */
+  white-space: nowrap;
+  overflow: hidden;
 }
 .rp-tooltip .tt-date {
   font-weight: 600; font-size: 14px;
