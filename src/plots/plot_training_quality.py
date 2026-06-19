@@ -279,8 +279,8 @@ def main():
     # out-predicts a race at the same distance/pace. The model's internal
     # MAD prune only robustifies its betas; exclusion from TQ rides the
     # shared track-relative prune below, like every other category.
-    print(f'\n--- Long-run model (level NOT applied): raw_resid ~ '
-          f'temp/fatigue (elevation priced upstream) ---')
+    print(f'\n--- Long-run model (level NOT applied): temp/fatigue PINNED from '
+          f'the pool, elevation priced upstream ---')
     long_runs, lr_fit, _qualifying_routes = fit_long_run_model(long_runs)
     long_runs['model_adj'] = (long_runs['phys_contrib']
                               + long_runs['cov_contrib'])
@@ -965,8 +965,8 @@ function buildTooltip(day, isSnap, pointHtml) {
     # PHYSICAL route costs (grade per-run from the watch; footing + altitude
     # pinned from the pooled recovery+long fit; all applied upstream in
     # project_long_runs, so already in raw_resid) and TRAINING STATE
-    # (temp/fatigue, fit here, applied via model_adj). The effort level
-    # (intercept) is fit but NEVER subtracted (see the model block in main).
+    # (temp/fatigue, pinned from the pooled fit, applied via model_adj). The
+    # effort level (intercept) is fit but NEVER subtracted (see main).
     from src.shared.recovery_model import (physical_route_betas,
                                             ALTITUDE_THRESHOLD_KFT)
     from src.shared.elevation_cost import CLIMB_COST, REFUND_RECOVERY
@@ -992,22 +992,22 @@ function buildTooltip(day, isSnap, pointHtml) {
     routes_panel = ''
     if show_box:
         body = (
-            widgets.title('Long-run adjustments (sec/mi)')
+            widgets.title('Long-run adjustments')
             + widgets.subtitle(
                 'Subtracted to reach each run\'s flat sea-level '
-                'race-equivalent pace')
+                'race-equivalent pace; pinned from combined recovery and '
+                'long run data')
             + widgets.divider()
             + widgets.subtitle('Physical route: '
                                f'descent refunds {REFUND_RECOVERY["paved"]:.0%} '
-                               f'of ascent effort on pavement, {REFUND_RECOVERY["mixed"]:.0%} off-road '
-                               '(factors pinned from recovery and long run data)')
-            + widgets.table(('Term', 's/mi'), phys_rows, align=('left', 'right'))
+                               f'of ascent effort on pavement, {REFUND_RECOVERY["mixed"]:.0%} off-road')
+            + widgets.table(('Term', 'β (s/mi)'), phys_rows, align=('left', 'right'))
         )
         if state_rows:
             body += (
                 widgets.divider()
-                + widgets.subtitle('Training state (fit on long runs)')
-                + widgets.table(('Term', 'β'), state_rows,
+                + widgets.subtitle('Training state')
+                + widgets.table(('Term', 'β (s/mi)'), state_rows,
                                 align=('left', 'right'))
             )
         routes_panel = widgets.sidebar(

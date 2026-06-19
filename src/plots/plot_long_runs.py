@@ -218,8 +218,9 @@ def main():
     #     grade (measured gain/loss through the elevation engine) +
     #     off-road footing + altitude — all pinned, the SAME constants the
     #     recovery model and the Training adjustments box show.
-    #   TRAINING STATE (long-run-fit betas, transferable_contributions):
-    #     temperature + recent-race fatigue (TOD is dead on long runs).
+    #   TRAINING STATE (pooled-pinned betas, transferable_contributions):
+    #     temperature + recent-race fatigue (TOD is dead on long runs) — now the
+    #     SAME pooled constants the recovery model uses, not a separate fit.
     # Default is OFF → raw logged pace; the effort-level intercept is NEVER
     # applied. Adjustments cover every plotted run, including out-of-slice
     # ones the fit itself excludes.

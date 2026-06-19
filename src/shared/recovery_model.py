@@ -756,26 +756,35 @@ _PHYS_BETAS_CACHE: dict = {}
 
 
 def physical_route_betas():
-    """Pooled flat-footing (``is_offroad``) + altitude (``alt_kft``) pace costs
-    (s/mi), fit jointly on recovery + in-slice long runs on a shared run-pace
-    residual scale (``pace − cs_pace``) with a corpus level dummy (``is_long``)
-    and the recovery era-backfit. THE single source of truth for these two
-    physical constants: the recovery model pins them (``fit_recovery_model``)
-    and the long-run 5K conversion credits them
-    (``workouts.project_long_runs``), so one constant per channel applies
-    everywhere. Pooling lets the large recovery corpus + shared era control
-    discipline the era-confounded long-run off-road rows (which alone read a
-    spurious +12.7); the betas are corpus-stable (footing +4.1→+4.7, altitude
-    +0.87→+0.78 when long runs join).
+    """Pooled pace-cost constants (s/mi), fit jointly on recovery + in-slice
+    long runs on a shared run-pace residual scale (``pace − cs_pace``) with a
+    corpus level dummy (``is_long``) and the recovery era-backfit. THE single
+    source of truth for every cross-corpus constant: the two PHYSICAL channels
+    (flat-footing ``is_offroad`` + altitude ``alt_kft``) and the three
+    TRANSFERABLE-STATE channels (``temp_centered`` heat slope, ``fat_marathon``
+    + ``fat_race_short`` race-fatigue decays). The recovery model pins all five
+    (``fit_recovery_model``), the long-run model pins all five
+    (``fit_long_run_model``), and the long-run 5K conversion credits the two
+    physical ones (``workouts.project_long_runs``) — so one constant per channel
+    applies everywhere, fit once on the combined corpus rather than separately
+    per model. (The name is historical — it predates temp/fatigue moving in;
+    it's the canonical pooled estimator, referenced widely.) Pooling lets the
+    large recovery corpus + shared era control discipline the era-confounded
+    long-run off-road rows (which alone read a spurious +12.7) and identify the
+    marathon-fatigue contrast that ~4 long runs alone cannot; the physical betas
+    are corpus-stable (footing +4.1→+4.7, altitude +0.87→+0.78 when long runs
+    join). The ``is_long`` dummy absorbs any mean-level difference between
+    corpora so the shared slopes aren't biased by it.
 
     Cached per data dir. Degrades gracefully: recovery-only when there are no
-    long-run rows, zeros when the recovery fit is unavailable (sparse profiles,
-    CI without a details cache) — a zero cost is just no correction."""
+    long-run rows, zeros (no correction) for any channel when the recovery fit
+    is unavailable (sparse profiles, CI without a details cache)."""
     key = str(DATA_DIR)
     if key in _PHYS_BETAS_CACHE:
         return _PHYS_BETAS_CACHE[key]
     from src.shared.workouts import long_run_fit_rows
-    out = {'is_offroad': 0.0, 'alt_kft': 0.0}
+    out = {'is_offroad': 0.0, 'alt_kft': 0.0,
+           'temp_centered': 0.0, 'fat_marathon': 0.0, 'fat_race_short': 0.0}
     try:
         daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
         races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
@@ -846,8 +855,14 @@ def physical_route_betas():
                     ERA_WINDOW_MIN_POINTS), dtype=float)
                 coef, *_ = np.linalg.lstsq(X, raw - elev - era, rcond=None)
             cmap = dict(zip(['const'] + fit_cols, coef))
+            # Physical channels (dropped together by the no-offroad guard) plus
+            # the transferable-state channels (temp + per-category fatigue),
+            # which are always in fit_cols — both models pin all of these.
             out = {'is_offroad': float(cmap.get('is_offroad', 0.0)),
-                   'alt_kft': float(cmap.get('alt_kft', 0.0))}
+                   'alt_kft': float(cmap.get('alt_kft', 0.0)),
+                   'temp_centered': float(cmap.get('temp_centered', 0.0))}
+            for c in QUALITY_CATS:
+                out[f'fat_{c}'] = float(cmap.get(f'fat_{c}', 0.0))
     except FileNotFoundError:
         pass
     except Exception as exc:
@@ -1142,22 +1157,34 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
     route_col_map = {}
 
     # ---------- features ----------
-    base_features = (['temp_centered']
-                     + [f'fat_{c}' for c in QUALITY_CATS]
-                     + ['tod_is_pm'])
-    # Physical route terms: flat-footing (is_offroad) + altitude. Identified
-    # on the POOLED recovery+long-run corpus (physical_route_betas — the
-    # single source of truth, shared with the long-run 5K conversion) and
-    # PINNED here alongside the grade-aware elev_cost, NOT re-fit per call, so
-    # there's one physical constant per channel everywhere it's applied.
-    # pin_physical is False only when physical_route_betas itself calls in to
-    # build the recovery side of the pool — it self-fits is_offroad/alt_kft
-    # then (that's the recovery estimate the pool reads), which is what breaks
-    # the recursion.
+    # When pinned (the normal path), temp + per-category fatigue are PINNED from
+    # the pool too (see below), so only TOD — a recovery-only factor not in the
+    # pool's transferable set — is fit freely here. When pin_physical is False
+    # (the physical_route_betas bootstrap call that builds the recovery side of
+    # the pool), temp/fatigue stay in the free block so that self-fit frame is
+    # unchanged; the pool does its own joint regression regardless.
+    fatigue_features = [f'fat_{c}' for c in QUALITY_CATS]
+    if pin_physical:
+        base_features = ['tod_is_pm']
+    else:
+        base_features = ['temp_centered'] + fatigue_features + ['tod_is_pm']
+    # Physical route terms (flat-footing is_offroad + altitude) AND the
+    # transferable-state terms (temp heat slope + race-fatigue decays) are
+    # identified on the POOLED recovery+long-run corpus (physical_route_betas —
+    # the single source of truth, shared with the long-run model and the
+    # long-run 5K conversion) and PINNED here alongside the grade-aware
+    # elev_cost, NOT re-fit per call, so there's one constant per channel
+    # everywhere it's applied. pin_physical is False only when
+    # physical_route_betas itself calls in to build the recovery side of the
+    # pool — it self-fits everything then (that's the recovery frame the pool
+    # reads), which is what breaks the recursion.
     if pin_physical:
         pooled = physical_route_betas()
         pinned_phys = (pooled['is_offroad'] * rec['is_offroad'].fillna(0.0)
                        + pooled['alt_kft'] * rec['alt_kft'].fillna(0.0)
+                       + pooled['temp_centered'] * rec['temp_centered'].fillna(0.0)
+                       + sum(pooled[f'fat_{c}'] * rec[f'fat_{c}'].fillna(0.0)
+                             for c in QUALITY_CATS)
                        ).to_numpy(float)
         physical_features = []
     else:
@@ -1226,6 +1253,9 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
     if pin_physical:
         betas['is_offroad'] = float(pooled['is_offroad'])
         betas['alt_kft'] = float(pooled['alt_kft'])
+        betas['temp_centered'] = float(pooled['temp_centered'])
+        for c in QUALITY_CATS:
+            betas[f'fat_{c}'] = float(pooled[f'fat_{c}'])
     betas['wind_mph'] = wind_b
 
     rec['era_trend'] = era_all
@@ -1261,7 +1291,12 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
         print(f'  R² on raw residual: {r2_raw:.3f}')
         print(f'  intercept: {intercept:+.2f}')
         print(f'\n  Per-day factors:')
-        for f in base_features:
+        # temp + per-category fatigue are pooled-pinned on the normal path
+        # (pin_physical); tod_is_pm is always fit freely here.
+        pinned_tag = ' (pooled-pinned)' if pin_physical else ''
+        for f in ['temp_centered'] + fatigue_features:
+            print(f'    {f:18s}  β = {betas[f]:+.3f}{pinned_tag}')
+        for f in ['tod_is_pm']:
             print(f'    {f:18s}  β = {betas[f]:+.3f}')
         if apply_wind:
             print(f'    {"wind_mph":18s}  β = {betas["wind_mph"]:+.3f} s/mi per '
