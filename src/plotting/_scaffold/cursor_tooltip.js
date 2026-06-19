@@ -57,8 +57,14 @@
     }
     if (pending.html !== lastContent) {
       ghost.innerHTML = pending.html;
-      ttW = ghost.offsetWidth;
-      ttH = ghost.offsetHeight;
+      // getBoundingClientRect gives sub-pixel dims; ceil so the pinned width is
+      // never narrower than the natural layout the ghost measured. A rounded-down
+      // integer offsetWidth would shrink the content box by a fraction of a pixel
+      // and force `.tt-wrap` lines to wrap one word further than measured, then
+      // overflow the locked height.
+      var grect = ghost.getBoundingClientRect();
+      ttW = Math.ceil(grect.width);
+      ttH = Math.ceil(grect.height);
       tt.innerHTML = pending.html;
       tt.style.width  = ttW + 'px';
       tt.style.height = ttH + 'px';
