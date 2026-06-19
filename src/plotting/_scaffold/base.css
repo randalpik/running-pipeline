@@ -59,9 +59,9 @@ input[type="checkbox"]:checked {
 
 /* ===== Cursor-following tooltip =====
    Width is pinned in JS each frame (cursor_tooltip.js sets style.width
-   from the natural offsetWidth after innerHTML changes) so the width
-   transition below actually fires on content changes. min/max-width
-   still constrain the natural-width measurement. */
+   from the natural size after innerHTML changes) so the width transition
+   below actually fires on content changes. min/max-width still constrain
+   the natural-width measurement. */
 .rp-tooltip {
   position: fixed; top: 0; left: 0;
   box-sizing: border-box;

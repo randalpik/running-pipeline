@@ -176,14 +176,24 @@ def main():
     frontier, front_lo, front_hi, demos = build_frontier_band(
         demos, pd.DatetimeIndex(summary_plot['date']), summary_plot)
     n_front = int(frontier['frontier_pace_min'].notna().sum())
-    # Every workout above the CS-5K floor is shown ("Frontier workouts" —
-    # context belongs on the chart even when a bigger neighbor overshadows
-    # the point at its own date); binding is a hover annotation, not a
-    # display filter.
-    front_workouts = demos[(demos['excess'] > 0) & (demos['src'] != 'race')].copy()
-    print(f'Frontier: {int((demos["excess"] > 0).sum())} demos above the '
-          f'CS-5K floor ({len(front_workouts)} non-race, '
-          f'{int(front_workouts["binding"].sum())} of those binding)')
+    # Every non-race workout faster than the asymptotic CS line is shown
+    # ("Frontier workouts" — context belongs on the chart even when a bigger
+    # neighbor overshadows the point at its own date, or when the point can't
+    # bind the frontier at all). The CS line is always slower than the
+    # 5K-fitness floor used for `excess`/binding, so this is a superset of the
+    # frontier-eligible (`excess > 0`) set; `binding` still flags only the
+    # workouts that actually define the envelope (a hover annotation, not a
+    # display filter).
+    cs_asym_at = np.interp(
+        demos['date'].to_numpy('datetime64[D]').astype(float),
+        summary_plot['date'].to_numpy('datetime64[D]').astype(float),
+        summary_plot['cs_pace_med'].to_numpy(float))
+    above_cs = demos['pace_min'].to_numpy(float) < cs_asym_at
+    front_workouts = demos[above_cs & (demos['src'] != 'race')].copy()
+    print(f'Frontier: {int(above_cs.sum())} demos above the CS line '
+          f'({len(front_workouts)} non-race, '
+          f'{int(front_workouts["binding"].sum())} binding the frontier, '
+          f'{int((front_workouts["excess"] > 0).sum())} above the 5K-fitness floor)')
 
     # ---------- figure ----------
     fig = go.Figure()
@@ -324,7 +334,7 @@ def main():
             legendgrouptitle_text='Race pace (5K-equiv)',
             meta={'snap_eligible': True}))
 
-    # Frontier workouts: EVERY non-race demonstration above the CS-5K floor,
+    # Frontier workouts: EVERY non-race demonstration faster than the CS line,
     # rendered exactly as Training renders its session markers (per-category
     # colors/sizes, matching legend entries) under a "Frontier workouts"
     # legend group — small dots alongside the larger race diamonds. Binding
