@@ -16,8 +16,7 @@ Normalize toggle (off by default) subtracts route and training-state effects
 to the equivalent flat / sea-level pace. The Show-tags toggle (off by default —
 the distance gradient is the primary encoding) overlays halo rings: light
 blue = snow, yellow = partner-paced (both excluded from Training, matching the
-workout/recovery exclusion methodology), gray = watch-enriched, amber = points
-the TQ fit's MAD prune excluded (tooltip carries the residual). Corrections
+workout/recovery exclusion methodology), gray = watch-enriched. Corrections
 are display/projection-side only — the log columns are never rewritten.
 
 Marker color encodes distance via a continuous lavender→deep-purple gradient,
@@ -47,7 +46,7 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             sec_to_mss, GRID, CAT_COLORS,
                             FRONTIER_LINE, TAG_COLORS,
                             rgba, yearly_x_axis_kwargs, nice_time_ticks,
-                            marker_half_px)
+                            marker_half_px, tt_kv, tt_title, long_run_lines)
 
 # Width of the distance-gradient box (#lr-gradient); also used to size margin.r.
 # Holds a 160px gradient bar with 10px horizontal padding + 1px border per side.
@@ -87,7 +86,6 @@ LR_TAG_LEGEND = {
     'snow':               'Snow',
     'partners':           'Partner run',
     'enriched':           'Watch-enriched',
-    'outlier':            'Pruned outlier',
 }
 
 
@@ -95,20 +93,17 @@ def lr_tag(r):
     """Ring tag for a long run, or None. Same priority logic as the Workouts
     plot's session_tag: category exclusions (snow, partner-paced — both
     dropped from Training, matching the workout/recovery methodology) win,
-    then the TQ fit's MAD-pruned outliers (the ring answers "why is this
-    excluded"), then the informational 'enriched' tag: the projection used
-    calibrated watch values (the size of the adjustment is visible via the
-    Watch-correction toggle). Rule-corrected pre-watch days are unringed — the
-    logged-vs-corrected tooltip rows already convey the correction. Out-of-slice
-    runs stay unringed — showing them at absolute pace is this plot's whole
-    point."""
+    then the informational 'enriched' tag: the projection used calibrated watch
+    values (the size of the adjustment is visible via the Watch-correction
+    toggle). Rule-corrected pre-watch days are unringed — the logged-vs-corrected
+    tooltip rows already convey the correction. Out-of-slice runs stay unringed —
+    showing them at absolute pace is this plot's whole point. (Long runs are not
+    subject to the TQ outlier prune — that machinery was removed.)"""
     er = r.get('excluded_reason')
     if er == 'snow':
         return 'snow'
     if er == 'partners':
         return 'partners'
-    if r.get('tq_outlier'):
-        return 'outlier'
     if r.get('lr_watch'):
         return 'enriched'
     return None
@@ -121,49 +116,20 @@ LR_TAG_NOTE = {
 
 
 def long_run_hover(r):
-    """Tooltip html for one long run. The watch-corrected figures are the
-    displayed source of truth and lead; the originally-logged value moves to a
-    secondary line ONLY when it differs materially (≥0.2 mi) — otherwise the two
-    collapse into a single corrected row. The paused time (watch-measured, or
-    'est.' for an imputed pre-watch pause that actually moved the pace) rides the
-    corrected/main line. Temp is omitted on log-only days (no watch sync → NaN)."""
-    title = f"Long run{route_paren(r.get('display_name'), r.get('city_state'))}"
-    logged = (f"{r['miles']:.1f} mi @ "
-              f"{sec_to_mss(float(r['recovery_pace_sec_per_mi']))}/mi")
-    has_corr = pd.notna(r.get('corr_miles'))
-    corr = (f"{r['corr_miles']:.1f} mi @ "
-            f"{sec_to_mss(float(r['corr_pace_sec_per_mi']))}/mi"
-            if has_corr else '')
-    # Paused time — one home, the corrected/main line. Watch days show the
-    # measured pause (≥30s); pre-watch days show the imputed estimate only where
-    # those imputed stops actually erode the run (pause_erosion_gate > 0).
-    pause = ''
-    if r.get('lr_watch') and pd.notna(r.get('pause_s')) and r['pause_s'] >= 30:
-        pause = f" · {sec_to_mss(float(r['pause_s']))} paused"
-    elif (not r.get('lr_watch') and pd.notna(r.get('est_pause_s'))
-          and float(r.get('pause_erosion_gate') or 0) > 0):
-        pause = f" · est. {sec_to_mss(float(r['est_pause_s']))} paused"
-    if has_corr and abs(float(r['miles']) - float(r['corr_miles'])) < 0.2:
-        # Corrected ≈ logged: collapse to a single row.
-        main, alt = f"{corr}{pause}", ''
-    elif has_corr:
-        main, alt = f"{corr}{pause}", f"<b>Logged:</b> {logged}"
-    else:
-        main, alt = f"{logged}{pause}", ''
+    """Tooltip html for one long run. Title + distance/pace/paused lines come
+    from the shared :func:`hover.long_run_lines` builder (the canonical form the
+    Training and Fitness tabs reuse verbatim). Temp is omitted on log-only days
+    (no watch sync → NaN). The descriptive Long Runs tab omits the pause-adjusted
+    line (model-driven tabs add it)."""
+    title = tt_title('Long run', r.get('display_name'), r.get('city_state'))
     tag = lr_tag(r)
     note = ''
-    if tag == 'outlier':
-        # Why Training's track-relative prune dropped it: the residual vs
-        # the surrounding smoother track.
-        note = (f'<i style="color:{TAG_COLORS["outlier"]}">Excluded from '
-                f'Training: outlier ({r["tq_vs_track"]:+.0f} s/mi vs '
-                f'track)</i>')
-    elif tag in LR_TAG_NOTE:
+    if tag in LR_TAG_NOTE:
         note = (f'<i style="color:{TAG_COLORS[tag]}">'
                 f'{LR_TAG_NOTE[tag]}</i>')
-    temp = (f"<b>Temp:</b> {r['temp_c']:.0f}°C"
+    temp = (tt_kv('Temp', f"{r['temp_c']:.0f}°C")
             if pd.notna(r.get('temp_c')) else '')
-    parts = [f"<b>{title}</b>", main, alt, temp, note]
+    parts = [title, *long_run_lines(r), temp, note]
     return "<br>".join(p for p in parts if p)
 
 
@@ -240,42 +206,25 @@ def main():
         if np.abs(adj).max() > 0.05:
             norm_adj = adj
 
-    # Training's actual exclusions for the amber ring — the shared
-    # track-relative prune (written by plot_training_quality, which runs
-    # earlier in run_plots.sh), NOT the covariate fit above. The ring shows
-    # what Training really dropped, with the vs-track residual as the why.
-    lr['tq_outlier'] = False
-    lr['tq_vs_track'] = np.nan
-    excl_csv = DATA_DIR / 'training_quality_exclusions.csv'
-    if excl_csv.exists():
-        excl = pd.read_csv(excl_csv, parse_dates=['date'])
-        # A stale exclusions file (older schema) may predate the 'src' column;
-        # treat its absence as "no long-run exclusions recorded".
-        if 'src' not in excl.columns:
-            excl['src'] = 'workout'
-        excl = excl[excl['src'] == 'long_run'].set_index('date')
-        hit = lr['date'].isin(excl.index)
-        if hit.any():
-            lr.loc[hit, 'tq_outlier'] = True
-            lr.loc[hit, 'tq_vs_track'] = excl.loc[
-                lr.loc[hit, 'date'], 'resid'].to_numpy()
-
     # ---------- figure ----------
     fig = go.Figure()
 
     # Frontier curves only (the gold CS pair was removed June 2026):
     # marathon bright purple, HM faint purple — "fastest I could physically
-    # race this distance that day".
-    fig.add_trace(go.Scatter(
-        x=daily_plot['date'], y=_y_safe(front_mar_pace_min),
-        mode='lines', name='Frontier marathon pace',
-        line=dict(color=FRONTIER_LINE, width=2.2),
-        hoverinfo='skip',
-    ))
+    # race this distance that day". HM is added (and listed) first so the
+    # legend order matches both the graph (the faster HM line sits higher on
+    # the inverted pace axis) and the tooltip (HM above marathon). The opaque
+    # marathon line is added last so it draws on top of the faint HM line.
     fig.add_trace(go.Scatter(
         x=daily_plot['date'], y=_y_safe(front_hm_pace_min),
         mode='lines', name='Frontier half-marathon pace',
         line=dict(color=FRONTIER_LINE_HM, width=2.0),
+        hoverinfo='skip',
+    ))
+    fig.add_trace(go.Scatter(
+        x=daily_plot['date'], y=_y_safe(front_mar_pace_min),
+        mode='lines', name='Frontier marathon pace',
+        line=dict(color=FRONTIER_LINE, width=2.2),
         hoverinfo='skip',
     ))
 
@@ -369,8 +318,7 @@ def main():
                     r=right_margin_for_anchored_box(GRADIENT_BOX_WIDTH, legend_min_px=200),
                     b=28),
         hovermode=False,
-        legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
-                    font=dict(size=11)),
+        legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02),
         xaxis=yearly_x_axis_kwargs(lr_lo, lr_hi),
         yaxis=dict(title='Pace (min/mi)',
                    range=[y_max, y_min],
@@ -476,8 +424,8 @@ function buildTooltip(day, isSnap, pointHtml) {
   var html = '';
   html += '<div class="tt-date">' + dateLabel(day) + '</div>';
   html += '<div class="tt-section">';
-  html += '<div class="tt-row"><span>Frontier half-marathon</span><b>' + fmtMin(P.hm_pace[idx]) + '/mi</b></div>';
-  html += '<div class="tt-row"><span>Frontier marathon</span><b>' + fmtMin(P.mar_pace[idx]) + '/mi</b></div>';
+  html += '<div class="tt-row"><span>Frontier half marathon pace</span><b>' + fmtMin(P.hm_pace[idx]) + '/mi</b></div>';
+  html += '<div class="tt-row"><span>Frontier marathon pace</span><b>' + fmtMin(P.mar_pace[idx]) + '/mi</b></div>';
   html += '</div>';
 
   var run = null;

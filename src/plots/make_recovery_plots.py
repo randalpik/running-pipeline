@@ -119,7 +119,7 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             CS_LINE, CS_LINE_WIDTH, TREND_LINE, TREND_WIDTH,
                             GRID, gaussian_rolling_trend,
                             yearly_x_axis_kwargs, nice_time_ticks,
-                            nice_time_interval, time_ticks_at_interval)
+                            nice_time_interval, time_ticks_at_interval, tt_kv)
 from src.plotting import widgets
 from src.shared.paths import DEBUG_DIR
 from src.shared.cs_projection import load_cs_outputs
@@ -248,12 +248,12 @@ def main():
                 tag = ' <span style="color:#888">[watch-measured]</span>'
             elif row.get('rec_rule'):
                 tag = ' <span style="color:#888">[corrected route]</span>'
-        parts = [f"Pace: {sec_to_mss(disp_pace)}/mi{disp_dist}{tag}"]
+        parts = [tt_kv('Pace', f"{sec_to_mss(disp_pace)}/mi{disp_dist}{tag}")]
 
         if pd.notna(row.get('temp_c')):
-            parts.append(f"Temp: {row['temp_c']:.0f}°C")
+            parts.append(tt_kv('Temp', f"{row['temp_c']:.0f}°C"))
         if pd.notna(row.get('wind_mph')):
-            parts.append(f"Wind: {row['wind_mph']:.0f} mph")
+            parts.append(tt_kv('Wind', f"{row['wind_mph']:.0f} mph"))
         loc = row.get('location')
         if pd.notna(loc) and str(loc) != 'nan':
             # Shared dedup formatter (watch profiles: display_name == city_state).
@@ -267,12 +267,12 @@ def main():
                              f"(excluded from fit)</i>")
         elif (pd.notna(row.get('conditions_clean'))
               and str(row['conditions_clean']) not in ('nan', '')):
-            parts.append(f"Conditions: {row['conditions_clean']}")
+            parts.append(tt_kv('Conditions', row['conditions_clean']))
         if row.get('is_partner_run'):
             parts.append(f"<i>Partners: {row['partners']} "
                          f"(excluded from fit)</i>")
         elif pd.notna(row.get('partners')) and str(row['partners']) != 'nan':
-            parts.append(f"With: {row['partners']}")
+            parts.append(tt_kv('With', row['partners']))
         if row.get('is_outlier_loo'):
             parts.append(f"<i>Outlier (excluded from fit)</i>")
         # Most recent race within fatigue decay window only
@@ -285,10 +285,10 @@ def main():
         if most_recent is not None:
             cat, d = most_recent
             label = "Recent marathon" if cat == 'marathon' else "Recent race"
-            parts.append(f"{label}: {d}d ago")
+            parts.append(tt_kv(label, f"{d}d ago"))
         tod_raw = row.get('time_of_day')
         if pd.notna(tod_raw) and str(tod_raw).strip():
-            parts.append(f"Time of day: {str(tod_raw).strip().lower()}")
+            parts.append(tt_kv('Time of day', str(tod_raw).strip().lower()))
         return '<br>'.join(parts)
 
     rec['_hover'] = rec.apply(build_hover, axis=1)

@@ -74,7 +74,8 @@ def load_corpus_demos():
     watch profile early in its history, or a run ordering where the TQ plot
     hasn't been built yet; the frontier then rests on races alone.
     """
-    cols = ['date', 'pace_min', 'src', 'category', 'detail']
+    cols = ['date', 'pace_min', 'src', 'category', 'display_name',
+            'city_state', 'detail']
     if not CORPUS_PATH.exists():
         return pd.DataFrame(columns=cols)
     try:
@@ -83,8 +84,12 @@ def load_corpus_demos():
         return pd.DataFrame(columns=cols)
     if c.empty:
         return pd.DataFrame(columns=cols)
+    # display_name / city_state feed the Fitness tooltip title; tolerate older
+    # corpus artifacts that predate the columns.
     return pd.DataFrame({'date': c['date'], 'pace_min': c['p5k_corr_min'],
                          'src': c['src'], 'category': c['category'],
+                         'display_name': c.get('display_name', ''),
+                         'city_state': c.get('city_state', ''),
                          'detail': c['detail']})
 
 

@@ -326,7 +326,7 @@ function buildTooltip(day) {
           +     ';display:inline-block;width:9px;height:9px;'
           +     'border-radius:2px;margin-right:6px"></span>'
           +     r.year + '</span>'
-          +   '<span><b>' + (isCum ? r.val.toFixed(0) : r.val.toFixed(1))
+          +   '<span><b>' + r.val.toFixed(1)
           +     '</b> <span class="tt-mute">'
           +     (isCum ? 'mi' : 'mi/day') + '</span></span>'
           + '</div>';

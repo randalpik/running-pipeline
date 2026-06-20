@@ -1,0 +1,299 @@
+AUDIT REPORT: RACES and RACE DISTANCES Plot Consistency
+========================================================
+
+FILE LOCATIONS:
+- src/plots/make_race_plots.py (primary code for both plots)
+- src/plots/make_race_plots_filter.js (filter UI for "Races" plot)
+- src/plots/make_race_plots_panel_prs.js (PR overlay for "Race Distances" plot)
+
+PLOT IDENTIFICATION:
+====================
+
+PLOT 1: "Races" (race_pace_all.html)
+  - Generated: make_race_plots.py, main() at lines 550-689
+  - Single panel showing all races on one plot
+  - Features: distance-filter sidebar checkboxes (right margin)
+  - Uses make_race_plots_filter.js for checkbox behavior
+
+PLOT 2: "Race Distances" (race_pace_by_distance.html)
+  - Generated: make_race_plots.py, main() at lines 691-1050
+  - 8 distance-bin subplots (400m → Marathon)
+  - No filter sidebar
+  - Uses make_race_plots_panel_prs.js for per-panel PR overlay recompute
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PLOT 1: RACES (race_pace_all.html)
+==================================
+
+TOOLTIPS:
+---------
+
+1. TOOLTIP CONSTRUCTION METHOD
+   - Python HTML string built per-race in function build_hover()
+   - File: src/plots/make_race_plots.py, lines 204-226
+   - Stored in dataframe column 'hover'
+   - Added to plot via customdata (line 397)
+   - Rendered client-side by smooth_build_js_all function (lines 602-671)
+
+2. TOOLTIP LINE-BY-LINE CONTENT (build_hover, lines 204-226):
+
+   Line 207:  f"Distance: {friendly_distance(row['distance_m'])}"
+              → Label "Distance:" (not bolded), followed by right-justified value
+              
+   Line 208:  f"Time: {sec_to_mss_full(row['time_sec_original'])}"
+              → Label "Time:" (not bolded), followed by right-justified value
+
+   Line 214:  f"5K-equiv: {sec_to_mss(eq_sec)} ({sec_to_mss(eq_pace)}/mi)"
+              → EXACT STRING: "5K-equiv:" (not bolded, followed by colon)
+              → Shown only if race is NOT already a 5K
+              → Condition: abs(distance_m - 5000.0) >= 1.0
+
+   Line 215:  f"Surface: {row.get('surface') or '—'}"
+              → Label "Surface:" (not bolded)
+
+   Lines 216-217: [Optional if location exists]
+              f"Location: {row['location']}"
+              → Label "Location:" (not bolded)
+
+   Lines 218-219: [Optional if fatigued]
+              f"<i>Fatigued ({ordinal(row.get('race_seq', 0))} race of the day)</i>"
+              → Italicized text, no colon
+
+   Lines 220-221: [Optional if temperature exists]
+              f"Temp: {row['temp_c']:.0f}°C"
+              → Label "Temp:" (not bolded)
+
+   Lines 222-223: [Optional if event exists]
+              f"Event: {row['event']}"
+              → Label "Event:" (not bolded)
+
+   Lines 224-225: [Optional if note exists]
+              f"Note: {row['note']}"
+              → Label "Note:" (not bolded)
+
+3. SPECIFIC TEXT STRINGS:
+   - "5K-equiv:" at line 214 (EXACT)
+   - No "Fitness [distance]" format — not present on Races plot
+
+4. "DISTANCE FITNESS" REVERSAL:
+   - NOT APPLICABLE to Races plot (uses "5K-equiv:" format, not "Fitness ___")
+   - This issue appears ONLY on Race Distances plot (see below)
+
+5. PURPLE "PERFORMANCE FRONTIER" / "5K FRONTIER":
+   - NOT PRESENT on Races plot
+   - Only line on plot is CS-derived prediction line ("5K fitness")
+   - Color: CS_LINE (from src.plotting tokens, typically orange)
+   - Labeled in legend as "5K fitness" (line 554)
+   - NOT labeled in tooltip (hoverinfo='skip' on line 556)
+
+LEGENDS:
+--------
+
+6. LEGEND ENTRIES AND ORDER:
+   - All traces added via add_race_traces_filterable() (lines 349-401)
+   - Then add_pr_overlay_filterable() (lines 404-442)
+   - Then CS line added first (lines 552-557, legendrank=2000)
+
+   TRACE ORDER (as drawn):
+   1. CS line ("5K fitness", line 554) — legendrank=2000 (FIRST in legend)
+   2. Surface sentinels per SURFACE_LEGEND_ORDER:
+      - Road sentinel (line 381-384)
+      - Track sentinel (line 381-384)
+      - XC sentinel (line 381-384)
+      - Downhill sentinel (line 381-384)
+      - Unknown sentinel (line 381-384)
+   3. Per-bin race traces (no legend, lines 388-401)
+   4. PR overlay sentinel (line 436-442)
+
+   EXACT LEGEND ORDER IN RACES PLOT:
+   - "5K fitness" (CS line, legendrank=2000 sorts first)
+   - "Road" (surface sentinel)
+   - "Track" (surface sentinel)
+   - "XC" (surface sentinel)
+   - "Downhill" (surface sentinel)
+   - "Unknown" (surface sentinel)
+   - "PR effort" (PR overlay sentinel, legendrank=PR_LEGEND_RANK)
+
+7. DIAMOND MARKER ORDER ON RACES PLOT:
+   - Surface sentinels added in loop over SURFACE_LEGEND_ORDER (line 371)
+   - SURFACE_LEGEND_ORDER at line 168: ['Road', 'Track', 'XC', 'Downhill', 'Unknown']
+   - DIAMOND ORDER: Road, Track, XC, Downhill, Unknown
+
+8. LEGEND LABELS WITH "CONT. HILLS", "HILL REPS", "REP", "TEMPO", "INTERVALS":
+   - NONE PRESENT on Races plot
+   - Surface markers only: Road, Track, XC, Downhill, Unknown
+   - PR marker: "PR effort"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PLOT 2: RACE DISTANCES (race_pace_by_distance.html)
+====================================================
+
+TOOLTIPS:
+---------
+
+1. TOOLTIP CONSTRUCTION METHOD
+   - Python HTML string built per-race in function build_hover_anchored()
+   - File: src/plots/make_race_plots.py, lines 229-257
+   - Stored in dataframe column 'hover'
+   - Added to plot via customdata (line 848)
+   - Rendered client-side by smooth_build_js_by_dist function (lines 950-1034)
+
+2. TOOLTIP LINE-BY-LINE CONTENT (build_hover_anchored, lines 229-257):
+
+   Line 232:  f"Distance: {friendly_distance(row['distance_m'])}"
+              → Label "Distance:" (not bolded), followed by right-justified value
+
+   Line 233:  f"Time: {sec_to_mss_full(row['time_sec_original'])}"
+              → Label "Time:" (not bolded), followed by right-justified value
+
+   Line 237-238: [Conditional if race distance != anchor distance]
+              f"Projected to {friendly_distance(anchor_m)}: "
+              f"{sec_to_mss_full(proj_sec)}"
+              → Label "Projected to [distance]:" (not bolded)
+
+   Line 244:  f"Fitness prediction: {sec_to_mss_full(cs_sec)}"
+              → EXACT STRING: "Fitness prediction:" (not bolded, followed by colon)
+              → Only if cs_pred_sec is not NaN
+
+   Line 245:  f"Δ vs fitness: {delta:+.1f}s {side}"
+              → Label "Δ vs fitness:" (not bolded)
+
+   Line 246:  f"Surface: {row.get('surface') or '—'}"
+              → Label "Surface:" (not bolded)
+
+   Lines 247-248: [Optional if location exists]
+              f"Location: {row['location']}"
+
+   Lines 249-250: [Optional if fatigued]
+              f"<i>Fatigued ({ordinal(row.get('race_seq', 0))} race of the day)</i>"
+
+   Lines 251-252: [Optional if temperature exists]
+              f"Temp: {row['temp_c']:.0f}°C"
+
+   Lines 253-254: [Optional if event exists]
+              f"Event: {row['event']}"
+
+   Lines 255-256: [Optional if note exists]
+              f"Note: {row['note']}"
+
+3. SPECIFIC TEXT STRINGS:
+   - Line 214 (ALL RACES): "5K-equiv:" (NOT on Race Distances)
+   - Line 244 (RACE DISTANCES): "Fitness prediction:" (NOT on Races)
+   - Line 1041 (documentation): "5K fitness projected to that distance"
+
+4. "DISTANCE FITNESS" REVERSAL ISSUE FOUND:
+   
+   CURRENT FORMAT (build_hover_anchored, line 990 in smooth_build_js_by_dist):
+   "Fitness " + distLabel(panel.anchor_m)
+   Example: "Fitness half marathon", "Fitness 5K", "Fitness 400m"
+   
+   → REPORTED PROBLEM: Max wants "half marathon fitness", "5K fitness", "400m fitness"
+     (distance FIRST, then "fitness")
+   
+   Code locations (reversal needed in 2 places):
+   - Python: line 990 in JavaScript embedded string (smooth_build_js_by_dist)
+   - JavaScript: line 990 in smooth_build_js_by_dist function
+   
+   Current line 990:
+   html += '<div class="tt-row"><span>Fitness ' + distLabel(panel.anchor_m) + '</span><b>'
+   
+   Should be:
+   html += '<div class="tt-row"><span>' + distLabel(panel.anchor_m) + ' fitness</span><b>'
+
+5. PURPLE "PERFORMANCE FRONTIER" / "5K FRONTIER":
+   - NOT PRESENT on Race Distances plot
+   - Only line on each panel is CS-derived prediction line ("5K fitness")
+   - Color: CS_LINE (typically orange)
+   - Named "5K fitness" in legend (line 824)
+   - NOT labeled in tooltip (hoverinfo='skip' on line 826)
+
+LEGENDS:
+--------
+
+6. LEGEND ENTRIES AND ORDER:
+   - Each subplot adds traces in this order:
+     a) CS line first (line 822-829, legendrank=2000, only first subplot shows legend)
+     b) Surface race markers in SURFACE_LEGEND_ORDER loop (lines 834-853)
+     c) PR overlay per-panel (lines 869-878, showlegend=False per panel)
+     d) Off-range PR sentinel after all subplots (lines 923-932)
+
+   EXACT LEGEND ORDER IN RACE DISTANCES PLOT:
+   - "5K fitness" (CS line, legendrank=2000 sorts first, only first subplot)
+   - "Road" (surface, from first subplot with Road races)
+   - "Track" (surface, from first subplot with Track races)
+   - "XC" (surface, from first subplot with XC races)
+   - "Downhill" (surface, from first subplot with Downhill races)
+   - "Unknown" (surface, from first subplot with Unknown races)
+   - "PR effort" (PR sentinel, legendrank=PR_LEGEND_RANK, line 930)
+
+7. DIAMOND MARKER ORDER ON RACE DISTANCES PLOT:
+   - Surfaces added per-panel in loop over SURFACE_LEGEND_ORDER (line 834)
+   - SURFACE_LEGEND_ORDER at line 168: ['Road', 'Track', 'XC', 'Downhill', 'Unknown']
+   - show_legend = True only on first encounter per surface (line 839)
+   - DIAMOND ORDER: Road, Track, XC, Downhill, Unknown
+   
+   *** INCONSISTENCY CHECK ***
+   Races plot surface order (line 371): Road, Track, XC, Downhill, Unknown
+   Race Distances plot surface order (line 834): Road, Track, XC, Downhill, Unknown
+   → CONSISTENT across both plots
+
+8. LEGEND LABELS WITH "CONT. HILLS", "HILL REPS", "REP", "TEMPO", "INTERVALS":
+   - NONE PRESENT on Race Distances plot
+   - Surface markers only: Road, Track, XC, Downhill, Unknown
+   - PR marker: "PR effort"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+INCONSISTENCIES FOUND
+=====================
+
+1. TOOLTIP "5K-EQUIV" vs "FITNESS PREDICTION":
+   - Races plot (line 214): "5K-equiv: {time} ({pace}/mi)"
+   - Race Distances plot (line 244): "Fitness prediction: {time}"
+   → Different label, different format, serves same purpose
+   → No "per mile" pace shown on Race Distances
+
+2. "FITNESS [DISTANCE]" vs "[DISTANCE] FITNESS":
+   - Race Distances plot ONLY (line 990): Currently "Fitness half marathon"
+   - Max wants reversal to "[distance] fitness" format
+   - Exact location: src/plots/make_race_plots.py, line 990, in smooth_build_js_by_dist
+   
+3. LEGEND ORDER:
+   - Both plots: Same surface order (Road, Track, XC, Downhill, Unknown)
+   - Both plots: Same CS line rank (legendrank=2000, first)
+   - Both plots: Same PR marker rank
+   → CONSISTENT
+
+4. DIAMOND MARKER APPEARANCE:
+   - Races plot marker_size=9 (line 558, ALL_MARKER=9)
+   - Race Distances plot marker_size=8 (line 844)
+   → Intentional difference per design
+
+KEY FINDINGS FOR MAX
+====================
+
+TOOLTIP CONTENT DIFFERS:
+- "5K-equiv:" on Races plot (all-in-one 5K pace view)
+- "Fitness prediction:" on Race Distances plot (per-distance anchor view)
+
+"FITNESS [DISTANCE]" NEEDS REVERSAL:
+- Only on Race Distances plot
+- Fix location: make_race_plots.py, line 990
+- Current: "Fitness ' + distLabel(panel.anchor_m)"
+- Change to: "' + distLabel(panel.anchor_m) + ' fitness"
+
+DIAMOND LEGEND ORDER:
+- Road, Track, XC, Downhill, Unknown (IDENTICAL on both plots)
+- No inconsistency here
+
+NO PURPLE FRONTIER ON EITHER PLOT:
+- Only CS-derived prediction line (orange/"5K fitness")
+- Frontier lives on Fitness tab, not race plots
+- Per code comment (lines 542-543): "frontier — which also folds in TQ demonstrations — 
+  is introduced on the Fitness tab, where the downstream plots rely on it"
+
+NO TRAINING TYPE LEGEND ENTRIES:
+- "Cont. hills", "Hill reps", "Rep", "Tempo", "Intervals" not present
+- These appear on Fitness or Training plots, not Race plots

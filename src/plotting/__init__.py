@@ -9,6 +9,10 @@ from .tokens import (
 )
 from .formatters import (sec_to_mss, sec_to_mss_full, signed_sec, fmt_min,
                          route_label, route_paren)
+from .hover import (tt_row, tt_kv, tt_title, long_run_lines,
+                    hill_measured_lines, hill_rep_measured_lines,
+                    hill_cont_lines, hill_rep_lines)
+from .tokens import CAT_LABEL
 from .axes import (thin_yearly_ticks, yearly_x_axis_kwargs,
                    nice_time_interval, time_ticks_at_interval, nice_time_ticks,
                    TIME_LADDER)
@@ -29,6 +33,9 @@ __all__ = [
     'SURFACES', 'CAT_COLORS', 'TAG_COLORS', 'WEATHER_CF_COLORS', 'CONDITIONS_CF_COLORS',
     'sec_to_mss', 'sec_to_mss_full', 'signed_sec', 'fmt_min',
     'route_label', 'route_paren',
+    'tt_row', 'tt_kv', 'tt_title', 'long_run_lines', 'CAT_LABEL',
+    'hill_measured_lines', 'hill_rep_measured_lines',
+    'hill_cont_lines', 'hill_rep_lines',
     'thin_yearly_ticks', 'yearly_x_axis_kwargs',
     'nice_time_interval', 'time_ticks_at_interval', 'nice_time_ticks', 'TIME_LADDER',
     'pr_marker', 'is_pr_eligible', 'marker_half_px',

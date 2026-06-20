@@ -44,8 +44,8 @@ from src.shared.cs_projection import load_cs_outputs, project_races_to_5k_pace
 from src.shared.performance_frontier import standard_demos, build_frontier_band
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             sec_to_mss, sec_to_mss_full, SURFACES, rgba, GRID,
-                            FRONTIER_LINE, CAT_COLORS, yearly_x_axis_kwargs,
-                            nice_time_ticks, marker_half_px)
+                            FRONTIER_LINE, CAT_COLORS, CAT_LABEL, yearly_x_axis_kwargs,
+                            nice_time_ticks, marker_half_px, tt_title)
 
 
 DEFAULT_IN_DIR = str(DATA_DIR)
@@ -234,7 +234,7 @@ def main():
             x=frontier['date'], y=frontier['frontier_pace_min'],
             mode='lines', line=dict(color=FRONTIER_LINE, width=2),
             connectgaps=False,
-            name='Performance frontier (5K)', hoverinfo='skip',
+            name='Frontier 5K pace', hoverinfo='skip',
             showlegend=True, legendrank=1))
     # Race diamonds (bias-corrected). Colors derived from canonical SURFACES
     # hex tokens with 0.7 alpha so a re-skin only edits one place. Each
@@ -275,10 +275,10 @@ def main():
         equiv_time_sec = equiv_pace_sec * 5000.0 / METERS_PER_MILE
         equiv_line = ''
         if (not is_5k) or is_xc or has_corr:
-            equiv_line = (f"<div>5K-equiv: <b>{sec_to_mss(equiv_time_sec)}</b> "
+            equiv_line = (f"<div>5K equivalent: <b>{sec_to_mss(equiv_time_sec)}</b> "
                           f"<span class='tt-mute'>"
                           f"({sec_to_mss(equiv_pace_sec)}/mi)</span></div>")
-        return (f"<div>{ev} <span class='tt-mute'>({row['surface']})</span></div>"
+        return (f"<div><b>{ev}</b> <span class='tt-mute'>({row['surface']})</span></div>"
                 f"<div>{int(dist)}m in "
                 f"<b>{sec_to_mss_full(t_orig)}</b> "
                 f"<span class='tt-mute'>({pace_raw}/mi)</span></div>"
@@ -331,7 +331,7 @@ def main():
             customdata=inner_html,
             hoverinfo='skip',
             legendgroup='races',
-            legendgrouptitle_text='Race pace (5K-equiv)',
+            legendgrouptitle_text='Race pace (5K equivalent)',
             meta={'snap_eligible': True}))
 
     # Frontier workouts: EVERY non-race demonstration faster than the CS line,
@@ -339,9 +339,13 @@ def main():
     # colors/sizes, matching legend entries) under a "Frontier workouts"
     # legend group — small dots alongside the larger race diamonds. Binding
     # status (defines the envelope somewhere) is noted in the hover.
-    FRONTIER_CATS = [('interval', 'Interval'), ('tempo', 'Tempo'),
-                     ('rep', 'Rep'), ('continuous_fartlek', 'Fartlek'),
-                     ('long', 'Long'), ('hill_cont', 'Cont. hills')]
+    # Legend labels + order: shared canonical labels, Tempo above Intervals.
+    FRONTIER_CATS = [('tempo', CAT_LABEL['tempo']),
+                     ('interval', CAT_LABEL['interval']),
+                     ('rep', CAT_LABEL['rep']),
+                     ('continuous_fartlek', CAT_LABEL['continuous_fartlek']),
+                     ('long', CAT_LABEL['long']),
+                     ('hill_cont', CAT_LABEL['hill_cont'])]
 
     def _disp_cat(row):
         if row['src'] == 'long_run':
@@ -350,14 +354,24 @@ def main():
             return 'hill_cont'
         return row['category']
 
+    def _frontier_title(row):
+        # Tooltip title matches the dedicated tab: "Long run" / "Intervals" /
+        # "Continuous hills" / "Hill repeats" + the route/location parenthetical.
+        dc = _disp_cat(row)
+        if dc == 'long':
+            label = 'Long run'
+        elif row['src'] == 'hill_rep':
+            label = CAT_LABEL['hill_rep']
+        else:
+            label = CAT_LABEL.get(dc, str(row['src']).title())
+        return tt_title(label, row.get('display_name'), row.get('city_state'))
+
     def _frontier_inner(row):
-        label = dict(FRONTIER_CATS).get(_disp_cat(row), str(row['src']).title())
-        note = ' <span class="tt-mute">(sets the frontier)</span>' if row['binding'] else ''
         pace_sec = float(row['pace_min']) * 60
         t5k_sec = pace_sec * 5000.0 / METERS_PER_MILE
-        return (f"<div>{label}{note}</div>"
+        return (f"<div>{_frontier_title(row)}</div>"
                 f"<div>{row['detail']}</div>"
-                f"<div>5K-equiv: <b>{sec_to_mss(t5k_sec)}</b> "
+                f"<div>5K equivalent: <b>{sec_to_mss(t5k_sec)}</b> "
                 f"<span class='tt-mute'>({sec_to_mss(pace_sec)}/mi)</span></div>")
 
     if len(front_workouts):
@@ -419,6 +433,7 @@ def main():
         return round(float(v) * 60) if pd.notna(v) else None
 
     cs_pace_med  = [_round_pace(v) for v in summary_plot['cs_pace_med']]
+    p5k_fit = [_round_pace(v) for v in summary_plot['p5k_implied_min']]
     fr_lo = [_round_pace(v) for v in front_lo['frontier_pace_min']]
     fr_hi = [_round_pace(v) for v in front_hi['frontier_pace_min']]
 
@@ -442,6 +457,7 @@ def main():
     payload = {
         'first_day': first_day,
         'cs_med':    cs_pace_med,
+        'p5k':       p5k_fit,
         'fr_lo':     fr_lo,
         'fr_hi':     fr_hi,
         'frontier':  frontier_sec,
@@ -474,16 +490,20 @@ function buildTooltip(day, isSnap, pointHtml) {
   // Date header in both modes — see scaffold note in cursor_tooltip.js.
   html += '<div class="tt-date">' + dateLabel(day) + '</div>';
 
-  // Section 1: per-day prediction summary — frontier first (the graph's
-  // primary object), CS median as faint context.
+  // Section 1: per-day prediction summary — every right-justified value bold,
+  // ordered to match the legend: performance frontier (the graph's primary
+  // object), its 95% band, the CS-implied 5K fitness, then the asymptotic CS.
   html += '<div class="tt-section">';
   if (P.frontier && P.frontier[idx] != null) {
-    html += '<div class="tt-row"><span>5K frontier</span><b>' + paceMSS(P.frontier[idx]) + '/mi</b></div>';
+    html += '<div class="tt-row"><span>Frontier 5K pace</span><b>' + paceMSS(P.frontier[idx]) + '/mi</b></div>';
   }
   if (P.fr_lo && P.fr_lo[idx] != null && P.fr_hi && P.fr_hi[idx] != null) {
-    html += '<div class="tt-row"><span>95% band</span>' + paceMSS(P.fr_lo[idx]) + '–' + paceMSS(P.fr_hi[idx]) + '/mi</div>';
+    html += '<div class="tt-row"><span>95% band</span><b>' + paceMSS(P.fr_lo[idx]) + '–' + paceMSS(P.fr_hi[idx]) + '/mi</b></div>';
   }
-  html += '<div class="tt-row"><span>Projected Critical Speed</span>' + paceMSS(P.cs_med[idx]) + '/mi</div>';
+  if (P.p5k && P.p5k[idx] != null) {
+    html += '<div class="tt-row"><span>5K fitness</span><b>' + paceMSS(P.p5k[idx]) + '/mi</b></div>';
+  }
+  html += '<div class="tt-row"><span>Projected Critical Speed</span><b>' + paceMSS(P.cs_med[idx]) + '/mi</b></div>';
   html += '</div>';
 
   // Section 2: race details. Smooth = nearest within window.

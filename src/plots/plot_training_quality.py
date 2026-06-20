@@ -35,11 +35,14 @@ from src.shared.performance_frontier import standard_demos, build_frontier
 from src.plotting import widgets
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box, route_paren,
-                            sec_to_mss, fmt_min, CAT_COLORS, GRID, CS_LINE,
+                            sec_to_mss, fmt_min, CAT_COLORS, CAT_LABEL, GRID, CS_LINE,
                             FRONTIER_LINE,
                             SURFACES, GAP_BREAK_DAYS, adaptive_gauss_smoother,
                             yearly_x_axis_kwargs, nice_time_ticks,
-                            nice_time_interval, time_ticks_at_interval)
+                            nice_time_interval, time_ticks_at_interval,
+                            tt_kv, tt_title, long_run_lines,
+                            hill_cont_lines, hill_rep_lines,
+                            hill_rep_measured_lines)
 
 # Right-rail width reserved next to the plot (sizes margin.r; the long-run
 # model table that used to live there is gone — the margin keeps the legend
@@ -69,13 +72,10 @@ GAUSS_MAX_BW_DAYS  = 400
 GRID_FREQ          = '7D'
 
 # ---------- visual config ----------
-# Workout categories only — hill categories are runtime-derived per loop
-# (hill_<loop>, informational grouping only) and render as one combined
-# trace with their own hover title, so they never need registered labels.
-CAT_LABEL = {
-    'interval': 'Interval', 'tempo': 'Tempo', 'rep': 'Rep',
-    'continuous_fartlek': 'Fartlek',
-}
+# Category display labels are the shared canonical CAT_LABEL (src.plotting.tokens)
+# so legends and tooltips read identically across the Workouts/Training/Fitness
+# tabs. Hill categories are runtime-derived per loop (hill_<loop>, informational
+# grouping only) and render as one combined trace with their own hover title.
 
 
 # ---------- pipeline ----------
@@ -110,12 +110,6 @@ CAT_LABEL = {
 # route label/paren now shared (src.plotting.formatters.route_paren).
 
 
-# Tooltip-only labels (legend uses CAT_LABEL — keeps abbreviated form there).
-TOOLTIP_TITLE = {
-    'interval': 'Intervals',
-}
-
-
 def residual_line(raw, corrected):
     """One tooltip line for the residual pair. When the correction is a
     no-op at display precision, collapse to a single 'Residual:' figure."""
@@ -128,8 +122,8 @@ def residual_line(raw, corrected):
 def workout_hover(r, single_type=False):
     cat = r['category']
     # Single workout type in the data (watch continuous-fartlek case) -> "Workout".
-    title = 'Workout' if single_type else str(TOOLTIP_TITLE.get(cat, CAT_LABEL.get(cat, cat)))
-    title += route_paren(r.get('display_name'), r.get('city_state'))
+    label = 'Workout' if single_type else str(CAT_LABEL.get(cat, cat))
+    title = tt_title(label, r.get('display_name'), r.get('city_state'))
     xc_note = f' <span style="color:{SURFACES["XC"]}">(XC-corrected)</span>' if r.get('xc_corrected') else ''
     rep_count = int(r['rep_count'])
     rep_dist = int(r['rep_dist'])
@@ -148,86 +142,52 @@ def workout_hover(r, single_type=False):
     if pd.notna(r['rest_per_mile']) and r['rest_per_mile'] > 0:
         body += f", rest {sec_to_mss(r['rest_per_mile'])}/mi"
     parts = [
-        f"<b>{title}</b>{xc_note}",
+        f"{title}{xc_note}",
         body,
-        f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
-        f"<b>5K fitness:</b> {fmt_min(r['p5k_cs_min'])}/mi",
+        f"<b>5K-equivalent pace:</b> {fmt_min(r['pos_min'])}/mi",
         residual_line(r['raw_resid'], r['resid']),
     ]
     return "<br>".join(p for p in parts if p)
 
 
-def lr_correction_line(r):
-    """Secondary descriptor for a watch/rule-corrected long run — same role
-    as the workouts' 'Watch:' measured_line. Empty string when the row is
-    uncorrected. The primary Distance/Pace line shows the corrected values
-    (what the projection consumed); this line keeps the logged figures
-    visible and says where the correction came from."""
-    logged = (f"logged {r['miles']:.1f}mi @ "
-              f"{sec_to_mss(r['recovery_pace_sec_per_mi'])}/mi")
-    if r.get('lr_watch'):
-        pause = ''
-        if pd.notna(r.get('pause_s')) and r['pause_s'] >= 30:
-            pause = f" · {sec_to_mss(r['pause_s'])} paused"
-        return f"<b>Watch:</b> {logged}{pause}"
-    if r.get('lr_rule'):
-        return f"<b>Mislogged route:</b> {logged}"
-    return ''
-
-
 def long_run_hover(r):
-    title = f"Long{route_paren(r.get('display_name'), r.get('city_state'))}"
-    # Corrected rows lead with the corrected figures — those are what the
-    # P5K projection below consumed; the logged values move to the
-    # correction line.
-    if pd.notna(r.get('corr_miles')):
-        dist_pace = (f"<b>Distance:</b> {r['corr_miles']:.1f}mi   "
-                     f"<b>Pace:</b> {sec_to_mss(r['corr_pace_sec_per_mi'])}/mi")
-    else:
-        dist_pace = (f"<b>Distance:</b> {r['miles']:.1f}mi   "
-                     f"<b>Pace:</b> {sec_to_mss(r['recovery_pace_sec_per_mi'])}/mi")
+    # Title + distance/pace/paused lines come from the shared canonical builder
+    # (identical to the Long Runs and Fitness tabs); the model-driven Training
+    # tab adds the pause-adjusted distance line. The legacy "Watch:" /
+    # "Mislogged route:" descriptor lines were removed — Training shows only the
+    # plotted distance/pace, the pause-adjusted projection distance, and (when a
+    # correction moved it materially) the logged original.
+    title = tt_title('Long run', r.get('display_name'), r.get('city_state'))
     parts = [
-        f"<b>{title}</b>",
-        dist_pace,
-        lr_correction_line(r),
-        f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
-        f"<b>5K fitness:</b> {fmt_min(r['p5k_cs_min'])}/mi",
+        title,
+        *long_run_lines(r, pause_adjusted=True, show_logged=False),
+        f"<b>5K-equivalent pace:</b> {fmt_min(r['pos_min'])}/mi",
         # Race-equivalent raw vs model-adjusted (phys+cov, level untouched).
         residual_line(r['raw_resid'], r['resid']),
     ]
     return "<br>".join(p for p in parts if p)
 
 
-def hill_rep_hover(r):
-    title = f"Hill repeats{route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}"
-    n = int(r['rep_count'])
-    word = 'rep' if n == 1 else 'reps'
-    rt = float(r['rep_time_min'])
-    rt_str = f"{int(rt)} min" if rt == int(rt) else f"{int(rt)}:{int(round((rt-int(rt))*60)):02d}"
+def hill_rep_hover(r, measured=None):
+    # Descriptive body shared with the Workouts (source-of-truth) and Fitness
+    # tabs; Training adds the displayed 5K-equivalent (its plotted pos_min) and
+    # the training-quality residual.
+    title = tt_title('Hill repeats', r.get('loop_display_name'), r.get('loop_city_state'))
     parts = [
-        f"<b>{title}</b>",
-        f"{n} {word} × {rt_str}",
-        f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
-        f"<b>5K fitness:</b> {fmt_min(r['p5k_cs_min'])}/mi",
+        title,
+        *hill_rep_lines(r, measured),
+        f"<b>5K-equivalent pace:</b> {fmt_min(r['pos_min'])}/mi",
         residual_line(r['raw_resid'], r['resid']),
     ]
     return "<br>".join(p for p in parts if p)
 
 
 def hill_hover(r):
-    title = f"Continuous hills{route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}"
-    nreps = int(r['nreps'])
-    loops_word = 'loop' if nreps == 1 else 'loops'
-    ft_gained = int(round(float(r.get('ft_gained') or 0)))
-    time_part = (f"{sec_to_mss(r['t_eff'])} total"
-                 if r.get('watch_measured')
-                 else f"{int(r['session_min'])} min total")
+    title = tt_title('Continuous hills', r.get('loop_display_name'), r.get('loop_city_state'))
     parts = [
-        f"<b>{title}</b>",
-        f"{nreps} {loops_word}, {ft_gained} ft gained, {time_part}",
-        f"<b>Actual pace:</b> {sec_to_mss(r['actual_pace_s'])}/mi",
-        f"<b>P5K projected:</b> {fmt_min(r['p5k_min'])}/mi   "
-        f"<b>5K fitness:</b> {fmt_min(r['p5k_cs_min'])}/mi",
+        title,
+        *hill_cont_lines(r),
+        f"<b>5K-equivalent pace:</b> {fmt_min(r['pos_min'])}/mi",
         residual_line(r['raw_resid'], r['resid']),
     ]
     return "<br>".join(p for p in parts if p)
@@ -247,6 +207,11 @@ def main():
     # project_hill_reps) feed TQ like any other quality workout. Pre-watch reps
     # (no trustworthy gain -> p5k_min NaN) and snow days do not.
     hill_reps = project_hill_reps(cs, epoch)
+    # Watch per-rep totals (shared with the Workouts + Fitness tabs) — used only
+    # for the headline "ft gained" so the elevation matches Workouts. The raw
+    # per-loop / per-rep "Watch:" breakdown stays Workouts-only (watch_detail),
+    # matching the non-hill measured_line handling.
+    hr_measured = hill_rep_measured_lines()
     # Record why each quality workout is excluded from Training so the Workouts
     # plot can annotate it (the slow-"outlier" sessions show only there). Snow
     # is a category flag here; outliers are added during the prune below.
@@ -338,14 +303,17 @@ def main():
     workouts = workouts.copy()
     rep_w = hill_w = lr_w = hr_w = 1.0
     thr = float('nan')
-    pruned_w_idx, pruned_h_idx, pruned_lr_idx = set(), set(), set()
+    pruned_w_idx, pruned_h_idx = set(), set()
     pruned_hr_idx = set()
     print(f'\n--- Track-relative prune (one-sided, '
           f'median+{PRUNE_SIGMA}*MAD on detrended residuals) ---')
     for it in range(12):
         w_keep = workouts.drop(index=list(pruned_w_idx)).copy()
         h_keep = hills.drop(index=list(pruned_h_idx)).copy()
-        lr_keep = long_runs.drop(index=list(pruned_lr_idx)).copy()
+        # Long runs are never pruned (June 2026): they contribute to the track
+        # fit and the MAD threshold, but the outlier machinery for long runs was
+        # removed — the lone historical outlier fell within the point cloud.
+        lr_keep = long_runs.copy()
         hr_keep = hill_reps.drop(index=list(pruned_hr_idx)).copy()
         # No class constants anywhere: every point on this graph AND the
         # Workouts tab is the same number — the best attempt at predicting
@@ -421,6 +389,9 @@ def main():
         med = float(np.median(vals))
         thr = med + PRUNE_SIGMA * 1.4826 * float(np.median(np.abs(vals - med)))
         over = detrended > thr
+        # Long runs are exempt from pruning: they stay in the fit but are never
+        # flagged as outliers (the long-run outlier machinery was removed).
+        over &= combined['src'].to_numpy() != 'lr'
         if not over.any():
             print(f'  Iteration {it+1}: stable (thr +{thr:.1f} vs track). Done.')
             break
@@ -436,15 +407,6 @@ def main():
                 print(f'    W  {r["date"].date()}  {r["category"]:<20} '
                       f'vs-track={detrended[pos]:+5.1f}  raw={r["raw_resid"]:+5.1f}  '
                       f'pace={int(r["pace_per_mile"])}s/mi')
-            elif row['src'] == 'lr':
-                r = long_runs.loc[row['orig']]
-                pruned_lr_idx.add(row['orig'])
-                tq_excluded.append({'date': r['date'], 'reason': 'outlier',
-                                    'resid': round(float(detrended[pos]), 1),
-                                    'src': 'long_run'})
-                print(f'    LR {r["date"].date()}  {r["location"]:<20} '
-                      f'vs-track={detrended[pos]:+5.1f}  raw={r["raw_resid"]:+5.1f}  '
-                      f'miles={r["miles"]:.1f}')
             elif row['src'] == 'hr':
                 r = hill_reps.loc[row['orig']]
                 pruned_hr_idx.add(row['orig'])
@@ -464,7 +426,7 @@ def main():
 
     workouts = workouts.drop(index=list(pruned_w_idx)).copy()
     hills = hills.drop(index=list(pruned_h_idx)).copy()
-    long_runs = long_runs.drop(index=list(pruned_lr_idx)).copy()
+    long_runs = long_runs.copy()
     hill_reps = hill_reps.drop(index=list(pruned_hr_idx)).copy()
     workouts['resid'] = workouts['raw_resid']
     long_runs['resid'] = long_runs['raw_resid'] - long_runs['model_adj']
@@ -551,10 +513,11 @@ def main():
     # demonstration of 5K capability at p5k_corr_min. run_plots.sh runs this
     # script before bayes_cs_plot so the artifact is fresh.
     def _lr_detail(r):
-        name = r.get('display_name')
-        if pd.isna(name) or not str(name).strip():
-            name = r.get('location', '')
-        return f"{r['miles']:.1f}mi {name}"
+        # The Fitness tab renders this verbatim, so emit the SAME canonical
+        # distance/pace/paused (+ pause-adjusted) lines the Long Runs and
+        # Training tabs build from the shared helper — "match exactly". Like
+        # Training, suppress the "Logged" original line (model-driven tab).
+        return '<br>'.join(long_run_lines(r, pause_adjusted=True, show_logged=False))
 
     def _wk_detail(r):
         # The Fitness tab shows this as the workout's only descriptor, so use
@@ -566,23 +529,42 @@ def main():
             return s
         rc, rd = int(r['rep_count']), int(r['rep_dist'])
         return f"{rd}m" if rc == 1 else f"{rc} × {rd}m"
+
+    def _loc(frame, name_col, city_col):
+        # display_name / city_state for the Fitness tooltip title (so workout
+        # and long-run dots there read "Intervals (Greenlake)" / "Long run
+        # (route, city)" like the dedicated tabs). Hills carry loop_* columns.
+        n = frame[name_col] if name_col in frame else pd.Series('', index=frame.index)
+        c = frame[city_col] if city_col in frame else pd.Series('', index=frame.index)
+        return n.astype(str), c.astype(str)
+
+    wk_n, wk_c = _loc(workouts, 'display_name', 'city_state')
+    lr_n, lr_c = _loc(long_runs, 'display_name', 'city_state')
+    h_n, h_c = _loc(hills, 'loop_display_name', 'loop_city_state')
+    hr_n, hr_c = _loc(hill_reps, 'loop_display_name', 'loop_city_state')
     corpus = pd.concat([
         pd.DataFrame({'date': workouts['date'], 'src': 'workout',
                       'category': workouts['category'],
                       'p5k_corr_min': workouts['pos_min'],
+                      'display_name': wk_n, 'city_state': wk_c,
                       'detail': [_wk_detail(r) for _, r in workouts.iterrows()]}),
         pd.DataFrame({'date': long_runs['date'], 'src': 'long_run',
                       'category': 'long',
                       'p5k_corr_min': long_runs['pos_min'],
+                      'display_name': lr_n, 'city_state': lr_c,
                       'detail': [_lr_detail(r) for _, r in long_runs.iterrows()]}),
         pd.DataFrame({'date': hills['date'], 'src': 'hill',
                       'category': hills['category'],
                       'p5k_corr_min': hills['pos_min'],
-                      'detail': hills['workout_raw'].astype(str)}),
+                      'display_name': h_n, 'city_state': h_c,
+                      'detail': ['<br>'.join(hill_cont_lines(r))
+                                 for _, r in hills.iterrows()]}),
         pd.DataFrame({'date': hill_reps['date'], 'src': 'hill_rep',
                       'category': 'hillrep_' + hill_reps['loop'].astype(str),
                       'p5k_corr_min': hill_reps['pos_min'],
-                      'detail': hill_reps['workout_raw'].astype(str)}),
+                      'display_name': hr_n, 'city_state': hr_c,
+                      'detail': ['<br>'.join(hill_rep_lines(r, hr_measured))
+                                 for _, r in hill_reps.iterrows()]}),
     ], ignore_index=True).sort_values('date').reset_index(drop=True)
     corpus_csv = DATA_DIR / 'training_quality_corpus.csv'
     corpus.to_csv(corpus_csv, index=False)
@@ -646,10 +628,11 @@ def main():
                           - front_plot['p5k_implied_min'].to_numpy(float)) * 60.0)
     fig.add_trace(go.Scatter(
         x=front_plot['date'], y=front_norm,
-        mode='lines', name='Performance frontier',
+        mode='lines', name='Frontier 5K pace',
         line=dict(color=FRONTIER_LINE, width=2),
         connectgaps=False,
         hoverinfo='skip',
+        legendrank=1,  # frontier listed first (canonical order across tabs)
         meta={'raw_y': front_raw, 'norm_y': front_norm},
     ))
 
@@ -660,10 +643,11 @@ def main():
     # tooltip (CS pace + smoother trend + nearest session).
     # Single-type collapse: one workout/hill category present (watch CF case)
     # -> one generic "Workout" legend line. Category + CS analysis unchanged.
-    present_cats = [c for c in ['interval', 'tempo', 'rep', 'continuous_fartlek']
+    # Tempo above Intervals (intensity order, consistent across tabs).
+    present_cats = [c for c in ['tempo', 'interval', 'rep', 'continuous_fartlek']
                     if not workouts[workouts['category'] == c].empty]
     single_type = (len(present_cats) + (1 if len(hills) else 0)) == 1
-    for cat in ['interval', 'tempo', 'rep', 'continuous_fartlek']:
+    for cat in ['tempo', 'interval', 'rep', 'continuous_fartlek']:
         sub = workouts[workouts['category'] == cat]
         if sub.empty:
             continue
@@ -709,7 +693,7 @@ def main():
         fig.add_trace(go.Scatter(
             x=hills['date'], y=norm_y,
             mode='markers',
-            name=f'Cont. hills (n={len(hills)})',
+            name=f'Continuous hills (n={len(hills)})',
             marker=dict(color=CAT_COLORS['hill_cont'], size=7,
                         line=dict(color='rgba(255,255,255,0.4)', width=0.5),
                         opacity=0.85),
@@ -720,13 +704,13 @@ def main():
 
     # Hill repeats: watch-era only (the projected ones), their own trace.
     if len(hill_reps):
-        cd = [hill_rep_hover(r) for _, r in hill_reps.iterrows()]
+        cd = [hill_rep_hover(r, hr_measured) for _, r in hill_reps.iterrows()]
         raw_y = _y_safe(hill_reps['pos_min'].values)
         norm_y = _y_safe(hill_reps['pos_norm'].values)
         fig.add_trace(go.Scatter(
             x=hill_reps['date'], y=norm_y,
             mode='markers',
-            name=f'Hill reps (n={len(hill_reps)})',
+            name=f'Hill repeats (n={len(hill_reps)})',
             marker=dict(color=CAT_COLORS['hill_rep'], size=7,
                         line=dict(color='rgba(255,255,255,0.4)', width=0.5),
                         opacity=0.85),
@@ -781,7 +765,7 @@ def main():
                     b=28),
         hovermode=False,
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
-                    groupclick='toggleitem', font=dict(size=11)),
+                    groupclick='toggleitem'),
         xaxis=yearly_x_axis_kwargs(
             daily_floor(),
             combined['date'].max() + pd.Timedelta(days=30),
@@ -806,6 +790,17 @@ def main():
     cs_pace_per_day = np.interp(target_days_2016,
                                 cs['day'].to_numpy(),
                                 cs['p5k_implied_min'].to_numpy())
+
+    # Performance-frontier pace per day for the tooltip top section (the purple
+    # line is hoverinfo='skip', so it has no native hover — surface it here).
+    # NaN outside the frontier's demonstrated range so the row hides there.
+    _fr = frontier.dropna(subset=['frontier_pace_min'])
+    front_pace_per_day = (
+        np.interp(target_days_2016,
+                  (_fr['date'] - epoch).dt.days.to_numpy(float),
+                  _fr['frontier_pace_min'].to_numpy(float),
+                  left=np.nan, right=np.nan)
+        if len(_fr) else np.full(len(target_days_2016), np.nan))
 
     # Smoother pace per day. Linear interp between 7-day grid points, but
     # if either bracketing grid point is NaN (gap), the result is NaN.
@@ -833,7 +828,7 @@ def main():
                          'html': hill_hover(r)})
     for _, r in hill_reps.iterrows():
         sessions.append({'day': int((r['date'] - js_epoch).days),
-                         'html': hill_rep_hover(r)})
+                         'html': hill_rep_hover(r, hr_measured)})
     sessions.sort(key=lambda s: s['day'])
 
     first_day = int((all_days[0] - js_epoch).days)
@@ -841,6 +836,8 @@ def main():
 
     payload = {
         'first_day': first_day,
+        'frontier':  [None if np.isnan(v) else round(float(v), 4)
+                      for v in front_pace_per_day],
         'cs_pace':   [round(float(v), 4) for v in cs_pace_per_day],
         'smoother':  [None if np.isnan(v) else round(float(v), 4)
                       for v in smoother_per_day],
@@ -861,11 +858,6 @@ function buildTooltip(day, isSnap, pointHtml) {
     var m = Math.floor(s / 60), r = s % 60;
     return m + ':' + (r < 10 ? '0' : '') + r;
   }
-  function fmtDiff(s) {
-    if (s === null) return '—';
-    var sign = s > 0 ? '+' : (s < 0 ? '' : '');
-    return sign + s + 's/mi';
-  }
   function dateLabel(d) {
     var dt = new Date(d * 86400000);
     var y = dt.getUTCFullYear();
@@ -876,19 +868,20 @@ function buildTooltip(day, isSnap, pointHtml) {
 
   var cs   = P.cs_pace[idx];
   var sm   = P.smoother[idx];
-  var diff = (sm !== null && sm !== undefined) ? Math.round((sm - cs) * 60) : null;
 
   var html = '';
   html += '<div class="tt-date">' + dateLabel(day) + '</div>';
 
-  // Section 1: trend info — race fitness from CS, training-quality
+  // Section 1: trend info — performance frontier (the purple line, listed
+  // first to match the legend), race fitness from CS, training-quality
   // smoother, and their difference at this date.
   html += '<div class="tt-section">';
+  var fr = P.frontier[idx];
+  if (fr !== null && fr !== undefined && !isNaN(fr)) {
+    html += '<div class="tt-row"><span>Frontier 5K pace</span><b>' + fmtMin(fr) + '/mi</b></div>';
+  }
   html += '<div class="tt-row"><span>5K fitness</span><b>' + fmtMin(cs) + '/mi</b></div>';
   html += '<div class="tt-row"><span>Training quality</span><b>' + fmtMin(sm) + '/mi</b></div>';
-  if (diff !== null) {
-    html += '<div class="tt-row"><span>Diff</span><b>' + fmtDiff(diff) + '</b></div>';
-  }
   html += '</div>';
 
   // Section 2: session details. Smooth = nearest within window.
@@ -992,7 +985,7 @@ function buildTooltip(day, isSnap, pointHtml) {
     routes_panel = ''
     if show_box:
         body = (
-            widgets.title('Long-run adjustments')
+            widgets.title('Long run adjustments')
             + widgets.subtitle(
                 'Subtracted to reach each run\'s flat sea-level '
                 'race-equivalent pace; pinned from combined recovery and '

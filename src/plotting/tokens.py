@@ -53,6 +53,21 @@ CAT_COLORS = {
     'hill_rep':           '#1ABC9C',  # vivid teal (CF muted teal #A2C4C9 → vivid)
 }
 
+# Canonical category display labels — the SINGLE source of truth shared by
+# every tab's legend and tooltip (Workouts, Training, Fitness). Plural where a
+# count reads naturally; keep these in sync so "Continuous hills" / "Hill
+# repeats" / "Repetitions" never diverge per tab again. The 'long' entry is the
+# Fitness frontier legend label; the long-run tooltip TITLE is "Long run".
+CAT_LABEL = {
+    'interval':           'Intervals',
+    'tempo':              'Tempo',
+    'rep':                'Repetitions',
+    'continuous_fartlek': 'Fartlek',
+    'long':               'Long',
+    'hill_cont':          'Continuous hills',
+    'hill_rep':           'Hill repeats',
+}
+
 # --- Qualitative-trends weather/conditions tag colors. The raw hexes are the
 #     conditional-formatting cell tints from the source running log, kept here
 #     as the single re-skin point. The Weather panel remaps the light

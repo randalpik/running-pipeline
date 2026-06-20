@@ -56,7 +56,7 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             SURFACES, CS_LINE, CS_LINE_WIDTH, GRID,
                             pr_marker, is_pr_eligible, marker_half_px,
                             PR_LEGEND_NAME, PR_LEGEND_RANK,
-                            yearly_x_axis_kwargs, nice_time_ticks)
+                            yearly_x_axis_kwargs, nice_time_ticks, tt_kv)
 from src.plotting import widgets
 
 _PLOTS_DIR = Path(__file__).resolve().parent
@@ -165,7 +165,9 @@ def friendly_distance(d):
 # Surface palette + legend order. Colors come from src.plotting.tokens.SURFACES
 # (canonical hex). pr_marker / is_pr_eligible / PR_LEGEND_* live in
 # src.plotting.markers.
-SURFACE_LEGEND_ORDER = ['Road', 'Track', 'XC', 'Downhill', 'Unknown']
+# Canonical surface legend order, identical on both race plots. Downhill is
+# pinned LAST (Unknown, if it ever appears, tucks in just before it).
+SURFACE_LEGEND_ORDER = ['Track', 'Road', 'XC', 'Unknown', 'Downhill']
 
 
 def compute_pr_mask(df, *, value_col, date_col='date'):
@@ -203,57 +205,59 @@ def ordinal(n):
 
 def build_hover(row):
     # The smart-spikeline scaffold prepends the date itself in smooth
-    # mode, so this content focuses on what's race-specific.
-    parts = [f"Distance: {friendly_distance(row['distance_m'])}",
-             f"Time: {sec_to_mss_full(row['time_sec_original'])}"]
+    # mode, so this content focuses on what's race-specific. Bold-label
+    # rows (tt_kv) match every other tab's detail block.
+    parts = [tt_kv('Distance', friendly_distance(row['distance_m'])),
+             tt_kv('Time', sec_to_mss_full(row['time_sec_original']))]
     # Show the projected 5K-equivalent unless the race already IS a 5K
     is_5k = abs(float(row['distance_m']) - 5000.0) < 1.0
     if not is_5k:
         eq_sec = float(row['time_norm_sec'])
         eq_pace = float(row['pace_norm_sec'])
-        parts.append(f"5K-equiv: {sec_to_mss(eq_sec)} ({sec_to_mss(eq_pace)}/mi)")
-    parts.append(f"Surface: {row.get('surface') or '—'}")
+        parts.append(tt_kv('5K equivalent',
+                           f"{sec_to_mss(eq_sec)} ({sec_to_mss(eq_pace)}/mi)"))
+    parts.append(tt_kv('Surface', row.get('surface') or '—'))
     if row.get('location') and str(row['location']) != 'nan':
-        parts.append(f"Location: {row['location']}")
+        parts.append(tt_kv('Location', row['location']))
     if row.get('fatigued'):
         parts.append(f"<i>Fatigued ({ordinal(row.get('race_seq', 0))} race of the day)</i>")
     if row.get('temp_c') is not None and not pd.isna(row.get('temp_c')):
-        parts.append(f"Temp: {row['temp_c']:.0f}°C")
+        parts.append(tt_kv('Temp', f"{row['temp_c']:.0f}°C"))
     if row.get('event') and str(row['event']) != 'nan':
-        parts.append(f"Event: {row['event']}")
+        parts.append(tt_kv('Event', row['event']))
     if row.get('note') and str(row['note']) != 'nan':
-        parts.append(f"Note: {row['note']}")
+        parts.append(tt_kv('Note', row['note']))
     return '<br>'.join(parts)
 
 
 def build_hover_anchored(row, anchor_m):
     """Hover string for the by-distance plot. Includes projection to the
     panel's anchor distance and Δ vs CS expectation on that date."""
-    parts = [f"Distance: {friendly_distance(row['distance_m'])}",
-             f"Time: {sec_to_mss_full(row['time_sec_original'])}"]
+    parts = [tt_kv('Distance', friendly_distance(row['distance_m'])),
+             tt_kv('Time', sec_to_mss_full(row['time_sec_original']))]
     is_at_anchor = abs(float(row['distance_m']) - float(anchor_m)) < 1.0
     if not is_at_anchor:
         proj_sec = float(row['time_norm_sec'])
-        parts.append(f"Projected to {friendly_distance(anchor_m)}: "
-                     f"{sec_to_mss_full(proj_sec)}")
+        parts.append(tt_kv(f"Projected to {friendly_distance(anchor_m)}",
+                           sec_to_mss_full(proj_sec)))
     cs_sec = row.get('cs_pred_sec', np.nan)
     if cs_sec is not None and not pd.isna(cs_sec):
         cs_sec = float(cs_sec)
         delta = float(row['time_norm_sec']) - cs_sec
         side = 'under (faster)' if delta < 0 else 'over (slower)'
-        parts.append(f"Fitness prediction: {sec_to_mss_full(cs_sec)}")
-        parts.append(f"Δ vs fitness: {delta:+.1f}s {side}")
-    parts.append(f"Surface: {row.get('surface') or '—'}")
+        parts.append(tt_kv('Fitness prediction', sec_to_mss_full(cs_sec)))
+        parts.append(tt_kv('Δ vs fitness', f"{delta:+.1f}s {side}"))
+    parts.append(tt_kv('Surface', row.get('surface') or '—'))
     if row.get('location') and str(row['location']) != 'nan':
-        parts.append(f"Location: {row['location']}")
+        parts.append(tt_kv('Location', row['location']))
     if row.get('fatigued'):
         parts.append(f"<i>Fatigued ({ordinal(row.get('race_seq', 0))} race of the day)</i>")
     if row.get('temp_c') is not None and not pd.isna(row.get('temp_c')):
-        parts.append(f"Temp: {row['temp_c']:.0f}°C")
+        parts.append(tt_kv('Temp', f"{row['temp_c']:.0f}°C"))
     if row.get('event') and str(row['event']) != 'nan':
-        parts.append(f"Event: {row['event']}")
+        parts.append(tt_kv('Event', row['event']))
     if row.get('note') and str(row['note']) != 'nan':
-        parts.append(f"Note: {row['note']}")
+        parts.append(tt_kv('Note', row['note']))
     return '<br>'.join(parts)
 
 
@@ -836,7 +840,9 @@ function buildTooltip(day, isSnap, pointHtml) {
             if len(s2) == 0:
                 continue
             color = SURFACES.get(surf, '#888888')
-            show_legend = surf not in surfaces_seen
+            # Legend entries are owned by off-range sentinels added after the
+            # loop (canonical SURFACE_LEGEND_ORDER), NOT by whichever panel a
+            # surface first appears in — so both race plots match exactly.
             surfaces_seen.add(surf)
             fig2.add_trace(go.Scatter(
                 x=s2['date'], y=s2['time_norm_sec'],
@@ -846,7 +852,7 @@ function buildTooltip(day, isSnap, pointHtml) {
                             line=dict(width=0.5, color='white')),
                 hoverinfo='skip',
                 customdata=s2['hover'],
-                legendgroup=surf, showlegend=show_legend,
+                legendgroup=surf, showlegend=False,
                 meta={'panel_name': name,
                       'pr_eligible': bool(is_pr_eligible(surf)),
                       'snap_eligible': True}),
@@ -914,6 +920,23 @@ function buildTooltip(day, isSnap, pointHtml) {
             tickmode='array', tickvals=ticks, ticktext=labels,
             showgrid=True, gridcolor=GRID,
             row=r, col=c)
+
+    # Off-range surface-legend sentinels — these own the surface entries in the
+    # shared legend (every per-subplot surface trace is showlegend=False), so
+    # the order is canonical SURFACE_LEGEND_ORDER instead of first-subplot-of-
+    # appearance. One set, in the 400m (first) subplot; only present surfaces.
+    for surf in SURFACE_LEGEND_ORDER:
+        if surf not in surfaces_seen:
+            continue
+        fig2.add_trace(go.Scatter(
+            x=[pd.Timestamp('1900-01-01')], y=[6.0],
+            mode='markers', name=surf,
+            marker=dict(color=SURFACES.get(surf, '#888888'), size=8,
+                        symbol='diamond', opacity=0.85,
+                        line=dict(width=0.5, color='white')),
+            hoverinfo='skip',
+            legendgroup=surf, showlegend=True),
+            row=1, col=1)
 
     # Off-range PR-legend sentinel — a single point at (1900-01-01, 6.0)
     # outside every subplot's x-range. Hosts the legend entry that
@@ -987,7 +1010,9 @@ function buildTooltip(day, isSnap, pointHtml, ctx) {
 
   // Section 1: per-panel CS prediction at the panel's anchor distance.
   html += '<div class="tt-section">';
-  html += '<div class="tt-row"><span>Fitness ' + distLabel(panel.anchor_m) + '</span><b>'
+  var dl = distLabel(panel.anchor_m);
+  dl = dl.charAt(0).toUpperCase() + dl.slice(1);
+  html += '<div class="tt-row"><span>' + dl + ' fitness</span><b>'
         + timeFmt(panel.cs_pred_sec[idx]) + '</b></div>';
   html += '</div>';
 

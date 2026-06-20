@@ -27,7 +27,6 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.units import FT_PER_M
 from src.shared.plot_window import daily_floor, clip_to_daily_floor
 from src.shared.workouts import (
     load_cs, watch_log_demotions,
@@ -36,9 +35,11 @@ from src.shared.workouts import (
 from src.shared.cs_projection import load_cs_outputs
 from src.shared.performance_frontier import standard_demos, build_frontier
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            sec_to_mss, fmt_min, route_paren, CAT_COLORS, GRID,
+                            sec_to_mss, fmt_min, route_paren, CAT_COLORS, CAT_LABEL, GRID,
                             CS_LINE, FRONTIER_LINE, TAG_COLORS,
-                            yearly_x_axis_kwargs, nice_time_ticks)
+                            yearly_x_axis_kwargs, nice_time_ticks, tt_title, tt_kv,
+                            hill_cont_lines, hill_rep_lines,
+                            hill_measured_lines, hill_rep_measured_lines)
 
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -47,14 +48,8 @@ TRACK_CSV   = DATA_DIR / 'training_quality_track.csv'
 HILL_MODEL_CSV = DATA_DIR / 'hill_model.csv'
 
 
-CAT_LABEL = {
-    'interval':           'Intervals',
-    'tempo':              'Tempo',
-    'rep':                'Repetitions',
-    'continuous_fartlek': 'Fartlek',
-    'hill_cont':          'Cont. hills',
-    'hill_rep':           'Hill repeats',
-}
+# Category labels are the shared canonical CAT_LABEL (src.plotting.tokens) so
+# legends/tooltips read identically across the Workouts/Training/Fitness tabs.
 
 HILL_CONT_COLOR = CAT_COLORS['hill_cont']
 HILL_REP_COLOR  = CAT_COLORS['hill_rep']
@@ -119,8 +114,7 @@ def workout_hover(r, single_type=False):
     # When the dataset has a single workout type (e.g. a watch profile's
     # continuous fartleks), present it generically as "Workout".
     label = 'Workout' if single_type else CAT_LABEL.get(cat, cat)
-    title = f"<b>{label}</b>"
-    title += route_paren(r.get('display_name'), r.get('city_state'))
+    title = tt_title(label, r.get('display_name'), r.get('city_state'))
     xc_note = f' <span style="color:{TAG_COLORS["xc"]}">(XC-corrected)</span>' if r.get('xc_corrected') else ''
     rep_count = int(r['rep_count'])
     rep_dist = int(r['rep_dist'])
@@ -138,30 +132,30 @@ def workout_hover(r, single_type=False):
         body = f"{rep_count} × {rep_dist}m @ {sec_to_mss(pace)}/mi"
     if pd.notna(r.get('rest_per_mile')) and r['rest_per_mile'] > 0:
         body += f", rest {sec_to_mss(r['rest_per_mile'])}/mi"
-    # Tooltip body wraps by default (see base.css / cursor_tooltip.js), so a
-    # long measured-rep `structure` string reflows at the tooltip width with no
-    # per-line wrapper needed.
+
+    p5k_disp = r.get('p5k_display_min', r['p5k_min'])
+    p5k_line = f"<b>5K-equivalent pace:</b> {fmt_min(p5k_disp)}/mi"
+
+    # Raw watch decomposition + scaling adjustment, placed AFTER the 5K-equiv
+    # line. Suppressed for continuous fartlek, where the single continuous
+    # effort makes the rep breakdown redundant. Tooltip body wraps by default
+    # so a long measured-rep string reflows with no per-line wrapper.
+    watch_lines = []
     measured = r.get('measured_line')
-    if isinstance(measured, str) and measured:
-        body += f"<br>{measured}"
-        # How much the watch reps above were scaled to match the log pace
-        # (negative = GPS read short, watch times compressed to fit). Compare
-        # the NORMALIZED pace actually applied (pace_per_mile) to the raw watch
-        # pace — so watch-only days, which aren't normalized (the watch is the
-        # source of truth), show no adjustment. Equals the logged quality pace
-        # on hand-log days, so those are unchanged.
+    if cat != 'continuous_fartlek' and isinstance(measured, str) and measured:
+        watch_lines.append(measured)
+        # How much the watch reps were scaled to match the log pace (negative =
+        # GPS read short, watch times compressed). Watch-only days aren't
+        # normalized (watch is the source of truth) so show no adjustment.
         wpr, qp = r.get('watch_pace_raw'), r.get('pace_per_mile')
         if pd.notna(wpr) and pd.notna(qp) and wpr > 0:
             pct = (qp / wpr - 1.0) * 100.0
             if abs(pct) >= 0.05:
-                body += f"<br><b>Watch adj:</b> {pct:+.1f}%"
+                watch_lines.append(f"<b>Watch adjustment:</b> {pct:+.1f}%")
 
-    p5k_disp = r.get('p5k_display_min', r['p5k_min'])
-    p5k_line = (f"<b>5K-equiv:</b> {fmt_min(p5k_disp)}/mi   "
-                f"<b>5K fitness:</b> {fmt_min(r['p5k_cs_min'])}/mi")
     temp_line = (f"<b>Temp:</b> {r['temp_c']:.0f}°C"
                  if pd.notna(r.get('temp_c')) else '')
-    parts = [f"{title}{xc_note}", body, temp_line, p5k_line]
+    parts = [f"{title}{xc_note}", body, p5k_line, *watch_lines, temp_line]
     excl = r.get('tq_excluded_line')
     if isinstance(excl, str) and excl:
         parts.append(excl)
@@ -183,30 +177,22 @@ HILL_EXCL_NOTE = {
 
 
 def hill_cont_hover(r):
-    title = (f"<b>Continuous hills</b>"
-             f"{route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}")
-    nreps = int(r['nreps'])
-    loops_word = 'loop' if nreps == 1 else 'loops'
-    ft_gained = int(round(float(r.get('ft_gained') or 0)))
-    # Watch-measured days replace the hand log's whole-minute estimate with
-    # the exact moving total (the projection already uses it via t_eff).
-    time_part = (f"{sec_to_mss(r['t_eff'])} total" if r.get('watch_measured')
-                 else f"{int(r['session_min'])} min total")
-    body = (f"{nreps} {loops_word}, {time_part}"
-            + (f", {ft_gained} ft gained" if ft_gained else ''))
-    measured = r.get('hill_measured_line')
-    if isinstance(measured, str) and measured:
-        body += f"<br>{measured}"
-    temp_line = (f"<b>Temp:</b> {r['temp_c']:.0f}°C"
+    # Structure + actual pace come from the shared builder (Training and Fitness
+    # render the same). Order: workout string, actual pace, 5K-equivalent, the
+    # raw Watch per-loop line (Workouts-only), temp last.
+    title = tt_title('Continuous hills', r.get('loop_display_name'),
+                     r.get('loop_city_state'))
+    watch = r.get('hill_measured_line')
+    watch_line = watch if isinstance(watch, str) and watch else ''
+    temp_line = (tt_kv('Temp', f"{r['temp_c']:.0f}°C")
                  if pd.notna(r.get('temp_c')) else '')
     parts = [
         p for p in [
             title,
-            body,
+            *hill_cont_lines(r),
+            f"<b>5K-equivalent pace:</b> {fmt_min(r['p5k_display_min'])}/mi",
+            watch_line,
             temp_line,
-            f"<b>Actual pace:</b> {sec_to_mss(r['actual_pace_s'])}/mi",
-            f"<b>5K-equiv:</b> {fmt_min(r['p5k_display_min'])}/mi   "
-            f"<b>5K fitness:</b> {fmt_min(r['p5k_cs_min'])}/mi",
         ] if p
     ]
     # Exclusion tags, same convention as flat workouts: category flags come
@@ -223,32 +209,28 @@ def hill_cont_hover(r):
 
 
 def hill_rep_hover(r, measured=None):
-    title = (f"<b>{CAT_LABEL['hill_rep']}</b>"
-             f"{route_paren(r.get('loop_display_name'), r.get('loop_city_state'))}")
-    rep_count = int(r['rep_count'])
-    reps_word = 'rep' if rep_count == 1 else 'reps'
-    rt = float(r['rep_time_min'])
-    if rt == int(rt):
-        rt_str = f"{int(rt)} min"
-    else:
-        mm = int(rt)
-        ss = int(round((rt - mm) * 60))
-        rt_str = f"{mm}:{ss:02d}"
-    body = f"{rep_count} {reps_word} × {rt_str}"
-    # Watch-measured days carry a real total elevation; only fall back to the
-    # parser estimate (rep_time × rep_count × elev_per_min) when unmeasured.
-    md = measured.get(str(r['date'].date())) if measured else None
-    elev = r.get('total_elev_ft')
-    if md:
-        body += f", {int(round(md['total_gain_ft']))} ft gained"
-    elif pd.notna(elev):
-        body += f", {int(round(float(elev)))} ft gained"
-    temp_line = (f"<b>Temp:</b> {r['temp_c']:.0f}°C"
+    # Order: workout string, average grade, 5K-equivalent, the raw per-rep
+    # Watch line (Workouts-only), temp last. Average grade + the Watch line come
+    # from the watch-measured map.
+    title = tt_title(CAT_LABEL['hill_rep'], r.get('loop_display_name'),
+                     r.get('loop_city_state'))
+    d = r['date']
+    key = str(d.date()) if hasattr(d, 'date') else str(d)[:10]
+    md = (measured or {}).get(key)
+    avg_grade_line = tt_kv('Average grade', f"{md['avg_grade']:.1f}%") if md else ''
+    watch_line = md['reps_html'] if md else ''
+    p5k_line = (f"<b>5K-equivalent pace:</b> {fmt_min(r['p5k_plot'])}/mi"
+                if pd.notna(r.get('p5k_plot')) else '')
+    temp_line = (tt_kv('Temp', f"{r['temp_c']:.0f}°C")
                  if pd.notna(r.get('temp_c')) else '')
-    parts = [p for p in [title, body, temp_line] if p]
-    if md:
-        parts.append(f"<b>Avg grade:</b> {md['avg_grade']:.1f}%")
-        parts.append(md['reps_html'])
+    parts = [p for p in [
+        title,
+        *hill_rep_lines(r, measured),
+        avg_grade_line,
+        p5k_line,
+        watch_line,
+        temp_line,
+    ] if p]
     # Hill reps never feed Training (no CS projection), so the snow tag is a
     # plain condition note rather than an exclusion line.
     if r.get('excluded_reason') == 'snow':
@@ -283,50 +265,8 @@ def measured_lines():
     return lines
 
 
-def hill_measured_lines():
-    """Per-date watch hover line for hill blocks (workout_measured.csv).
-    The measured moving total is merged into the headline (hill_cont_hover
-    shows it as 'xx:xx total'), so the Watch line only carries what the
-    headline can't: per-loop splits on hill-exact days."""
-    path = DATA_DIR / 'workout_measured.csv'
-    if not path.exists():
-        return {}
-    m = pd.read_csv(path)
-    m = m[(m['rep_idx'] > 0)
-          & (m['status'].isin(['hill-exact', 'hill-total']))]
-    lines = {}
-    for date, day in m.groupby('date'):
-        if (day['status'] == 'hill-exact').all() and len(day) > 1:
-            splits = ' · '.join(sec_to_mss(t) for t in day['time_s'])
-            lines[date] = f'<b>Watch:</b> loops {splits}'
-    return lines
-
-
-def hill_rep_measured_lines():
-    """Per-date watch-measured hill-rep detail (workout_measured.csv,
-    hillrep-exact only). The watch gives what the log never held: per-rep
-    distance + elevation, and a true average grade (total vertical / total
-    horizontal). Returns {date: {total_gain_ft, avg_grade, reps_html}};
-    mismatch / no-block days are absent and fall back to the parser estimate."""
-    path = DATA_DIR / 'workout_measured.csv'
-    if not path.exists():
-        return {}
-    m = pd.read_csv(path, dtype={'date': str})
-    m = m[(m['rep_idx'] > 0) & (m['status'] == 'hillrep-exact')]
-    lines = {}
-    for date, day in m.groupby('date'):
-        total_gain = float(day['gain_ft'].sum())
-        total_dist = float(day['dist_m'].sum())
-        # average grade over the whole block = total rise / total run; gain is
-        # feet, distance metres, so rise back to metres via FT_PER_M (0.3048).
-        avg_grade = (total_gain * FT_PER_M / total_dist * 100) if total_dist else 0.0
-        parts = [f"{int(round(r['dist_m']))}m/+{int(round(r['gain_ft']))}ft"
-                 for _, r in day.iterrows()]
-        lines[date] = {
-            'total_gain_ft': total_gain, 'avg_grade': avg_grade,
-            'reps_html': '<b>Watch:</b> ' + ' · '.join(parts),
-        }
-    return lines
+# hill_measured_lines / hill_rep_measured_lines moved to src.plotting.hover
+# (shared so Training + Fitness render the same watch hill detail).
 
 
 OUTLIER_REASONS = {'outlier', 'easy outlier'}
@@ -347,17 +287,14 @@ def load_tq_exclusions(src):
 
 def tq_exclusion_lines(src='workout'):
     """Per-date hover note for sessions Training excluded. Flags WHY, so the
-    slow sessions that survive only on the Workouts plot are explained.
-    Workout residual outliers show the residual against the prune cutoff;
-    hill outliers (track prune or the hill model's easy-day prune) read
-    'slow outlier' — the marker position already shows how slow."""
+    slow sessions that survive only on the Workouts plot are explained. The
+    note always equals the tag it carries — outliers (track prune or the hill
+    model's easy-day prune) read 'slow outlier' (no residual math; the marker
+    position already shows how slow), every other reason is its own label."""
     lines = {}
     for _, r in load_tq_exclusions(src).iterrows():
-        if r['reason'] in OUTLIER_REASONS and src == 'hill':
+        if r['reason'] in OUTLIER_REASONS:
             note, color_key = 'slow outlier', 'outlier'
-        elif r['reason'] == 'outlier' and pd.notna(r.get('resid')):
-            note = (f"residual {r['resid']:+.1f} s/mi > +{r['cutoff']:.1f} cutoff")
-            color_key = str(r['reason'])
         else:
             note, color_key = str(r['reason']), str(r['reason'])
         lines[str(r['date'])] = excluded_line(note, color_key)
@@ -488,9 +425,10 @@ def main():
                                  front_plot['p5k_implied_min'])
     fig.add_trace(go.Scatter(
         x=front_plot['date'], y=_y_safe(frontier['frontier_pace_min'].values),
-        mode='lines', name='Performance frontier (5K)',
+        mode='lines', name='Frontier 5K pace',
         line=dict(color=FRONTIER_LINE, width=2),
         hoverinfo='skip',
+        legendrank=1,  # frontier listed first (canonical order across tabs)
     ))
 
     # Workouts: one trace per category. Condition tags (uncertain accuracy /
@@ -502,7 +440,8 @@ def main():
     # category (the watch continuous-fartlek case), present it generically as
     # one "Workout" legend line with no group header. The underlying category
     # (and its CS analysis) is unchanged — only the display label.
-    present_cats = [c for c in ['interval', 'tempo', 'rep', 'continuous_fartlek']
+    # Tempo above Intervals (intensity order, consistent across tabs).
+    present_cats = [c for c in ['tempo', 'interval', 'rep', 'continuous_fartlek']
                     if not workouts[workouts['category'] == c].empty]
     n_legend = (len(present_cats)
                 + (1 if len(hills_c) else 0)
@@ -510,7 +449,7 @@ def main():
                          and len(hills_r.dropna(subset=['p5k_plot']))) else 0))
     single_type = n_legend == 1
     ring_pts = {tag: ([], []) for tag in TAG_LEGEND}
-    for cat in ['interval', 'tempo', 'rep', 'continuous_fartlek']:
+    for cat in ['tempo', 'interval', 'rep', 'continuous_fartlek']:
         sub = workouts[workouts['category'] == cat]
         if sub.empty:
             continue
@@ -607,7 +546,7 @@ def main():
         margin=dict(t=20, l=70, r=200, b=28),
         hovermode=False,
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
-                    groupclick='toggleitem', font=dict(size=11)),
+                    groupclick='toggleitem'),
         xaxis=yearly_x_axis_kwargs(
             daily_floor(),
             pd.Timestamp(workouts['date'].max()) + pd.Timedelta(days=30),
@@ -628,6 +567,17 @@ def main():
     days_2016 = (all_days - epoch).days.astype(float).to_numpy()
     cs_pace_per_day = np.interp(days_2016, cs['day'].to_numpy(), cs['p5k_implied_min'].to_numpy())
 
+    # Performance-frontier pace per day for the tooltip top section (the purple
+    # line is hoverinfo='skip'). frontier is row-aligned with front_plot['date'];
+    # NaN outside the demonstrated range so the row hides there.
+    _frf = pd.DataFrame({'date': front_plot['date'].to_numpy(),
+                         'pace': frontier['frontier_pace_min'].to_numpy(float)}
+                        ).dropna(subset=['pace'])
+    front_pace_per_day = (
+        np.interp(days_2016, (_frf['date'] - epoch).dt.days.to_numpy(float),
+                  _frf['pace'].to_numpy(float), left=np.nan, right=np.nan)
+        if len(_frf) else np.full(len(days_2016), np.nan))
+
     sessions = []
     for _, r in workouts.iterrows():
         sessions.append({'day': int((r['date'] - js_epoch).days),
@@ -646,6 +596,8 @@ def main():
 
     payload = {
         'first_day': first_day,
+        'frontier':  [None if np.isnan(v) else round(float(v), 4)
+                      for v in front_pace_per_day],
         'cs_pace':   [round(float(v), 4) for v in cs_pace_per_day],
         'sessions':  sessions,
         'nearest_window_days': 60,
@@ -675,6 +627,10 @@ function buildTooltip(day, isSnap, pointHtml) {
   var html = '';
   html += '<div class="tt-date">' + dateLabel(day) + '</div>';
   html += '<div class="tt-section">';
+  var fr = P.frontier[idx];
+  if (fr !== null && fr !== undefined && !isNaN(fr)) {
+    html += '<div class="tt-row"><span>Frontier 5K pace</span><b>' + fmtMin(fr) + '/mi</b></div>';
+  }
   html += '<div class="tt-row"><span>5K fitness</span><b>' + fmtMin(P.cs_pace[idx]) + '/mi</b></div>';
   html += '</div>';
 

@@ -627,6 +627,21 @@ def main():
     # before a sync) -> no-op.
     daily = _apply_weather_measured(daily, args.out_dir)
 
+    # Race rows were extracted from `daily` BEFORE the weather enrichment above,
+    # so a race whose temp exists only in the watch (2026+ watch-only days) has
+    # a blank temp_c. Backfill it from the now-enriched daily temp for the
+    # race's date — fill-only, so hand-logged / adjustment-set race temps are
+    # never clobbered.
+    if "temp_c" in races.columns and "temp_c" in daily.columns and len(races):
+        daily_temp = daily.dropna(subset=["temp_c"]).drop_duplicates(
+            "date", keep="first").set_index("date")["temp_c"]
+        miss = races["temp_c"].isna()
+        races.loc[miss, "temp_c"] = races.loc[miss, "date"].map(daily_temp)
+        n_filled = int(miss.sum() - races["temp_c"].isna().sum())
+        if n_filled:
+            print(f"[weather] backfilled temp_c on {n_filled} race row(s) "
+                  f"from watch-enriched daily")
+
     # ---------- final daily metadata coverage ----------
     # Reported after backprop so the numbers reflect the daily.csv state
     # actually written to disk. Each join column is checked for non-null
