@@ -16,6 +16,8 @@ This is a personal running-data pipeline: parsers and transformations turning da
 
 **Plan first.** For any non-trivial change, lay out the plan and wait for confirmation before executing. Plan mode handles much of this, but the discipline applies even outside plan mode.
 
+**Scratch files go in `scratch/` (non-negotiable, repeat offense).** Every throwaway artifact — one-off verification/experiment scripts, audit reports, findings docs, summaries, scratch HTML/CSVs/plots — goes in the gitignored `scratch/` folder. NEVER write them to the repo root or any tracked directory (`scripts/`, `src/`, `output/`). The moment you're about to create a file that isn't a deliberate, reusable part of the project, `mkdir -p scratch` and put it there; delete when done. Don't write reports "for visibility" into the tree — surface findings in the chat response. This has been flagged repeatedly (e.g. `audit_report.txt`/`audit_findings.html` committed from root) — treat it as a hard rule.
+
 **Output discipline.** Batch expensive operations (Drive fetches especially) at the start of a turn. Synthesize in focused passes rather than fetch-then-chart-then-write-then-artifact in one go. If a task would require many sequential reads, propose splitting across turns.
 
 **Rule-addition threshold.** Worth adding a hardcoded or event-normalization rule if it would save 10+ manual adjustment entries. Not worth it for ≤3. Don't propose low-volume rules; suggest manual adjustments for those cases.
