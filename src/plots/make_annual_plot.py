@@ -262,7 +262,7 @@ def main():
         fig, out_path,
         title_slug='annual',
         page_title='Annual mileage',
-        title='Annual Mileage',
+        title='Annual mileage',
         subtitle='Cumulative miles and 28-day average by calendar day, '
                  'per year',
         overlay_html=overlay_html,

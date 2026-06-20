@@ -112,11 +112,15 @@ if [[ -d data/profiles/coros/details && -f data/bayes_cs_summary.csv ]]; then
   quiet_step "reps"                  python src/coros/reps.py --details-dir data/profiles/coros/details "${watch_regen[@]}"
 fi
 # Elevation enrichment (gain/loss, Minetti grade, per-mile splits). Incremental
-# via the watch_activities index; no network (the sync now caches outdoor runs
-# rich). corr_miles depends on the distance calibration, so --full-regen on a
-# fit run refreshes it too.
+# via the watch_activities index. The barometric path needs no network (the sync
+# caches outdoor runs rich), but the DEM augment looks GPS tracks up against the
+# public DEM API — a warm run is cache-served and instant, the one-time cold seed
+# runs for hours at 1 req/s. corr_miles depends on the distance calibration, so
+# --full-regen on a fit run refreshes it too.
+# loud_step (not quiet): during the cold seed its incremental-save progress IS
+# the signal, so stream it live; warm runs print only a few summary lines.
 if [[ -f data/watch_activities.csv ]]; then
-  quiet_step "elevation"             python scripts/backfill_elevation.py "${watch_regen[@]}"
+  loud_step "elevation"              python scripts/backfill_elevation.py "${watch_regen[@]}"
 fi
 # Per-day altitude + local-time envelopes for the Misc. Trends plot, from the
 # rich detail cache (no network). Same lifecycle as elevation_measured.csv:

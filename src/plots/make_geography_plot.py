@@ -735,7 +735,7 @@ def main():
     write_html(
         fig, out_path, legend_html, payload,
         title='Mileage by location',
-        subtitle=f'{total_miles:,.0f} mi across {n_cities} cities, 2016-present',
+        subtitle=f'{total_miles:,.0f} mi across {n_cities} cities, 2016–present',
     )
 
     print(f'wrote {out_path}')

@@ -178,7 +178,13 @@ def _load_cache():
 
 
 def _save_cache(cache):
-    CACHE_PATH.write_text(json.dumps(cache))
+    # Atomic write: a mid-loop flush can be killed by a CI step timeout while
+    # the file is being written. Serialize to a temp file then os-rename so the
+    # reader (and the always-on CI cache save) never sees a truncated JSON that
+    # _load_cache would discard as corrupt — the seed would then restart cold.
+    tmp = CACHE_PATH.with_name(CACHE_PATH.name + '.tmp')
+    tmp.write_text(json.dumps(cache))
+    tmp.replace(CACHE_PATH)
 
 
 def _query(latlons, dataset):
@@ -218,6 +224,10 @@ def dem_elevations(lat, lon, cache, sleep_s=SLEEP_S, verbose=False):
                 if ev is not None:
                     out[i] = ev
                     cache[f'{lat[i]:.5f},{lon[i]:.5f}'] = ev
+            if verbose:
+                done = min(b + BATCH, len(pend))
+                print(f"      [dem] {ds.split('/')[-1]} {done}/{len(pend)} "
+                      f"pts ({len(cache):,} cached)", flush=True)
             time.sleep(sleep_s)
     return out
 

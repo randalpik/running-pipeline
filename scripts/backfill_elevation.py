@@ -66,6 +66,26 @@ MEAS_COLS = ['date', 'run_type', 'watch_miles', 'corr_miles', 'elev_gain_ft',
              'dem_n_pts']
 SPLIT_COLS = ['date', 'mile', 'pace_s', 'gain_ft', 'loss_ft']
 
+# Flush the DEM point cache to disk every this many days during augmentation.
+# The one-time cold seed can run for hours against the public DEM API's 1 req/s
+# courtesy limit; a periodic flush means a killed / timed-out run keeps every
+# point it already fetched and resumes from there instead of restarting. The
+# measurements (elevation_measured.csv) are deliberately NOT flushed mid-loop:
+# they recompute for free against a warm cache on the next run, so the cache is
+# the only expensive, network-built asset worth persisting incrementally.
+FLUSH_EVERY_DAYS = 25
+
+
+def _flush_cache(cache, prev_size, processed, total, label):
+    """Persist the DEM cache mid-loop and report progress. ``+N fetched`` is the
+    live network signal (points that came over the wire since the last flush).
+    Returns the new baseline point count."""
+    DEM._save_cache(cache)
+    print(f"[elevation]   ↳ saved {len(cache):,} pts "
+          f"(+{len(cache) - prev_size:,} fetched) — {processed}/{total} "
+          f"{label} days done", flush=True)
+    return len(cache)
+
 
 def _elev_ids_by_date():
     """{iso_date: [labelId, ...]} of ELEV_SPORTS activities, from the per-
@@ -99,7 +119,7 @@ def _targets(daily, races, types):
     return targets
 
 
-def augment_race_dem(meas, races, ids_by_date, sleep_s):
+def augment_race_dem(meas, races, ids_by_date, sleep_s, verbose=False):
     """Fill DEM gain/loss/net/mean for race rows from the GPS track (races-only;
     the watch's barometric net is per-race noise — see dem_elevation.py). Idem-
     potent: only rows missing dem_gain_ft are computed, so a re-run is a cheap
@@ -112,8 +132,14 @@ def augment_race_dem(meas, races, ids_by_date, sleep_s):
     if need.empty:
         return 0
     cache = DEM._load_cache()
-    n = 0
+    print(f"[elevation] DEM race: {len(need)} days need lookup "
+          f"({len(cache):,} pts cached)", flush=True)
+    n, processed, prev_size = 0, 0, len(cache)
     for i, row in need.iterrows():
+        processed += 1
+        if processed % FLUSH_EVERY_DAYS == 0:
+            prev_size = _flush_cache(cache, prev_size, processed, len(need),
+                                     'race')
         d = row['date']
         off_m = off_by_date.get(d)
         if off_m is None or d not in ids_by_date:
@@ -127,7 +153,7 @@ def augment_race_dem(meas, races, ids_by_date, sleep_s):
                     recs.append(rec)
         if not recs:
             continue
-        res = DEM.measure_race_elevation(recs, off_m, cache)
+        res = DEM.measure_race_elevation(recs, off_m, cache, verbose=verbose)
         if res is None:
             continue
         for k, v in res.items():
@@ -137,7 +163,7 @@ def augment_race_dem(meas, races, ids_by_date, sleep_s):
     return n
 
 
-def augment_run_dem(meas, ids_by_date, run_type):
+def augment_run_dem(meas, ids_by_date, run_type, verbose=False):
     """Fill DEM gain/loss/net/mean for ``run_type`` (long/recovery) rows from the
     day's pooled GPS track (see dem_elevation.measure_run_elevation). Training
     runs are loops, so the barometric net carries a phantom morning-drift descent
@@ -152,8 +178,14 @@ def augment_run_dem(meas, ids_by_date, run_type):
     if need.empty:
         return 0
     cache = DEM._load_cache()
-    n = 0
+    print(f"[elevation] DEM {run_type}: {len(need)} days need lookup "
+          f"({len(cache):,} pts cached)", flush=True)
+    n, processed, prev_size = 0, 0, len(cache)
     for i, row in need.iterrows():
+        processed += 1
+        if processed % FLUSH_EVERY_DAYS == 0:
+            prev_size = _flush_cache(cache, prev_size, processed, len(need),
+                                     run_type)
         d = row['date']
         if d not in ids_by_date:
             continue
@@ -166,7 +198,7 @@ def augment_run_dem(meas, ids_by_date, run_type):
                     recs.append(rec)
         if not recs:
             continue
-        res = DEM.measure_run_elevation(recs, cache)
+        res = DEM.measure_run_elevation(recs, cache, verbose=verbose)
         if res is None:
             continue
         for k, v in res.items():
@@ -216,6 +248,9 @@ def main():
                    help='re-fetch + rich-upgrade days still cached slim (network)')
     p.add_argument('--sleep', type=float, default=0.4)
     p.add_argument('--limit', type=int, default=0)
+    p.add_argument('--dem-verbose', action='store_true',
+                   help='per-batch heartbeat from the DEM point lookups (one '
+                        'line per ~100 points fetched — chatty)')
     args = p.parse_args()
 
     ids_by_date = _elev_ids_by_date()
@@ -304,12 +339,14 @@ def main():
     meas = pd.DataFrame(meas_keep + meas_rows, columns=MEAS_COLS)
     splits = pd.DataFrame(split_keep + split_rows, columns=SPLIT_COLS)
     if 'race' in types and len(meas):
-        n_dem = augment_race_dem(meas, races, ids_by_date, args.sleep)
+        n_dem = augment_race_dem(meas, races, ids_by_date, args.sleep,
+                                 verbose=args.dem_verbose)
         print(f"[elevation] DEM race-elevation: {n_dem} newly computed "
               f"(GPS-track lookup; barometric net is per-race noise)")
     for rt in ('long', 'recovery'):
         if rt in types and len(meas):
-            n_dem = augment_run_dem(meas, ids_by_date, rt)
+            n_dem = augment_run_dem(meas, ids_by_date, rt,
+                                    verbose=args.dem_verbose)
             print(f"[elevation] DEM {rt}-run elevation: {n_dem} newly computed "
                   f"(GPS-track lookup; barometric net is morning-drift phantom)")
     if len(meas):

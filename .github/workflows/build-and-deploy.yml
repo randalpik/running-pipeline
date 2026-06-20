@@ -167,6 +167,15 @@ jobs:
         # profiles/maddy/). The coros test profile is NOT built here (it's a
         # cache provider only in production); --only keeps it out. Maddy's
         # Coros sync is incremental and their CS fit is cached (see cache step).
+        id: build
+        # Self-limit BELOW the 120-min job timeout. A one-time DEM elevation
+        # cold seed can run for hours at the public API's 1 req/s; capping the
+        # step (rather than letting the JOB time out) turns an over-run into a
+        # normal step failure, so the always-on cache save below still runs and
+        # uploads the partially-warmed cache. The next dispatch resumes from it
+        # (the seed is incremental and flushes as it goes), so it converges over
+        # a few runs instead of restarting cold every time.
+        timeout-minutes: 100
         env:
           COROS2_EMAIL: ${{ secrets.COROS2_EMAIL }}
           COROS2_PASSWORD: ${{ secrets.COROS2_PASSWORD }}
@@ -178,10 +187,20 @@ jobs:
           python scripts/build_profiles.py --only max,maddy "${flags[@]}"
 
       - name: Save pipeline state cache
-        # Save a fresh cache entry under a unique key after every successful
-        # pipeline run so the next run picks it up via the restore-keys
-        # prefix match. Old entries naturally evict after 7 days idle.
-        if: success()
+        # Save a fresh cache entry under a unique key after every run (success
+        # OR failure) so the next run picks it up via the restore-keys prefix
+        # match. Old entries naturally evict after 7 days idle.
+        #
+        # if: always() (not success()) is load-bearing: when the build step is
+        # killed by its timeout it has already flushed the partially-warmed DEM
+        # cache (and synced details) to disk, but those evaporate with the runner
+        # unless we upload them. Saving on failure too lets the expensive,
+        # incrementally-built caches ratchet forward across runs. Every cached
+        # file is additive/idempotent and written atomically, so a partial save
+        # is strictly more progress, never corruption. The deploy step keeps its
+        # default success() gate, so a cut-off run warms the cache but never
+        # ships a half-built site.
+        if: always()
         uses: actions/cache/save@v4
         with:
           path: |
