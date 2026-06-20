@@ -203,6 +203,17 @@ def build_coros_data(profile, env, *, rebuild, fit=False):
              env, f"{profile.id}: daily_envelopes")
     else:
         print(f"[{profile.id}] daily_envelopes: no details cache — skipped")
+    # Elevation enrichment (gain/loss, Minetti grade, per-corrected-mile splits,
+    # DEM gain/loss/net) for long/recovery/race days. Like daily_envelopes it
+    # scans the detail cache directly (no watch_activities.csv index — that's
+    # written only on the Max drive profile). The DEM point cache is shared
+    # repo-wide, so a profile reuses points another already seeded for the same
+    # routes. No --fetch: the synced cache is already rich.
+    if (data_dir / "details").exists():
+        _run(["python", "scripts/backfill_elevation.py"],
+             env, f"{profile.id}: elevation")
+    else:
+        print(f"[{profile.id}] elevation: no details cache — skipped")
 
 
 def _race_additions(cfg):

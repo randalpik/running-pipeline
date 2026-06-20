@@ -38,12 +38,17 @@ import numpy as np
 
 from src.coros.elevation import gain_loss_ft, _gridded_altitude
 from src.shared.hill_model import FT_PER_M
-from src.shared.paths import DATA_DIR
+from src.shared.paths import REPO_ROOT
 
 SAMPLE_M = 30.0          # resample the GPS track to this spacing before lookup
 BATCH = 100              # OpenTopoData locations per request
 SLEEP_S = 1.0            # public-API courtesy rate limit (1 req/s)
-CACHE_PATH = DATA_DIR / 'dem_cache.json'
+# Profile-INDEPENDENT shared cache: a DEM elevation is a pure function of (lat,
+# lon) — identical no matter which profile ran there — so every profile shares
+# one cache at the repo-root data dir instead of re-seeding the same routes per
+# profile. Anchored to REPO_ROOT, NOT the RP_DATA_DIR-routed DATA_DIR. (Matches
+# reverse_coords.csv, also shared at root; already in the CI cache as this path.)
+CACHE_PATH = REPO_ROOT / 'data' / 'dem_cache.json'
 _NED = 'https://api.opentopodata.org/v1/ned10m'
 _SRTM = 'https://api.opentopodata.org/v1/srtm30m'
 

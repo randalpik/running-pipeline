@@ -9,7 +9,11 @@
 // Forgetting to gate something would be the unsafe failure mode and is
 // what this allow-list-of-public-paths design avoids.
 
-import { jwtVerify } from "https://esm.sh/jose@5.9.6";
+// Bare specifier (resolved from package.json's "jose" dep), matching the sibling
+// @netlify/blobs import and the serverless functions (functions/_shared/*.ts).
+// Was "https://esm.sh/jose@5.9.6" — the edge bundler intermittently fails to
+// fetch esm.sh URLs ("Module not found"); npm-dep resolution is reliable.
+import { jwtVerify } from "jose";
 import { getStore } from "@netlify/blobs";
 import type { Context } from "@netlify/edge-functions";
 

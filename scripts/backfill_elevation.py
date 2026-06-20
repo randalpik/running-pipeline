@@ -54,7 +54,12 @@ ELEV_SPORTS = {M.SPORT_RUN, M.SPORT_TRAIL_RUN}
 # watch use and gets NO watch elevation.
 WATCH_VALID_BAND = (0.6, 1.5)
 
-DETAILS = DATA_DIR / 'profiles' / 'coros' / 'details'
+# Details dir: a watch-import profile (e.g. maddy) carries its own cache at
+# DATA_DIR/details; the Max drive profile has none there and pulls from the
+# coros (his watch) cache. Resolve to the profile's own cache when present, else
+# the coros one — same rule as daily_envelopes.
+_OWN_DETAILS = DATA_DIR / 'details'
+DETAILS = _OWN_DETAILS if _OWN_DETAILS.exists() else DATA_DIR / 'profiles' / 'coros' / 'details'
 TOKEN = DATA_DIR / 'profiles' / 'coros' / 'coros_token.json'
 ACTIVITIES = DATA_DIR / 'watch_activities.csv'
 MEAS_OUT = DATA_DIR / 'elevation_measured.csv'
@@ -88,16 +93,35 @@ def _flush_cache(cache, prev_size, processed, total, label):
 
 
 def _elev_ids_by_date():
-    """{iso_date: [labelId, ...]} of ELEV_SPORTS activities, from the per-
-    activity index — no per-second parse. None if the index is absent."""
-    if not ACTIVITIES.exists():
+    """{iso_date: [labelId, ...]} of ELEV_SPORTS activities. None if no source.
+
+    Prefers the per-activity index (watch_activities.csv) — no per-second parse.
+    A watch-import profile has no index (it's written only by the Max-specific
+    watch_daily), so fall back to scanning the detail cache directly, reading
+    each record's sport to keep the ELEV_SPORTS filter — same pattern as
+    daily_envelopes._ids_by_date."""
+    if ACTIVITIES.exists():
+        idx = pd.read_csv(ACTIVITIES, dtype={'labelId': str, 'date': str})
+        out = {}
+        for _, r in idx.iterrows():
+            if int(r['sport_type']) in ELEV_SPORTS:
+                out.setdefault(r['date'], []).append(r['labelId'])
+        return out
+    if not DETAILS.exists():
         return None
-    idx = pd.read_csv(ACTIVITIES, dtype={'labelId': str, 'date': str})
     out = {}
-    for _, r in idx.iterrows():
-        if int(r['sport_type']) in ELEV_SPORTS:
-            out.setdefault(r['date'], []).append(r['labelId'])
-    return out
+    for p in sorted(DETAILS.glob('*.json')):
+        try:
+            rec = json.loads(p.read_text())
+        except (ValueError, OSError):
+            continue
+        if (rec.get('summary') or {}).get('sportType') is None:
+            continue
+        a = Activity(rec)
+        if a.sport_type not in ELEV_SPORTS:
+            continue
+        out.setdefault(a.local_date.isoformat(), []).append(p.stem)
+    return out or None
 
 
 def _targets(daily, races, types):
