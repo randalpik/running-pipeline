@@ -129,14 +129,14 @@ def _structure_label(dists):
     return ' + '.join(f'{n}×{d}' if n > 1 else f'{d}' for d, n in groups) + 'm'
 
 
-def _measured_d_eff(day, dp3=None):
+def _measured_d_eff(day, dp3=None, vmax=None):
     """(D_eff, t_eff) for a watch-measured day — see _connected_core. Rest is
     the recorded standing+jog seconds per interval (last rep has none)."""
     day = day.sort_values('rep_idx')
     rest = (day['rest_stand_s'].fillna(0)
             + day['rest_jog_s'].fillna(0)).to_numpy(float)
     return _connected_core(day['dist_m'].to_numpy(float),
-                           day['time_s'].to_numpy(float), rest, dp3=dp3)
+                           day['time_s'].to_numpy(float), rest, dp3=dp3, vmax=vmax)
 
 
 # ---------- rest-source policy (per Max's logging-behaviour audit) ----------
@@ -165,7 +165,7 @@ CF_HARD_M, CF_FLOAT_M = 500.0, 300.0
 CF_FLOAT_HARD_RATIO = 1.25
 
 
-def _cf_structure(total_m, blended_pace, dp3=None):
+def _cf_structure(total_m, blended_pace, dp3=None, vmax=None):
     """(d_eff, t_eff, structure_label) for a continuous fartlek, from its
     known 500/300 alternation — see CF_FLOAT_HARD_RATIO above. The floats
     act as jog rests in the connected accumulator; the same effort-aware
@@ -184,7 +184,7 @@ def _cf_structure(total_m, blended_pace, dp3=None):
     times = [p_hard * d / MILE_M for d in hards]
     rests = [p_float * floats[i] / MILE_M if i < len(floats) else 0.0
              for i in range(len(hards))]
-    d_eff, t_eff = _connected_core(hards, times, rests, dp3=dp3)
+    d_eff, t_eff = _connected_core(hards, times, rests, dp3=dp3, vmax=vmax)
     n_full = sum(1 for h in hards if h == CF_HARD_M)
     label = f'{n_full}×(500+300f)'
     tail = total_m - n_full * (CF_HARD_M + CF_FLOAT_M)
@@ -344,7 +344,7 @@ def measured_to_decomposed(measured, daily_df, cf_structure=True, dp3_at=None):
         run_type = daily_types.get(dt)
         total = day['dist_m'].sum()
         watch_pace = day['time_s'].sum() / (total / MILE_M)
-        dp3 = dp3_at(dt) if dp3_at is not None else None
+        dp3, vmax = dp3_at(dt) if dp3_at is not None else (None, None)
 
         # Normalize watch times to the logged pace (see docstring): one scale
         # factor on every rep time, rests untouched (wall-clock). HAND-LOG
@@ -362,7 +362,7 @@ def measured_to_decomposed(measured, daily_df, cf_structure=True, dp3_at=None):
 
         if (day['kind'] == 'cf').all():
             if cf_structure:    # Max's 500/300 convention, hand-log only
-                d_eff, t_eff, label = _cf_structure(total, pace, dp3=dp3)
+                d_eff, t_eff, label = _cf_structure(total, pace, dp3=dp3, vmax=vmax)
             else:
                 d_eff, t_eff, label = float(total), day['time_s'].sum(), None
             rows.append({'date': dt, 'type': 'continuous_fartlek',
@@ -396,7 +396,7 @@ def measured_to_decomposed(measured, daily_df, cf_structure=True, dp3_at=None):
             final_type = 'interval'
         else:                           # hand-log fartlek collision
             final_type = 'interval' if rep_dist >= 800 else 'rep'
-        d_eff, t_eff = _measured_d_eff(day, dp3=dp3)
+        d_eff, t_eff = _measured_d_eff(day, dp3=dp3, vmax=vmax)
         rows.append({'date': dt, 'type': final_type,
                      'rep_dist': int(rep_dist), 'rep_count': int(rep_count),
                      'pace_per_mile': pace, 'rest_per_mile': rest_per_mile,
@@ -440,7 +440,7 @@ def decompose(daily_df, continuous_fartlek_only=False, rest_model=None,
         raw = '' if pd.isna(row['workout_raw']) else str(row['workout_raw'])
         qd = row['quality_distance_m']
         qp = row['quality_pace_sec_per_mi']
-        dp3 = dp3_at(dt) if dp3_at is not None else None
+        dp3, vmax = dp3_at(dt) if dp3_at is not None else (None, None)
 
         # ---------- pruning rules (in order) ----------
         # (1) Hardcoded anomaly (defensive; current parser excludes from quality anyway)
@@ -501,7 +501,7 @@ def decompose(daily_df, continuous_fartlek_only=False, rest_model=None,
             reps = LADDER_4800
             times = [qp * d / MILE_M for d in reps]
             rests = [explicit_rest_per_mile * d / MILE_M for d in reps[:-1]] + [0.0]
-            d_eff, t_eff = _connected_core(reps, times, rests, dp3=dp3)
+            d_eff, t_eff = _connected_core(reps, times, rests, dp3=dp3, vmax=vmax)
             tot = sum(reps)
             eff_rd = max(100, round((sum(d * d for d in reps) / tot) / 100) * 100)
             results.append({
@@ -530,7 +530,7 @@ def decompose(daily_df, continuous_fartlek_only=False, rest_model=None,
                 d_eff, t_eff = float(total_m), qp * total_m / MILE_M
                 label = None
             else:
-                d_eff, t_eff, label = _cf_structure(total_m, qp, dp3=dp3)
+                d_eff, t_eff, label = _cf_structure(total_m, qp, dp3=dp3, vmax=vmax)
             results.append({
                 'date': dt, 'type': 'continuous_fartlek',
                 'rep_dist': int(total_m), 'rep_count': 1,
@@ -628,7 +628,7 @@ def decompose(daily_df, continuous_fartlek_only=False, rest_model=None,
             rep_rest_s = rest_per_mile * rep_dist / MILE_M
             d_eff_m, t_eff_s = _connected_core(
                 [rep_dist] * rep_count, [rep_t] * rep_count,
-                [rep_rest_s] * (rep_count - 1) + [0.0], dp3=dp3)
+                [rep_rest_s] * (rep_count - 1) + [0.0], dp3=dp3, vmax=vmax)
 
         results.append({
             'date': dt, 'type': final_type,

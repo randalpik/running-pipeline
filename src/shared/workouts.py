@@ -115,82 +115,28 @@ def recon_tau(v_mps, cs_mps):
     ratio = np.asarray(v_mps, float) / cs_mps
     tau = RECON_TAU_AT_CS * np.exp(-RECON_TAU_K * (ratio - 1.0))
     return np.clip(tau, RECON_TAU_MIN, RECON_TAU_MAX)
-# v_max for the WORKOUT side of CP3 — the accumulator's effort-aware
-# deflation and the TQ projections (workouts / long runs / hills). This is
-# deliberately NOT one of cs_projection's conservative race edges: it's a
-# MEASUREMENT calibration, anchored to Max's watch rep corpus (the τ=540
-# re-validation above ran at this value; the deflation reproduces the
-# retired empirically-fitted g(d) at rep paces here). The race edges
-# encode evidence/prediction conservatism policy; this encodes "what a
-# rep day actually demonstrates", and the TQ corpus's accuracy is owned
-# by its own gates (course verification, implausibility ceiling).
-#
-# Per-profile (Max, June 2026): 8.7 is a sprint cap measured on MAX. The CP3
-# bend only does its job when v_max sits near the runner's true short-effort
-# speed, so applying Max's 8.7 to a slower runner under-deflates their reps
-# and floats the 5K-equivalent (a new runner's all-400 sessions tower over
-# their stale, long-race-anchored CS). No other profile has a sprint corpus,
-# so v_max is sketched as a DIMENSIONLESS multiple of the profile's own CS,
-# the ratio anchored to Max's (8.7, watch-era CS) pair:
-#
-#     v_max(profile) = WORKOUT_VMAX_CS_RATIO · median(profile CS, watch era)
-#
-# Max himself is PINNED at the measured 8.7 (the ratio is calibrated off him;
-# pinning protects the validated value from drift as his CS refits). This is a
-# best-guess transfer, not a measurement — it removes the cross-athlete
-# artifact (a slower runner's ~5.5 m/s cap vs Max's 8.7) but is intentionally
-# a single-digit-s/mi correction; the residual gap of a rapidly-improving
-# runner's workouts over an under-informed CS is real signal, not error. If
-# workouts still tower over races once a profile's race history fills in, the
-# next suspect is RECON_TAU_S (per-person), which we can't yet say.
-WORKOUT_VMAX_MAX = 8.7          # Max's measured cap (watch rep corpus)
-WORKOUT_VMAX_CS_RATIO = 1.67    # = 8.7 / 5.21 (Max's median CS, 2020+);
-                                # recompute after a Max CS refit
-WORKOUT_VMAX_REF_ERA = 2020     # watch-era floor for the reference-CS median
+# v_max for the WORKOUT side of CP3 — the accumulator's effort-aware deflation
+# and the TQ projections (workouts / long runs / hills). Unified (Max, June
+# 2026) with the race EVIDENCE edge: v_max = VMAX_EVID_CS_RATIO * CS(t), the
+# same CS-multiple the race down-projection uses (cs_projection.vmax_evidence) —
+# workouts read efforts as evidence exactly like races. A separate measured
+# workout cap (the old 8.7, with a per-profile median-CS scaling for others)
+# proved empirically inert in the 5K-equivalent above ~800 m, so it was retired.
+# Tying to per-date CS makes it era-appropriate and transfers across profiles.
 
 
-@functools.lru_cache(maxsize=None)
-def _profile_ref_cs():
-    """Median cs_mps over the watch era (>= WORKOUT_VMAX_REF_ERA) from the
-    ACTIVE profile's CS summary — the reference fitness the v_max ratio scales.
-    Falls back to the full-history median when no watch-era rows exist, and to
-    None when there is no CS summary at all (no fit yet)."""
-    if not CS_PATH.exists():
-        return None
-    cs = pd.read_csv(CS_PATH, parse_dates=['date'])
-    if cs.empty or 'cs_mps_med' not in cs.columns:
-        return None
-    era = cs[cs['date'].dt.year >= WORKOUT_VMAX_REF_ERA]
-    ref = era if len(era) else cs
-    return float(ref['cs_mps_med'].median())
-
-
-def workout_vmax():
-    """The active profile's CP3 workout-side v_max (m/s).
-
-    Max keeps the measured 8.7; every other profile inherits the dimensionless
-    v_max/CS ratio scaled by its own watch-era CS (see the constant block
-    above). RP_WORKOUT_VMAX overrides for calibration sweeps. Falls back to
-    8.7 when a non-Max profile has no CS fit to scale from (the deflation is
-    skipped upstream in that case anyway)."""
+def workout_vmax(cs_mps):
+    """The CP3 workout-side v_max (m/s) at instantaneous CS cs_mps — the EVIDENCE
+    CS-multiple shared with the race down-projection (cs_projection.vmax_evidence).
+    Scalar or array. RP_WORKOUT_VMAX overrides with a flat value for sweeps."""
     env = os.environ.get('RP_WORKOUT_VMAX')
     if env:
         return float(env)
-    if os.environ.get('RP_PROFILE', 'max') == 'max':
-        # Pinned to the RACE evidence-edge v_max (cs_projection.vmax_evidence).
-        # Workouts read efforts as evidence exactly like races, and a SEPARATE
-        # measured workout v_max (the old 8.7) proved empirically inert in the
-        # 5K-equivalent above ~800 m — the deflation and projection channels
-        # cancel — so maintaining a distinct value bought nothing. Other
-        # profiles still scale by their own CS (below) until they have a race
-        # corpus. (June 2026.)
-        from src.shared.cs_projection import vmax_evidence
-        return vmax_evidence()
-    ref = _profile_ref_cs()
-    return WORKOUT_VMAX_CS_RATIO * ref if ref is not None else WORKOUT_VMAX_MAX
+    from src.shared.cs_projection import vmax_evidence
+    return vmax_evidence(cs_mps)
 
 
-def _connected_core(dists, times, rests, dp3=None):
+def _connected_core(dists, times, rests, dp3=None, vmax=None):
     """Connected-fatigue (D_eff, t_eff) from per-rep arrays, with the
     effort-aware anaerobic deflation applied per rep (CP3 unification,
     June 2026 — replaces the distance-only g(d) pace add).
@@ -223,7 +169,8 @@ def _connected_core(dists, times, rests, dp3=None):
     ``dists``/``times``: per-rep arrays. ``rests``: rest-after seconds per rep
     (the final entry, if present, is unused — nothing accumulates after it).
     ``dp3``: the date's CP3 anaerobic reservoir (metres); None (no CS fit
-    artifact) skips the deflation.
+    artifact) skips the deflation. ``vmax``: the date's CP3 v_max (m/s,
+    = VMAX_CS_RATIO * CS(date)); required whenever ``dp3`` is given.
     """
     dists = np.asarray(dists, float)
     times = np.asarray(times, float)
@@ -245,11 +192,10 @@ def _connected_core(dists, times, rests, dp3=None):
 
     # No CS context (no fit artifact) or a single rep: can't form v/cs, so fall
     # back to a FLAT tau (the long-run constant) and skip the deflation.
-    if dp3 is None or len(dists) < 2:
+    if dp3 is None or vmax is None or len(dists) < 2:
         d_eff = accumulate(np.full(len(dists), RECON_TAU_S))
         return d_eff, d_eff * t_total / dists.sum()
 
-    vmax = workout_vmax()
     # Fixed point over the workout's OWN implied CS: it sets BOTH the per-rep
     # reconstitution tau (recon_tau(v/cs) -> the D_eff accumulation) AND the
     # anaerobic deflation (-> t_eff). Bootstrap cs from a flat-tau pass.
@@ -470,7 +416,8 @@ def load_cs():
 
 
 def add_cs(df, cs, epoch):
-    """Add per-row CS context: day-since-epoch, p5k_cs_min, dp_t, dp3_t, year."""
+    """Add per-row CS context: day-since-epoch, p5k_cs_min, dp_t, dp3_t, cs_t,
+    year. cs_t is the per-row fit CS; v_max = workout_vmax(cs_t) at projection."""
     df = df.copy()
     # An empty source CSV (e.g. a new profile with no decomposed workouts yet)
     # reads back with an object-dtype 'date' column, which can't be subtracted
@@ -479,29 +426,32 @@ def add_cs(df, cs, epoch):
     df['day'] = (df['date'] - epoch).dt.days.astype(float)
     df['p5k_cs_min'] = np.interp(df['day'], cs['day'].values, cs['p5k_implied_min'].values)
     df['dp_t']       = np.interp(df['day'], cs['day'].values, cs['dp_med'].values)
+    df['cs_t']       = np.interp(df['day'], cs['day'].values, cs['cs_mps_med'].values)
+    # v_max = k*CS(date), so D′₃ is computed per date.
     dp3 = cp3_dprime(cs['dp_med'].values, cs['cs_mps_med'].values,
-                     workout_vmax())
+                     workout_vmax(cs['cs_mps_med'].values))
     df['dp3_t']      = np.interp(df['day'], cs['day'].values, dp3)
     df['year']       = df['date'].dt.year
     return df
 
 
 def dp3_at_date():
-    """date -> D′₃ (the CP3 anaerobic reservoir) interpolated from the
-    profile's CS summary, for parse-time consumers (the connected
-    accumulator's effort-aware deflation). Returns None when no CS fit
-    exists yet — callers then skip the deflation, which is fine: a profile
-    without a CS fit has no projection layer to feed anyway."""
+    """date -> (D′₃, v_max) interpolated from the profile's CS summary, for
+    parse-time consumers (the connected accumulator's effort-aware deflation):
+    D′₃ is the CP3 anaerobic reservoir (metres), v_max = VMAX_CS_RATIO*CS(date).
+    Returns None when no CS fit exists yet — callers then skip the deflation,
+    which is fine: a profile without a CS fit has no projection layer to feed."""
     if not CS_PATH.exists():
         return None
     cs, epoch = load_cs()
-    dp3 = cp3_dprime(cs['dp_med'].values, cs['cs_mps_med'].values,
-                     workout_vmax())
+    cs_mps = cs['cs_mps_med'].values
+    dp3 = cp3_dprime(cs['dp_med'].values, cs_mps, workout_vmax(cs_mps))
     days = cs['day'].to_numpy(float)
 
     def at(dt):
         d = float((pd.Timestamp(dt) - epoch).days)
-        return float(np.interp(d, days, dp3))
+        return (float(np.interp(d, days, dp3)),
+                float(workout_vmax(np.interp(d, days, cs_mps))))
     return at
 
 
@@ -629,8 +579,9 @@ def project_workouts(cs, epoch):
     # like long runs); D_eff <= 5K stays on CP3 + v_max (up-conversion, where
     # IAAF cross-athlete equivalence is invalid — Max's mid-distance/sprint
     # strength is not the population's). Most sessions are <=5K and unchanged.
-    cs_imp = cp3_implied_cs(w['D_eff'], w['t_eff'], w['dp3_t'], workout_vmax())
-    w['t_5k_hyp'] = cp3_time(5000.0, cs_imp, w['dp3_t'], workout_vmax())
+    vmax = workout_vmax(w['cs_t'].to_numpy(float))
+    cs_imp = cp3_implied_cs(w['D_eff'], w['t_eff'], w['dp3_t'], vmax)
+    w['t_5k_hyp'] = cp3_time(5000.0, cs_imp, w['dp3_t'], vmax)
     long_w = w['D_eff'].astype(float) > 5000.0
     if long_w.any():
         from src.shared.wa_scoring import wa_5k_equiv_time
@@ -865,10 +816,9 @@ def project_long_runs(cs, epoch):
     # racing this distance). Uncorrected pace by design — a second-order input
     # to the paved descent refund, one pass, not iterated.
     t5k_cs = lr['p5k_cs_min'] * 60.0 * 5000.0 / METERS_PER_MILE
-    cs_mps = cp3_implied_cs(5000.0, t5k_cs.to_numpy(), lr['dp3_t'],
-                            workout_vmax())
-    t_pred = cp3_time(lr['d_m'].to_numpy(float), cs_mps, lr['dp3_t'],
-                      workout_vmax())
+    vmax = workout_vmax(lr['cs_t'].to_numpy(float))
+    cs_mps = cp3_implied_cs(5000.0, t5k_cs.to_numpy(), lr['dp3_t'], vmax)
+    t_pred = cp3_time(lr['d_m'].to_numpy(float), cs_mps, lr['dp3_t'], vmax)
     lr['effort'] = t_pred / lr['t_run']
     # Refund: effort-aware on paved; terrain-default recovery refund on
     # mixed/trail. Fully numeric (no NaN) so the engine prices every row.
@@ -1108,9 +1058,9 @@ def project_hill_continuous(cs, epoch):
     h['watch_measured'] = has_watch
 
     h = add_cs(h, cs, epoch)
-    cs_imp = cp3_implied_cs(h['d_m'], h['t_eff'], h['dp3_t'],
-                            workout_vmax())
-    h['t_5k_hyp'] = cp3_time(5000.0, cs_imp, h['dp3_t'], workout_vmax())
+    vmax = workout_vmax(h['cs_t'].to_numpy(float))
+    cs_imp = cp3_implied_cs(h['d_m'], h['t_eff'], h['dp3_t'], vmax)
+    h['t_5k_hyp'] = cp3_time(5000.0, cs_imp, h['dp3_t'], vmax)
     h['p5k_min']  = h['t_5k_hyp'] * METERS_PER_MILE / 5000.0 / 60.0
     h['raw_resid'] = (h['p5k_min'] - h['p5k_cs_min']) * 60
     # Informational grouping only — corrections come from the hill model
@@ -1144,9 +1094,8 @@ def project_hill_continuous(cs, epoch):
     per_loop_climb = h['loop_elev_up'].fillna(0) + h['loop_elev_down'].fillna(0)
     h['minetti_factor'] = minetti_net_factor(per_loop_climb, h['loop_distance_m'])
     t_eff_corr = h['t_eff'] / h['minetti_factor']
-    cs_imp_corr = cp3_implied_cs(h['d_m'], t_eff_corr, h['dp3_t'],
-                                 workout_vmax())
-    t5k_corr = cp3_time(5000.0, cs_imp_corr, h['dp3_t'], workout_vmax())
+    cs_imp_corr = cp3_implied_cs(h['d_m'], t_eff_corr, h['dp3_t'], vmax)
+    t5k_corr = cp3_time(5000.0, cs_imp_corr, h['dp3_t'], vmax)
     h['p5k_min_hillcorr'] = t5k_corr * METERS_PER_MILE / 5000.0 / 60.0
     h['minetti_resid'] = (h['p5k_min_hillcorr'] - h['p5k_cs_min']) * 60
 
@@ -1253,7 +1202,6 @@ def project_hill_reps(cs=None, epoch=None):
     meas = _load_hillrep_measured() if (cs is not None and epoch is not None) else {}
     if meas:
         h = add_cs(h, cs, epoch)
-        vmax = workout_vmax()
         key = h['date'].dt.strftime('%Y-%m-%d')
         for idx, dk in key.items():
             m = meas.get(dk)
@@ -1267,8 +1215,9 @@ def project_hill_reps(cs=None, epoch=None):
             grade = (m['climb_ft'] * FT_PER_M) / m['dist_m']
             factor = minetti_cost(grade) / minetti_cost(0.0)
             flat_d = m['dist_m'] * factor
+            vmax = workout_vmax(float(h.at[idx, 'cs_t']))   # k*CS(date)
             d_eff, t_eff = _connected_core(flat_d, m['time_s'], m['rest_s'],
-                                           dp3=h.at[idx, 'dp3_t'])
+                                           dp3=h.at[idx, 'dp3_t'], vmax=vmax)
             dp3 = float(h.at[idx, 'dp3_t'])
             cs_imp = float(cp3_implied_cs(d_eff, t_eff, dp3, vmax))
             t5k = float(cp3_time(5000.0, cs_imp, dp3, vmax))

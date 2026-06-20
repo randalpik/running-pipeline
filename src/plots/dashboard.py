@@ -418,21 +418,19 @@ def _long_run_residual(lr_in_aug):
     return float((w * keep['raw_resid']).sum() / w.sum())
 
 
-def _invert_projection(make_efforts, t5k_target, dp3, lo=200.0, hi=600.0):
+def _invert_projection(make_efforts, t5k_target, dp3, vmax, lo=200.0, hi=600.0):
     """Find the pace (s/mi) at which a structured workout's connected
     projection equals the frontier's 5K capability. make_efforts(pace) must
     return (d_eff, t_eff) via THE SAME machinery the TQ corpus uses
     (parse_workouts._connected_core / _cf_structure) — predictions and
     plotted points are projections of one another by construction (Max,
     June 2026: 'I assumed those were aligned'). Bisection; the projection
-    is monotone in pace."""
+    is monotone in pace. vmax = workout_vmax(CS) at the prediction date."""
     def t5k_of(pace):
-        from src.shared.workouts import workout_vmax
         d_eff, t_eff = make_efforts(pace)
         return float(cp3_time(5000.0,
-                              cp3_implied_cs(d_eff, t_eff, dp3,
-                                             workout_vmax()),
-                              dp3, workout_vmax()))
+                              cp3_implied_cs(d_eff, t_eff, dp3, vmax),
+                              dp3, vmax))
     for _ in range(60):
         mid = (lo + hi) / 2
         if t5k_of(mid) < t5k_target:
@@ -453,10 +451,10 @@ def compute_workout_predictions(daily_summary, front_med):
     from src.parsers.parse_workouts import _connected_core, _cf_structure
     from src.shared.workouts import workout_vmax
     latest = daily_summary.iloc[-1]
-    # Workout predictions invert the TQ corpus machinery, so they use the
-    # WORKOUT-side v_max/D′₃ (a measurement calibration), not the race edges.
-    dp3 = float(cp3_dprime(latest['dp_med'], latest['cs_mps_med'],
-                           workout_vmax()))
+    # Workout predictions invert the TQ corpus machinery. v_max is the single
+    # CS-multiple at the latest date (workout_vmax == evidence edge).
+    vmax = workout_vmax(float(latest['cs_mps_med']))
+    dp3 = float(cp3_dprime(latest['dp_med'], latest['cs_mps_med'], vmax))
     t5k_front = (float(front_med['frontier_pace_min'].iloc[-1])
                  * 60.0 * 5000.0 / METERS_PER_MILE)
 
@@ -465,16 +463,16 @@ def compute_workout_predictions(daily_summary, front_med):
         dists = [1600.0] * 6
         times = [pace * 1600.0 / METERS_PER_MILE] * 6
         rests = [180.0] * 5
-        return _connected_core(dists, times, rests, dp3=dp3)
-    pace_intervals = _invert_projection(_intervals, t5k_front, dp3)
+        return _connected_core(dists, times, rests, dp3=dp3, vmax=vmax)
+    pace_intervals = _invert_projection(_intervals, t5k_front, dp3, vmax)
 
     # --- Continuous fartlek 8000m: the 500/300 reconstruction, inverted.
     #     The blended pace is what the log would read; the hard-500 pace
     #     (blended / structure ratio) is the actual prescription.
     def _cf(pace):
-        d_eff, t_eff, _ = _cf_structure(8000.0, pace, dp3=dp3)
+        d_eff, t_eff, _ = _cf_structure(8000.0, pace, dp3=dp3, vmax=vmax)
         return d_eff, t_eff
-    pace_fartlek = _invert_projection(_cf, t5k_front, dp3)
+    pace_fartlek = _invert_projection(_cf, t5k_front, dp3, vmax)
     from src.parsers.parse_workouts import CF_HARD_M, CF_FLOAT_M, CF_FLOAT_HARD_RATIO
     hards = 8000.0 // (CF_HARD_M + CF_FLOAT_M) * CF_HARD_M + 8000.0 % (CF_HARD_M + CF_FLOAT_M)
     floats = 8000.0 - hards
@@ -490,7 +488,7 @@ def compute_workout_predictions(daily_summary, front_med):
     #     Self-scales per runner (no fixed-distance assumption). The former
     #     cp3_time × β_long path predicted faster-than-CS at multi-hour efforts
     #     once β_long was retired to 0 — bare CP3 asymptotes to CS from above.
-    vp = vmax_predict()
+    vp = vmax_predict(float(latest['cs_mps_med']))
     dp3_p = float(latest['dp3_pred_med'])
 
     def _t_long(d):

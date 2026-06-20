@@ -1,36 +1,28 @@
-"""Derive + audit the two CP3 v_max edges for the active profile (June 2026).
+"""Derive the two CP3 v_max CS-multiples for the active profile (Max, June 2026).
 
-v_max is an uncertainty interval, not a point estimate — see the registry
-comment in src/shared/cs_projection.py. This script derives both edges from
-the profile's own corpus and audits Max's two hard invariants:
+v_max is under-identified from the data, so we don't estimate it — we BRACKET it
+with two conservative CS-multiples, each the binding extreme of a constraint
+against demonstrated performance. No manual tuning: this script derives both;
+re-run after a CS refit and copy the values into cs_projection's
+VMAX_EVID_CS_RATIO_BY_PROFILE / VMAX_PRED_CS_RATIO_BY_PROFILE.
 
-  (1) 400 m races must never exceed the frontier  → EVIDENCE edge (high):
-      the lifetime envelope of sprint-credit demonstrated by the 400 corpus
-      (the largest per-race implied v_max placing each 400 exactly ON the
-      engine-only frontier), plus margin.
-  (2) 400/800 predictions must never beat the lifetime PRs anywhere in the
-      historical sweep → PREDICTION edge (low): the largest v_max whose
-      sweep-min predictions still respect both PRs, minus margin.
+  k_evid (evidence / DOWN-projection, HIGH): the smallest multiple that keeps
+    every short (<700 m) race behind the AEROBIC (>=1500 m) race frontier — the
+    races reliably WA-convertible to a 5K. The >=1500 frontier is pure World
+    Athletics (v_max-INDEPENDENT), so this is a monotonic root-find with NO
+    fixed-point. 800s are deliberately neither the reference (a model-projected
+    short race isn't a yardstick) nor constrained (they bind the displayed
+    frontier as real demos). "A 400 never defines the frontier" then holds by
+    construction.
 
-The frontier is the standard demo set (time ≥ 120 s — 800s included and
-allowed to bind; Max, June 2026). The evidence envelope is solved on the
-400 corpus, the only shorts that are NOT demos, so the solve is not
-circular. The workout accumulator's v_max (workouts.workout_vmax()) is
-a separate measurement calibration and is NOT derived here.
+  k_pred (prediction / UP-projection, LOW): the largest multiple whose CP3-up
+    400/800 predictions never beat the lifetime PRs (binding at peak fitness),
+    measured on the displayed frontier built at k_evid.
 
-Usage: python scripts/calibrate_vmax.py     (uses data/ artifacts)
-Re-run after a CS refit; copy results into cs_projection's
-VMAX_EVID_BY_PROFILE / VMAX_PRED_BY_PROFILE.
+Defaults (no qualifying short race, e.g. a new watch profile): k_evid=2.00,
+k_pred=1.50 — a wide conservative bracket the first real short race tightens.
 
-FOLLOW-UP (June 2026 1500 m-boundary redesign): the `implied_vmax` /
-`sweep_min_pred` SOLVERS below still model a sub-1500 race as CP3 straight to
-5K, but the live projection now goes CP3 → 1500 m → WA → 5K (two legs). So the
-"400-corpus envelope" number this prints is computed on the OLD path and is not
-directly comparable to the registry edge — TODO: update the solvers to the
-two-leg path. The "audits at registry edges" section IS trustworthy: it calls
-the live `project_races_to_5k_pace`, and it confirms the registry v_max
-(9.5 / 8.3) still satisfies both invariants (0 short races past the frontier;
-400/800 predictions respect the PRs). So the constants need no change today.
+Usage: python scripts/calibrate_vmax.py     (uses the active profile's data/)
 """
 import os
 import sys
@@ -41,148 +33,152 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.shared.paths import DATA_DIR
+from src.shared.units import METERS_PER_MILE
 import src.shared.cs_projection as csp
-from src.shared.performance_frontier import (standard_demos, build_frontier,
-                                             frontier_at_anchor)
+from src.shared.performance_frontier import build_frontier
 
-ANCHORS = [(400.0, None), (800.0, None)]   # PRs filled from races.csv
-PAIR = [('2023-08-02', 400.0, 57.0), ('2023-07-26', 1609.0, 270.0)]
+SHORT_MAX_M = 700.0          # races below this are CONSTRAINED (400s, 200s)
+AERO_MIN_M = csp.CP3_IAAF_BOUNDARY_M   # 1500 — aerobic reference frontier
+K_EVID_DEFAULT = csp.VMAX_EVID_CS_RATIO_DEFAULT
+K_PRED_DEFAULT = csp.VMAX_PRED_CS_RATIO_DEFAULT
+PRED_ANCHORS = (400.0, 800.0)
 
 
-def load_base():
-    daily, beta_long, d_thresh, xc = csp.load_cs_outputs(str(DATA_DIR))
-    races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
-    return daily, beta_long, d_thresh, xc, races
+def _mss(t):
+    return f"{int(t // 60)}:{t % 60:04.1f}"
 
 
 def lifetime_pr(races, anchor):
     r = races.dropna(subset=['distance_m', 'time_sec']).copy()
     if 'surface' in r.columns:
         r = r[r['surface'] != 'Downhill']
-    is_tt = r.get('event', pd.Series('', index=r.index)).fillna('').astype(str)\
-             .str.contains('time trial', case=False, regex=False)
-    r = r[~is_tt]
+    ev = r.get('event', pd.Series('', index=r.index)).fillna('').astype(str)
+    r = r[~ev.str.contains('time trial', case=False, regex=False)]
     sub = r[(r['distance_m'] - anchor).abs() / anchor < 0.08]
     return float(sub['time_sec'].min()) if len(sub) else np.nan
 
 
-def engine_frontier(daily, beta_long, d_thresh, xc):
-    """Frontier from standard_demos (time >= 120s — 800s in). Demo
-    projection uses the registry/env evidence edge."""
-    demos = standard_demos(daily, beta_long, d_thresh, xc)
-    frontier, demos = build_frontier(demos, pd.DatetimeIndex(daily['date']),
-                                     daily['p5k_implied_min'])
-    return frontier, demos
-
-
-def implied_vmax(date, d, t, daily_lk, fb):
-    """v_max placing this short race exactly ON the engine frontier."""
-    dd = pd.Timestamp(date).date()
-    t5k_f = fb.get(dd) * 60 * 5000 / 1609.344
-    dp2 = float(daily_lk.loc[dd, 'dp_med'])
-    cs_fit = float(daily_lk.loc[dd, 'cs_mps_med'])
-
-    def pred(v):
-        dp3 = float(csp.cp3_dprime(dp2, cs_fit, v))
-        cs_f = float(csp.cp3_implied_cs(5000.0, t5k_f, dp3, v))
-        return float(csp.cp3_time(d, cs_f, dp3, v))
-
-    lo, hi = max(7.2, d / t + 0.05), 14.0
-    if pred(hi) > t:
-        return None          # past frontier even at huge sprint credit
-    if pred(lo) < t:
-        return -1.0          # behind frontier at any credit (never binds)
-    for _ in range(60):
-        mid = 0.5 * (lo + hi)
-        if pred(mid) > t:
-            lo = mid
-        else:
-            hi = mid
-    return 0.5 * (lo + hi)
-
-
-def sweep_min_pred(frontier, daily, anchor, beta_long, d_thresh, v):
-    os.environ['RP_VMAX_PRED'] = f'{v:.6f}'
-    dv = daily.copy()
-    dv['dp3_pred_med'] = csp.cp3_dprime(dv['dp_med'], dv['cs_mps_med'], v)
-    t = frontier_at_anchor(frontier, dv, anchor, beta_long, d_thresh)
-    os.environ.pop('RP_VMAX_PRED', None)
-    return float(np.nanmin(t)), int(np.nanargmin(t))
-
-
 def main():
-    daily, beta_long, d_thresh, xc, races = load_base()
-    daily_lk = daily.set_index(daily['date'].dt.date)
-    frontier, demos = engine_frontier(daily, beta_long, d_thresh, xc)
-    fb = pd.Series(frontier['frontier_pace_min'].to_numpy(),
-                   index=daily['date'].dt.date.to_numpy())
+    import argparse
+    ap = argparse.ArgumentParser(description=(__doc__ or '').split('\n\n')[0])
+    ap.add_argument('--write', action='store_true',
+                    help='write DATA_DIR/vmax_ratios.csv (the pipeline source); '
+                         'omit for a dry-run audit')
+    args = ap.parse_args()
 
-    # ---- evidence edge: sprint-credit envelope over the 400 corpus ----
-    print('=== EVIDENCE edge (invariant 1: 400s never past the frontier) ===')
-    shorts = races[races['distance_m'] < 1500].sort_values('date')
-    # Envelope table: 400s only — 800s are demos now, so their implied
-    # v_max against a frontier they may themselves bind is circular.
-    fours = shorts[shorts['distance_m'] < 600]
-    env_400 = 0.0
-    for _, r in fours.iterrows():
-        v = implied_vmax(r['date'], float(r['distance_m']),
-                         float(r['time_sec']), daily_lk, fb)
-        lab = ('never binds' if v == -1.0
-               else '>14 ?!' if v is None else f'{v:5.2f}')
-        is400 = abs(r['distance_m'] - 400) < 50
-        if is400 and isinstance(v, float) and v > env_400:
-            env_400 = v
-        print(f"  {r['date'].date()} {r['distance_m']:5.0f}m "
-              f"{r['time_sec']:7.1f}s {'F' if r['fatigued'] else ' '}  "
-              f"implied v_max {lab}{'   <- 400 corpus' if is400 else ''}")
-    print(f'  400-corpus envelope: {env_400:.2f}  '
-          f'(registry v_evid = {csp.vmax_evidence():.2f} — must exceed this)')
+    daily, beta_long, d_thresh, xc = csp.load_cs_outputs(str(DATA_DIR))
+    grid = pd.DatetimeIndex(daily['date'])
+    gd = grid.to_numpy('datetime64[D]').astype(float)
+    floor = daily['p5k_implied_min'].to_numpy(float)
+    races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
+    profile = os.environ.get('RP_PROFILE', 'max')
+    print(f"profile: {profile}")
 
-    # ---- prediction edge: PR-sweep bounds ----
-    print('\n=== PREDICTION edge (invariant 2: predictions never beat PRs) ===')
-    for anchor, _ in ANCHORS:
-        pr = lifetime_pr(races, anchor)
-        lo, hi = 7.3, 12.0
-        for _ in range(40):
-            mid = 0.5 * (lo + hi)
-            mn, _i = sweep_min_pred(frontier, daily, anchor, beta_long,
-                                    d_thresh, mid)
-            if mn >= pr:
-                lo = mid
-            else:
-                hi = mid
-        mn_reg, i_reg = sweep_min_pred(frontier, daily, anchor, beta_long,
-                                       d_thresh, csp.vmax_predict())
-        print(f'  {anchor:5.0f}m: PR {pr:7.2f}s | v_pred upper bound {lo:.3f} '
-              f'| at registry {csp.vmax_predict():.2f}: sweep-min {mn_reg:.2f}s '
-              f'({daily["date"].iloc[i_reg].date()}), margin {mn_reg - pr:+.2f}s')
+    # ---- aerobic reference frontier: >=1500 m races only (WA, k-independent) ----
+    aero = races[(~races['fatigued'].fillna(False).astype(bool))
+                 & (races.get('surface', 'X') != 'Downhill')
+                 & (races['distance_m'] >= AERO_MIN_M)].copy()
+    short = races[races['distance_m'] < SHORT_MAX_M].copy()
 
-    # ---- audits at registry values ----
-    print('\n=== audits at registry edges ===')
-    proj = csp.project_races_to_5k_pace(shorts.copy(), daily, beta_long,
-                                        d_thresh, apply_xc_correction=True,
-                                        xc_correction=xc)
-    proj['front'] = [fb.get(d.date(), np.nan) for d in proj['date']]
-    proj['delta'] = (proj['pace_norm_min'] - proj['front']) * 60
-    past = proj[proj['delta'] < 0]
-    print(f'  short races past frontier: {len(past)}/{len(proj)}')
-    for _, r in proj.sort_values('delta').head(4).iterrows():
-        print(f"    {r['date'].date()} {r['distance_m']:5.0f}m "
-              f"{r['time_sec']:7.1f}s  {r['delta']:+6.1f} s/mi")
-    r800 = races[((races['distance_m'] - 800).abs() < 60)
-                 & ~races['fatigued'].fillna(False).astype(bool)]
-    d800 = demos[(demos['src'] == 'race') & demos['date'].isin(r800['date'])]
-    print(f'  800m demos binding the frontier: '
-          f'{int(d800["binding"].sum())}/{len(d800)} (by design — Max, '
-          f'June 2026: an 800 is honest aerobic evidence)')
+    def frontier_pace_at(dates, fp):
+        return np.array([float(np.interp(np.datetime64(d, 'D').astype(float), gd, fp))
+                         for d in dates])
 
-    pair = pd.DataFrame([{'date': pd.Timestamp(d), 'distance_m': dm,
-                          'time_sec': ts} for d, dm, ts in PAIR])
-    pp = csp.project_races_to_5k_pace(pair, daily, beta_long, d_thresh,
-                                      apply_xc_correction=False)
-    t5 = pp['time_norm_sec'].to_numpy()
-    print(f'  pair diagnostic (no longer an anchor): 400@57.0 -> {t5[0]:.1f}s; '
-          f'mile@4:30 -> {t5[1]:.1f}s (delta {(t5[0]-t5[1])/3.107:+.1f} s/mi)')
+    # ===== k_evid: smallest multiple keeping every <700 m race behind aero frontier
+    print("\n=== k_evid (short races behind the >=1500 m aerobic frontier) ===")
+    if aero.empty or short.empty:
+        k_evid = K_EVID_DEFAULT
+        print(f"  no {'aerobic races' if aero.empty else 'short races'} "
+              f"-> DEFAULT k_evid = {k_evid:.2f}")
+    else:
+        aproj = csp.project_races_to_5k_pace(aero, daily, beta_long, d_thresh,
+                                             apply_xc_correction=True, xc_correction=xc)
+        aero_demos = pd.DataFrame({'date': aproj['date'], 'pace_min': aproj['pace_norm_min'],
+                                   'src': 'race', 'category': 'race', 'detail': ''})
+        aero_front, _ = build_frontier(aero_demos, grid, floor)
+        afp = aero_front['frontier_pace_min'].to_numpy(float)
+
+        def worst_past(k):     # max over short races of (aero_frontier - proj), + = PAST
+            os.environ['RP_VMAX_EVID_RATIO'] = f'{k:.5f}'
+            pr = csp.project_races_to_5k_pace(short.copy(), daily, beta_long, d_thresh,
+                                              apply_xc_correction=True, xc_correction=xc)
+            os.environ.pop('RP_VMAX_EVID_RATIO', None)
+            fpa = frontier_pace_at(pr['date'], afp)
+            d = (fpa - pr['pace_norm_min'].to_numpy(float)) * 60.0
+            return d, pr
+        k_evid = None
+        for k in np.arange(1.40, 2.61, 0.01):
+            d, _ = worst_past(k)
+            if np.nanmax(d) <= 0:
+                k_evid = round(float(k), 2)
+                break
+        d, pr = worst_past(k_evid if k_evid else 2.60)
+        i = int(np.nanargmax(d))
+        b = pr.iloc[i]
+        if k_evid is None:        # no multiple in range cleared it -> conservative default
+            k_evid = K_EVID_DEFAULT
+            print(f"  no multiple <=2.60 keeps all short races behind -> DEFAULT {k_evid}")
+        else:
+            print(f"  k_evid = {k_evid}   binding: {b['date'].date()} "
+                  f"{int(b['distance_m'])}m {b['time_sec']:.1f}s "
+                  f"(margin {np.nanmax(d):+.2f} s/mi behind frontier)")
+
+    # ===== k_pred: largest multiple whose 400/800 predictions don't beat PRs =====
+    print("\n=== k_pred (short predictions never beat lifetime PRs) ===")
+    prs = {a: lifetime_pr(races, a) for a in PRED_ANCHORS}
+    have = {a: t for a, t in prs.items() if np.isfinite(t)}
+    if not have:
+        k_pred = K_PRED_DEFAULT
+        print(f"  no short PRs -> DEFAULT k_pred = {k_pred:.2f}")
+    else:
+        # Race-only frontier (no workout corpus) so k_pred depends solely on
+        # CS + races — no plot-phase artifact, no build-order loop. Built at the
+        # derived k_evid (sub-1500 race demos use the evidence edge).
+        os.environ['RP_VMAX_EVID_RATIO'] = f'{k_evid:.5f}'
+        elig = races[(~races['fatigued'].fillna(False).astype(bool))
+                     & (races.get('surface', 'X') != 'Downhill')
+                     & (races['time_sec'] >= 120)].copy()
+        ep = csp.project_races_to_5k_pace(elig, daily, beta_long, d_thresh,
+                                          apply_xc_correction=True, xc_correction=xc)
+        rdemos = pd.DataFrame({'date': ep['date'], 'pace_min': ep['pace_norm_min'],
+                               'src': 'race', 'category': 'race', 'detail': ''})
+        front, _ = build_frontier(rdemos, grid, floor)
+        os.environ.pop('RP_VMAX_EVID_RATIO', None)
+        cs_g = daily['cs_mps_med'].to_numpy(float)
+        dp2_g = daily['dp_med'].to_numpy(float)
+        t5k_front = front['frontier_pace_min'].to_numpy(float) * 60.0 * 5000.0 / METERS_PER_MILE
+
+        def min_pred(a, k):    # fastest predicted time at anchor a over all dates
+            v = k * cs_g
+            dp3 = csp.cp3_dprime(dp2_g, cs_g, v)
+            ci = csp.cp3_implied_cs(5000.0, t5k_front, dp3, v)
+            return float(np.nanmin(np.asarray(csp.cp3_time(a, ci, dp3, v), float)))
+
+        k_pred = None
+        for k in np.arange(2.00, 1.19, -0.01):   # descend; first k respecting all PRs
+            if all(min_pred(a, k) >= have[a] for a in have):
+                k_pred = round(float(k), 2)
+                break
+        k_pred = k_pred if k_pred else K_PRED_DEFAULT
+        for a in have:
+            mp = min_pred(a, k_pred)
+            print(f"  {int(a)}m PR {have[a]:.1f}s | pred {mp:.1f}s "
+                  f"(margin {have[a]-mp:+.1f}s)")
+        print(f"  k_pred = {k_pred}")
+
+    # ---- result + write the pipeline artifact ----
+    reg_e = csp.VMAX_EVID_CS_RATIO_BY_PROFILE.get(profile, K_EVID_DEFAULT)
+    reg_p = csp.VMAX_PRED_CS_RATIO_BY_PROFILE.get(profile, K_PRED_DEFAULT)
+    print(f"\n=== result ===\n  derived: k_evid={k_evid}  k_pred={k_pred}")
+    print(f"  registry fallback: k_evid={reg_e}  k_pred={reg_p}"
+          + ("  (match)" if (k_evid == reg_e and k_pred == reg_p) else ""))
+    if args.write:
+        out = DATA_DIR / 'vmax_ratios.csv'
+        pd.DataFrame([{'profile': profile, 'k_evid': k_evid, 'k_pred': k_pred}]
+                     ).to_csv(out, index=False)
+        print(f"  wrote {out}")
+    else:
+        print("  (dry run; pass --write to update data/vmax_ratios.csv)")
 
 
 if __name__ == '__main__':

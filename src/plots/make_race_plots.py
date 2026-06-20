@@ -675,7 +675,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         title_slug='race_pace_all',
         page_title='Races',
         title='Lifetime races: 5K-equivalent pace',
-        subtitle='5K races at actual pace; 1500 m and up converted to 5K-equivalent via World Athletics scoring, shorter races via Critical Speed projection — compared to modeled 5K fitness',
+        subtitle='5K races at actual pace, others converted via World Athletics scoring and Critical Speed projection',
         cursor_tooltip=CursorTooltip(
             payload=payload_all,
             build_js=smooth_build_js_all,

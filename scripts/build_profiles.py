@@ -169,6 +169,22 @@ def build_coros_data(profile, env, *, rebuild, fit=False):
                   f"CS-dependent tabs will be omitted")
     elif profile.fit:
         print(f"[{profile.id}] no --fit: reusing existing bayes_cs_* outputs")
+    # v_max CS-multiples (k_evid, k_pred) derived from this profile's races + CS
+    # fit -> data/vmax_ratios.csv, which cs_projection reads (registry/defaults
+    # are the fallback). Cheap (~2s); runs after the fit and BEFORE parse_workouts
+    # (workout deflation uses k_evid) and the plots. Skipped without a CS summary
+    # — then cs_projection uses the conservative defaults.
+    if (data_dir / "bayes_cs_summary.csv").exists():
+        try:
+            _run(["python", "scripts/calibrate_vmax.py", "--write"], env,
+                 f"{profile.id}: calibrate_vmax")
+        except subprocess.CalledProcessError:
+            # Don't abort the build — cs_projection falls back to the registry
+            # per-profile ratios / conservative defaults if the artifact is absent.
+            print(f"[{profile.id}] WARNING: calibrate_vmax failed — "
+                  f"v_max registry/defaults apply")
+    else:
+        print(f"[{profile.id}] calibrate_vmax: no CS fit — v_max defaults apply")
     # Watch-derived rep extraction (workout_measured.csv). Watch profiles
     # have no hand log to reconcile against -> --watch-only. Needs the rich
     # details cache and a CS fit; skipped (with the tab unaffected) if absent.

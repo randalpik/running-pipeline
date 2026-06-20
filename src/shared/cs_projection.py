@@ -77,82 +77,101 @@ from src.shared.units import METERS_PER_MILE
 
 
 # ---------------------------------------------------------------------------
-# v_max — the CP3 model's instantaneous maximum speed (m/s), per profile.
+# v_max — the CP3 model's instantaneous maximum speed (m/s).
 #
-# v_max is an UNCERTAINTY INTERVAL, not a point estimate (Max, June 2026).
-# The sprint corpus can't identify it (the per-race demonstrated values
-# scatter 7.6–9.4 with same-day spreads of 1.3 m/s — execution noise, not
-# a trend; a time-varying v_max(t) was considered and rejected on those
-# numbers). Max's two hard invariants — (1) 400 m races must never exceed
-# the frontier, (2) 400/800 predictions must never beat the lifetime PRs —
-# are jointly unsatisfiable by any single curve: the 400 PR was run ~3
-# months after the frontier's 2023 peak, so a curve that never promises
-# sub-PR at the peak must read the August PR as beating the August
-# frontier. Each direction therefore takes its conservative edge:
+# TWO CS-MULTIPLES per profile (Max, June 2026 — replaces the former two FLAT
+# edges, 9.5 / 8.3). v_max is tied to instantaneous CS:
 #
-#   EVIDENCE (reading short races as 5K proof — diamonds): v_max_evidence,
-#   the HIGH edge — "the sprint could have carried much of that 400;
-#   credit the engine modestly." Calibrated as the lifetime envelope of
-#   sprint-credit demonstrated by the 400 corpus: the largest per-race
-#   implied v_max (9.19, a 2017 fatigued 57.4 — with the 800 demos
-#   binding the frontier nearby) + margin, so every 400 ever raced sits
-#   at/behind the frontier by construction. 800s and longer are frontier
-#   DEMOS (≥ 120 s) and may bind it — Max verified the binding 800s are
-#   coherent genuine peaks; a ≥ 1500 m demo cutoff was tried and reverted.
+#     v_max_evidence(t) = k_evid * cs_mps(t)
+#     v_max_predict(t)  = k_pred * cs_mps(t)
 #
-#   PREDICTION (forward-solving short times from aerobic fitness — the
-#   dashboard cards, per-panel frontier lines): v_max_predict, the LOW
-#   edge — "assume little sprint contribution." Calibrated under the
-#   PR-sweep bounds (8.52/8.55 from the 800/400 anchors) with ~0.5 s
-#   margin: no date in history gets a 400/800 prediction faster than the
-#   lifetime PRs. The asymmetry is also what lets a BINDING 800 demo
-#   coexist with this invariant: conservative read in, conservative
-#   prediction out — equality is never forced.
+# v_max is under-identified from the data, so we don't estimate it — we BRACKET
+# it with two conservative CS-multiples, each the binding extreme of a
+# constraint against demonstrated performance (no manual tuning). scripts/
+# calibrate_vmax.py DERIVES them per profile and runs automatically in the build
+# (after the CS fit, before parse_workouts + plots), writing data/vmax_ratios.csv
+# which vmax_evidence/vmax_predict read; the *_BY_PROFILE values below are the
+# fallback when that artifact is absent. The two extremes:
 #
-# This is the frontier's own epistemology (demonstrations are one-sided
-# proofs, not symmetric estimates) extended to the v_max axis, and it
-# encodes Max's self-knowledge that equivalence tables overrate his short
-# distances: conversions are deliberately LOSSY both ways — a 400 is weak
-# evidence of 5K fitness, and 5K fitness is a weak promise of 400 speed.
-# Setting both edges equal recovers a symmetric model. Derivations:
-# scripts/calibrate_vmax.py; re-run after a CS refit.
+#   k_evid (evidence / DOWN-projection, HIGH): the smallest multiple that keeps
+#   every short (<700 m) race behind the AEROBIC (>=1500 m) race frontier — the
+#   races reliably WA-convertible to a 5K. So a sprint never converts to a 5K
+#   faster than demonstrated aerobic fitness, and "a 400 never defines the
+#   frontier" is true by construction. The >=1500 frontier is pure WA
+#   (v_max-independent) -> a monotonic root-find, no fixed-point. 800s are
+#   neither the reference (a model-projected short race isn't a yardstick) nor
+#   constrained (they bind the displayed frontier as real demos).
 #
-# The workout accumulator deliberately does NOT use these edges — its
-# deflation v_max (workouts.workout_vmax()) is a measurement calibration
-# anchored to Max's watch rep corpus (CS-scaled for other profiles), not a
-# conservatism policy.
+#   k_pred (prediction / UP-projection, LOW): the largest multiple whose CP3-up
+#   400/800 predictions never beat the lifetime PRs (binding at peak fitness).
+#   The gap to k_evid is the irreducible v_max uncertainty we lack data to close.
 #
-# Other profiles: no sprint corpus → symmetric literature-plausible
-# defaults for a trained distance runner.
-# ---------------------------------------------------------------------------
-VMAX_EVID_DEFAULT = 8.5
-VMAX_PRED_DEFAULT = 8.5
-VMAX_EVID_BY_PROFILE = {
-    'max': 9.5,    # 400-corpus sprint-credit envelope (9.19) + margin
+# A multiple (vs a flat m/s) transfers across athletes and avoids a flat v_max
+# sitting too close to an athlete's sprint speed when CS dips (which over-credits
+# short races — a 59.3 400 -> a 15:32 5K). Defaults below cover a profile with no
+# qualifying short race; the first real short race tightens the bracket inward.
+# RP_VMAX_EVID_RATIO / RP_VMAX_PRED_RATIO override for sweeps.
+VMAX_EVID_CS_RATIO_DEFAULT = 2.00      # conservative high edge, no short corpus
+VMAX_PRED_CS_RATIO_DEFAULT = 1.50      # conservative low edge, no short corpus
+VMAX_EVID_CS_RATIO_BY_PROFILE = {
+    'max': 1.97,   # smallest keeping every <700m race behind the >=1500m frontier
 }
-VMAX_PRED_BY_PROFILE = {
-    'max': 8.3,    # below the PR-sweep bounds (8.52 / 8.55), ~0.5 s margin
+VMAX_PRED_CS_RATIO_BY_PROFILE = {
+    'max': 1.53,   # largest whose 400/800 predictions don't beat the PRs (800 binds)
 }
 
 
-def vmax_evidence():
-    """The active profile's evidence-side (high-edge) v_max (m/s).
-    RP_VMAX_EVID overrides for calibration sweeps."""
-    env = os.environ.get('RP_VMAX_EVID')
-    if env:
-        return float(env)
-    profile = os.environ.get('RP_PROFILE', 'max')
-    return VMAX_EVID_BY_PROFILE.get(profile, VMAX_EVID_DEFAULT)
+_VMAX_RATIOS_CACHE = {}
 
 
-def vmax_predict():
-    """The active profile's prediction-side (low-edge) v_max (m/s).
-    RP_VMAX_PRED overrides for calibration sweeps."""
-    env = os.environ.get('RP_VMAX_PRED')
+def _vmax_ratios_from_file():
+    """(k_evid, k_pred) derived per profile by scripts/calibrate_vmax.py and
+    written to RP_DATA_DIR/vmax_ratios.csv (the live source). None if absent or
+    unreadable, in which case the *_BY_PROFILE registry / defaults apply. Cached
+    per data dir (each pipeline step is its own process; the file is written by
+    calibrate_vmax before any consumer runs)."""
+    from src.shared.paths import DATA_DIR
+    key = str(DATA_DIR)
+    if key not in _VMAX_RATIOS_CACHE:
+        p = DATA_DIR / 'vmax_ratios.csv'
+        val = None
+        if p.exists():
+            try:
+                df = pd.read_csv(p)
+                if len(df):
+                    val = (float(df['k_evid'].iloc[0]), float(df['k_pred'].iloc[0]))
+            except Exception:
+                val = None
+        _VMAX_RATIOS_CACHE[key] = val
+    return _VMAX_RATIOS_CACHE[key]
+
+
+def _ratio(env_key, file_idx, by_profile, default):
+    """Resolve a v_max/CS ratio: env override (calibration sweeps) > the
+    calibrate_vmax artifact > the per-profile registry > the conservative
+    default."""
+    env = os.environ.get(env_key)
     if env:
         return float(env)
-    profile = os.environ.get('RP_PROFILE', 'max')
-    return VMAX_PRED_BY_PROFILE.get(profile, VMAX_PRED_DEFAULT)
+    rf = _vmax_ratios_from_file()
+    if rf is not None:
+        return rf[file_idx]
+    return by_profile.get(os.environ.get('RP_PROFILE', 'max'), default)
+
+
+def vmax_evidence(cs_mps):
+    """Evidence-edge (high) CP3 v_max at instantaneous CS: k_evid * cs. For the
+    race-evidence DOWN-projection and the workout accumulator (efforts read as
+    evidence). Scalar / array / Series in -> same out."""
+    return _ratio('RP_VMAX_EVID_RATIO', 0, VMAX_EVID_CS_RATIO_BY_PROFILE,
+                  VMAX_EVID_CS_RATIO_DEFAULT) * cs_mps
+
+
+def vmax_predict(cs_mps):
+    """Prediction-edge (low) CP3 v_max at instantaneous CS: k_pred * cs. For
+    forward short-distance predictions (lines-at-anchor, dashboard cards)."""
+    return _ratio('RP_VMAX_PRED_RATIO', 1, VMAX_PRED_CS_RATIO_BY_PROFILE,
+                  VMAX_PRED_CS_RATIO_DEFAULT) * cs_mps
 
 
 # ---------------------------------------------------------------------------
@@ -306,13 +325,12 @@ def load_cs_outputs(in_dir, tag=''):
     # prediction by construction, on BOTH edges.
     daily['p5k_implied_min'] = (METERS_PER_MILE * (5000.0 - daily['dp_med'])
                                 / daily['cs_mps_med'] / 5000.0 / 60.0)
-    # CP3 full anaerobic reservoir per date, one per v_max edge (see the
-    # module docstring): evidence (reading efforts) and prediction (forward
-    # solves) each get a self-consistent curve.
+    # CP3 full anaerobic reservoir per date, one per v_max edge (each a
+    # CS-multiple): evidence (reading efforts) and prediction (forward solves).
     daily['dp3_evid_med'] = cp3_dprime(daily['dp_med'], daily['cs_mps_med'],
-                                       vmax_evidence())
+                                       vmax_evidence(daily['cs_mps_med']))
     daily['dp3_pred_med'] = cp3_dprime(daily['dp_med'], daily['cs_mps_med'],
-                                       vmax_predict())
+                                       vmax_predict(daily['cs_mps_med']))
     return daily, beta_long, d_thresh, xc
 
 
@@ -416,7 +434,6 @@ def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
 
     lookup = daily_summary.set_index(daily_summary['date'].dt.date)
     beta_anchor = _beta_long_factor(norm_dist_m, beta_long, d_thresh)
-    vmax = vmax_evidence()   # races are read as EVIDENCE — conservative-high edge
 
     def _proj(r):
         d = r['date']
@@ -425,6 +442,7 @@ def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
         if d not in lookup.index:
             return np.nan
         dp3 = float(lookup.loc[d, 'dp3_evid_med'])
+        vmax = vmax_evidence(float(lookup.loc[d, 'cs_mps_med']))  # races read as evidence
         d_race = float(r['distance_m'])
         t_race = float(r['time_sec'])
         if t_race <= 0 or d_race <= 0:
@@ -504,8 +522,8 @@ def cs_line_at_anchor(daily_summary, anchor_dist_m, beta_long, d_thresh_long):
     distances assumes population-typical leg speed — invalid for a distance
     specialist. CP3+v_max caps short predictions at the athlete's own
     demonstrated v_max instead. The asymmetry is deliberate."""
-    vmax = vmax_predict()
     cs_mps = daily_summary['cs_mps_med'].values
+    vmax = vmax_predict(cs_mps)          # prediction edge, per date
     dp3 = daily_summary['dp3_pred_med'].values
     if anchor_dist_m > 5000.0:
         from src.shared.wa_scoring import wa_equiv_time_at
@@ -535,7 +553,8 @@ def pace5k_series_to_anchor(p5k_min, daily_summary, anchor_dist_m,
     if anchor_dist_m > 5000.0:   # hybrid: >5K up-converts via World Athletics
         from src.shared.wa_scoring import wa_equiv_time_at
         return np.array([wa_equiv_time_at(anchor_dist_m, t) for t in t5k])
-    vmax = vmax_predict()
+    # v_max from the date's FIT CS (prediction edge), not the series-implied cs.
+    vmax = vmax_predict(daily_summary['cs_mps_med'].to_numpy(float))
     dp3 = daily_summary['dp3_pred_med'].to_numpy(float)
     cs_mps = cp3_implied_cs(5000.0, t5k, dp3, vmax)
     return cp3_time(anchor_dist_m, cs_mps, dp3, vmax)
@@ -567,13 +586,16 @@ def cubic_at_anchor(daily_summary, cubic_coefs, t0, handdrawn_start, handdrawn_e
     # 5K time in seconds: pace (min/mi) × 5/1.609344 (miles) × 60 (sec/min)
     t_5k_sec = pace_5k_min * 5.0 / 1.609344 * 60.0
 
-    dp3_lookup = daily_summary.set_index(daily_summary['date'].dt.date)['dp3_pred_med']
-    dp3_values = np.array([float(dp3_lookup.loc[d.date()]) for d in dotted_dates])
+    by_date = daily_summary.set_index(daily_summary['date'].dt.date)
+    dp3_values = np.array([float(by_date.loc[d.date(), 'dp3_pred_med'])
+                           for d in dotted_dates])
+    # prediction-edge v_max at each dotted date (FIT CS, not cubic-implied).
+    vmax = vmax_predict(np.array([float(by_date.loc[d.date(), 'cs_mps_med'])
+                                  for d in dotted_dates]))
 
     # cs_mps from the 5K time via the CP3 inversion (the cubic was calibrated
     # at the 5K anchor, which carries no β_long factor). This helper feeds
     # lines-at-anchor — the forward/prediction direction.
-    vmax = vmax_predict()
     cs_mps = cp3_implied_cs(5000.0, t_5k_sec, dp3_values, vmax)
 
     beta_anchor = _beta_long_factor(anchor_dist_m, beta_long, d_thresh_long)
