@@ -19,9 +19,11 @@ time-inflation factor below 875 m, calibrated to two PR outcomes): the
 prediction level it over-credits (a 39 s 400 m "prediction"), at the
 projection level it under-credits (a 57 s 400 m read as a 20-min-5K
 fitness) — and the CP3 bend fixes both directions with a shape instead of
-a knob. v_max itself is an uncertainty interval whose two edges serve the
-two directions (see the v_max section below).
-See docs/cs-model-reference.md ("Projection method: CP3").
+a knob. v_max is under-identified, so it isn't estimated — it's tied to CS as
+two conservative CS-MULTIPLES (k_evid for reading efforts down, k_pred for
+predicting up), each the binding extreme of a constraint against demonstrated
+performance, derived per profile by scripts/calibrate_vmax.py (see the v_max
+section below). See docs/cs-model-reference.md ("Projection method: CP3").
 
 At the race's date, look up D′ from the model and solve the race's own
 implied CS from (d, t) — a closed-form quadratic, since τ depends on the

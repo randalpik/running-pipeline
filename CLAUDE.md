@@ -167,6 +167,8 @@ src/plots/
 
 **Plotly hover suppression:** plots with `cursor_tooltip` should set `hoverinfo='skip'` on every trace so Plotly's native hover label never renders. If a plot has `hoverlabel=` on any trace (e.g. recovery), pair it with `extra_head_css='.hovertext { display: none !important; }'`. The rule is **not** in `base.css` because `make_world_map.py` relies on Plotly's native `hovertemplate` hover.
 
+**Tooltip width is content-driven and self-correcting.** `.tt-inner` wraps by default; `cursor_tooltip.js` `measure()` sizes the box to the *actual post-wrap* widest line, so plots never need a `tt-wrap`-style wrapper and the box always hugs its content (no clipped lines, no dead space right of the rows). Label/value pairs stay on one line via `.tt-row` (`white-space: nowrap`). The layout invariants — no clip, box hugs, within min/max — are guarded by `tests/tooltip/` (Playwright): run it after touching tooltip CSS/JS or any hover-builder, and add a fixture for any new tooltip shape.
+
 ## Hosting / auth model
 
 The site at `running.maxrandalmusic.com` is **gated by default**. The Edge Function at `site/netlify/edge-functions/gate.ts` fires on every path (`/**`); only paths in its `EXEMPT_PATHS` set or `EXEMPT_PREFIXES` list bypass the gate. Plot HTMLs, the shell, and the admin page all live at the **root** of `site/dist/` — there is no `/plots/` namespace. Visitors hit `running.maxrandalmusic.com` and the gate either lets them through (if their session cookie is valid and their email is on the allowlist) or 302s them to `/login.html`.

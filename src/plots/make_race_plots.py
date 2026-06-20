@@ -74,9 +74,9 @@ DEFAULT_OUT    = str(OUTPUT_DIR)
 # Short distances are handled structurally by the CP3 projection layer
 # (June 2026): cs_projection projects every race on its own Morton
 # 3-parameter curve, replacing the former β_short/d_thresh_short display
-# knobs. v_max is an uncertainty interval with one conservative edge per
-# direction (evidence-high for the race diamonds, prediction-low for the
-# CS-derived prediction line — see cs_projection's registry comment).
+# knobs. v_max is tied to CS as two conservative multiples (the race diamonds
+# use the high evidence edge k_evid·CS, the CS-derived prediction line uses the
+# low prediction edge k_pred·CS) — see cs_projection's registry comment.
 
 
 # ---------- distance grouping for the 8-panel plot (8% tolerance, may leave races unmatched) ----------

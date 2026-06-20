@@ -18,5 +18,10 @@ site/dist/*
 !site/dist/login.html
 !site/dist/admin.html
 
+# Tooltip layout tests — committed source, but not their installed deps/artifacts.
+tests/tooltip/node_modules/
+tests/tooltip/test-results/
+tests/tooltip/playwright-report/
+
 # Local scratch/experiment area (prototypes, one-off plots) — never committed.
 scratch/

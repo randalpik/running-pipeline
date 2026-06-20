@@ -31,18 +31,17 @@
   if (!tt) return;
 
   // Off-screen measurement clone. Width/height transitions on `tt` only fire
-  // when the inline pixel value changes — never when going through `auto`,
-  // since CSS doesn't interpolate auto↔px. So we measure the natural size on
-  // this hidden ghost (always width/height: auto) and pin those pixels onto
-  // the outer `tt`, which then animates between sizes.
+  // when the inline pixel value changes — never through `auto` (CSS doesn't
+  // interpolate auto↔px) — so we measure on this hidden ghost and pin pixels
+  // onto the outer `tt`, which then animates between sizes.
   //
   // The visible tooltip is two layers (see base.css): the outer `.rp-tooltip`
-  // is the animating box (border + clip + transition), the inner `.tt-inner`
-  // holds the text at its own `max-content` width. We mirror that here — the
-  // ghost is an outer clone (it keeps the `rp-tooltip` class, hence the
-  // border) wrapping a `.tt-inner`, and we measure the OUTER ghost so the
-  // pinned size includes the border. `overflow:visible` + position:absolute
-  // makes the ghost shrink-wrap its inner.
+  // is the animating, clipped box (border + overflow:hidden + transition); the
+  // inner `.tt-inner` holds the text. The ghost mirrors that — an outer clone
+  // (keeps the `rp-tooltip` class so `.rp-tooltip .tt-inner` rules apply)
+  // wrapping a `.tt-inner`. `measure()` (below) sizes the inner to its ACTUAL
+  // post-wrap layout rather than the raw `max-content` width, so the box hugs
+  // the widest rendered line — see the function for why that matters.
   var ghost = tt.cloneNode(false);
   ghost.style.cssText =
     'visibility:hidden;position:absolute;left:-9999px;top:0;' +
@@ -57,6 +56,64 @@
   var pending = { show: false, x: 0, y: 0, html: '', spikeX: 0 };
   var ttW = 0, ttH = 0;
 
+  // Size the tooltip for `html` to its ACTUAL post-wrap layout. The inner is
+  // `width: max-content` capped at `max-width` — but `max-content` is the
+  // content's *unwrapped* preferred width, so a line wider than the cap gets
+  // capped-then-clipped, and any wrapped line pins the box to the full cap even
+  // when its widest rendered line is narrower (dead space to the right). Both
+  // are the same bug. Here we instead compute the widest *rendered* line and
+  // hug it. Returns the outer border-box dims (`w`,`h`), the inner content-box
+  // width to pin on the visible tooltip (`innerW`), and diagnostics the layout
+  // test asserts on (`content`,`pad`,`min`,`cap`).
+  function measure(html) {
+    ghostInner.innerHTML = html;
+    // Reset inline overrides from a prior call so computed style reflects the
+    // stylesheet (incl. any per-plot `.tt-inner` head override, e.g. min-width).
+    ghostInner.style.width = '';
+    ghostInner.style.maxWidth = '';
+    var cs  = getComputedStyle(ghostInner);
+    var cap = parseFloat(cs.maxWidth); if (!isFinite(cap)) cap = 1e9;
+    var min = parseFloat(cs.minWidth) || 0;
+    var pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+    // Lay the content out exactly as it will display: wrapped at the cap.
+    ghostInner.style.width = 'max-content';
+
+    // Rr — widest `.tt-row` at its INTRINSIC width. space-between rows stretch
+    // to the box, so the row's own width is meaningless; sum its (non-growing)
+    // children + the flex gaps to recover the natural label+value width.
+    var Rr = 0, rows = ghostInner.querySelectorAll('.tt-row');
+    for (var ri = 0; ri < rows.length; ri++) {
+      var kids = rows[ri].children;
+      var gap  = parseFloat(getComputedStyle(rows[ri]).columnGap) || 0;
+      var sum  = 0;
+      for (var ki = 0; ki < kids.length; ki++) sum += kids[ki].getBoundingClientRect().width;
+      if (kids.length > 1) sum += gap * (kids.length - 1);
+      if (sum > Rr) Rr = sum;
+    }
+
+    // Rw — widest rendered line of text OUTSIDE any row. Range line boxes hug
+    // the glyphs, so a wrapped paragraph reports its longest line (not its
+    // unwrapped width) and flex stretching never inflates the result.
+    var Rw = 0, rng = document.createRange();
+    var walker = document.createTreeWalker(ghostInner, NodeFilter.SHOW_TEXT, null, false);
+    for (var tn = walker.nextNode(); tn; tn = walker.nextNode()) {
+      if (!tn.nodeValue || !tn.nodeValue.replace(/\s+/g, '')) continue;
+      if (tn.parentElement && tn.parentElement.closest('.tt-row')) continue;
+      rng.selectNodeContents(tn);
+      var rects = rng.getClientRects();
+      for (var i = 0; i < rects.length; i++) if (rects[i].width > Rw) Rw = rects[i].width;
+    }
+
+    var content = Math.max(Rr, Rw);
+    var innerW  = Math.ceil(Math.min(Math.max(content + pad, min), cap));
+    ghostInner.style.width = innerW + 'px';
+    var h = Math.ceil(ghostInner.getBoundingClientRect().height);
+    // +2 = the outer `.rp-tooltip` 1px border on each side.
+    return { w: innerW + 2, h: h, innerW: innerW, content: content, pad: pad, min: min, cap: cap };
+  }
+  // Exposed so the layout test can exercise sizing without a live Plotly plot.
+  window.__RP_TT_MEASURE = measure;
+
   function paint() {
     rafScheduled = false;
     if (!pending.show) {
@@ -65,19 +122,15 @@
       return;
     }
     if (pending.html !== lastContent) {
-      ghostInner.innerHTML = pending.html;
-      // Measure the OUTER ghost (inner's max-content size + the 2px border).
-      // getBoundingClientRect gives sub-pixel dims; ceil so the pinned outer
-      // box is never narrower than the natural layout — a rounded-down width
-      // would shrink the content box by a fraction of a pixel and force
-      // `.tt-wrap` lines to wrap one word further than measured, overflowing.
-      var grect = ghost.getBoundingClientRect();
-      ttW = Math.ceil(grect.width);
-      ttH = Math.ceil(grect.height);
-      // Inner carries the text at its final (logical) width from frame 1; the
-      // outer box animates from its previous size to (ttW, ttH) and reveals /
-      // clips the inner as it goes, so the text never reflows mid-animation.
-      tt.innerHTML = '<div class="tt-inner">' + pending.html + '</div>';
+      var m = measure(pending.html);
+      ttW = m.w;
+      ttH = m.h;
+      // Pin the visible inner to the measured content width so it wraps to the
+      // same layout the ghost did. Left at `max-content`, the inner would size
+      // to the unwrapped width and overflow (then clip inside) the outer box.
+      // The outer animates from its previous size to (ttW, ttH), revealing /
+      // clipping the fixed-width inner as it goes, so text never reflows.
+      tt.innerHTML = '<div class="tt-inner" style="width:' + m.innerW + 'px">' + pending.html + '</div>';
       tt.style.width  = ttW + 'px';
       tt.style.height = ttH + 'px';
       lastContent = pending.html;
@@ -285,9 +338,16 @@
     } catch (err) { return ''; }
   }
 
+  var bindTries = 0;
   function bind() {
     var pdiv = document.querySelector('.plotly-graph-div');
-    if (!pdiv || !pdiv._fullLayout) { setTimeout(bind, 100); return; }
+    if (!pdiv || !pdiv._fullLayout) {
+      // No plot on this page (e.g. the layout-test fixture) — give up after
+      // ~10s instead of polling forever.
+      if (++bindTries > 100) return;
+      setTimeout(bind, 100);
+      return;
+    }
 
     pdiv.addEventListener('mousemove', function (e) {
       var sp = findSubplotAt(pdiv, e.clientX, e.clientY);

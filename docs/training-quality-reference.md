@@ -353,12 +353,15 @@ distinct time constants (don't conflate them):
   solved as a fixed point (D_eff now inside that fixed point), first rep
   exempt — the effort-aware anaerobic deflation that replaced g(d).
 
-The workout `v_max` is **pinned to cs_projection's race evidence edge**
-(`vmax_evidence()`, 9.5 for Max). The separate measured 8.7 was retired
-(June 2026): above ~800 m it proved empirically inert in the 5K-equiv (the
-deflation and projection channels cancel), so a distinct workout value
-bought nothing. Other profiles still scale by their own CS until they have
-a race corpus.
+The workout `v_max` is the **race EVIDENCE edge** — `vmax_evidence(cs)`, i.e.
+`k_evid · CS(date)` (Max k_evid = 1.97; per-date, not a constant). Workouts read
+efforts as evidence exactly like races, so they share that edge — see
+[cs-model-reference.md](cs-model-reference.md) for how k_evid is derived (the
+smallest CS-multiple keeping short races behind the aerobic frontier). The
+separate measured workout cap (the old flat 8.7, with a per-profile median-CS
+scaling for others) was retired (June 2026): above ~800 m it proved empirically
+inert in the 5K-equiv (the deflation and projection channels cancel), so a
+distinct workout value bought nothing.
 
 ### Stage 3 — Long run projection
 

@@ -139,18 +139,48 @@ of the data.
 (the fit itself stays 2-parameter; it excludes < 1500 m where the models
 differ). Each race is read as a sample of its own Morton curve
 `v(t) = CS + D′/(t + τ)`, `τ = D′/(v_max − CS)` — the hyperbola bent at
-short durations by a finite top speed v_max. **v_max is an uncertainty
-interval, two conservative edges per profile** (cs_projection registry;
-Max: evidence 9.5 / prediction 8.3, derived by scripts/calibrate_vmax.py
-from his own corpus — the 400-corpus sprint-credit envelope and the
-PR-sweep bounds respectively). CP3 replaced two disconnected short-effort
-corrections (the race-side β_short knob and the workout-side g(d)) with one
-effort-aware anaerobic term, so a 400m race and a 400m rep now analyze
-identically. Reading a race as evidence
-uses the HIGH edge (short diamonds conservative — every 400 ever raced
-sits at/behind the frontier by construction); forward solves (dashboard
-predictions, lines-at-anchor) use the LOW edge (400/800 predictions never
-beat the lifetime PRs at any date in the sweep).
+short durations by a finite top speed v_max. CP3 replaced two disconnected
+short-effort corrections (the race-side β_short knob and the workout-side
+g(d)) with one effort-aware anaerobic term, so a 400m race and a 400m rep
+now analyze identically.
+
+**v_max is not estimated — it's bracketed.** It's under-identified from the
+data (a runner's per-race implied v_max scatters wildly — execution noise, not
+a trend — and top-end speed is trained and decays at an unknown rate), so the
+model never claims a value. Instead v_max is tied to the CS we *are* confident
+in, as **two conservative CS-MULTIPLES per profile** (`v_max = k · CS(t)`),
+each the **binding extreme of a constraint against demonstrated performance**.
+For Max: **k_evid 1.97 / k_pred 1.53** (run `python scripts/calibrate_vmax.py`
+to see the binding races). A multiple — not a flat m/s — transfers across
+profiles and avoids a flat v_max sitting too close to an athlete's
+(era-stable) sprint speed whenever CS dips, which over-credits short races (a
+59.3 400 → a 15:32 5K, a time Max wouldn't reach for four years).
+
+- **k_evid (evidence / reading a race DOWN as 5K proof — HIGH).** The
+  *smallest* multiple that keeps every short (< 700 m) race behind the
+  **aerobic (≥ 1500 m) race frontier** — the races reliably WA-convertible to a
+  5K. So a sprint never converts to a 5K faster than demonstrated aerobic
+  fitness, and **"a 400 never defines the frontier" is true by construction**
+  (no special-case rule). The 400 is held against the aerobic *races*, never
+  against its own 800 — and because the ≥ 1500 m frontier is pure World
+  Athletics (v_max-independent), the derivation is a clean monotonic root-find
+  with no fixed-point. 800s are neither the reference (a model-projected short
+  race isn't a yardstick) nor constrained (they still bind the displayed
+  frontier as genuine demos), so a same-session 400 and 800 separate naturally
+  rather than being pinned together.
+- **k_pred (prediction / forward-solving a short time UP — LOW).** The
+  *largest* multiple whose 400/800 predictions never beat the lifetime PRs
+  (binding at peak fitness). The gap to k_evid is the irreducible v_max
+  uncertainty we lack the data to close.
+
+The ratios are **derived automatically each build** by
+`scripts/calibrate_vmax.py` (after the CS fit, before the workout/plot steps)
+and written to `data/vmax_ratios.csv`, which cs_projection reads — no manual
+tuning. The per-profile `VMAX_*_CS_RATIO_BY_PROFILE` dicts and the conservative
+defaults (**k_evid 2.00 / k_pred 1.50**, for a profile with no qualifying short
+race yet) are the fallback when that artifact is absent. One genuine short race
+pins both edges; the defaults bracket wider than any derived pair, so the first
+real race only tightens the bracket inward.
 
 **CP3 + v_max is the UP-conversion for the SPRINT leg only (< 1500 m).** The
 IAAF↔CP3 boundary moved from 5K to **1500 m** (June 2026 redesign): IAAF beats a
@@ -191,8 +221,8 @@ The single rule that homogenises every effort (race, long run, workout) to a
 ~1300). Using them to convert a distance specialist's true SPRINT (400/800) to
 5K assumes a population-average anaerobic↔aerobic balance he doesn't have — it
 under-rates those by ~1–2 min of 5K-equivalent (his 57 s 400 → 16:58, not a
-fitness statement), so CP3 + v_max — calibrated on his own corpus — owns the
-sprint leg. But that distortion is a *sprint* phenomenon: across 1500 m–5K both
+fitness statement), so CP3 + v_max — with the per-profile evidence multiple —
+owns the sprint leg. But that distortion is a *sprint* phenomenon: across 1500 m–5K both
 efforts are aerobic and IAAF is validated against his own event hierarchy
 (mile↔3200↔5K), where it beats a single CP2 curve. The earlier 5K boundary
 applied sprint logic to the mile and over-rated it; 1500 m is where IAAF becomes
@@ -231,8 +261,9 @@ to a *short* distance assumes the athlete has population-typical leg speed for h
 aerobic level. He doesn't — projecting his (aerobically-set) 5K frontier up to
 800 / 1500 / mile via WA over-predicts, beating his own flat track PRs by several
 seconds (mile −7 s, 1500 −5 s, 800 −1 s in the June 2026 check). CP3 + v_max instead
-caps every short prediction at his *own demonstrated* v_max (the conservative LOW
-edge), so a forward solve never claims sprint speed he hasn't shown. Down-conversion
+caps every short prediction at the conservative LOW edge (`k_pred · CS`, the
+largest multiple whose predictions don't beat his PRs), so a forward solve never
+claims sprint speed he hasn't shown. Down-conversion
 has no such problem: a real 1500 m race already encodes his actual 1500 ability, so
 WA reads it honestly from 1500 m up. (So the diamond at a short anchor — a
 down-converted race — and the prediction line through it — an up-converted
@@ -345,14 +376,17 @@ frontier marathon (bright purple) + HM (faint purple) — the gold CS pair
 is REMOVED (frontier lines only; tooltip rows are frontier values).
 Recovery: deliberately untouched (recovery calibrates against sustainable
 physiology, not peak capability). **Demo eligibility: time ≥ 120 s** (800s
-included). **Under the 1500 m-boundary redesign (June 2026) the 800s no
-longer bind the frontier** — they now convert via CP3 + v_max → 1500 m → WA,
-which reads them ~4 s/mi slower than the old CP3-straight-to-5K, so they sit
-just *behind* the frontier rather than on it. (History: an earlier model had
-them binding 5 of 7 non-fatigued cases — the fit's small D′ speaking — and a
-≥ 1500 m demo cutoff was tried and reverted; the 1500 m conversion boundary
-supersedes that, leaning on IAAF for the aerobic read.) Only sub-120 s sprints
-stay display-only, read via the conservative evidence-edge v_max. **Dashboard: predictions are direct
+included). **800s CAN bind the frontier** as genuine aerobic-ish demonstrations
+— currently the 2016-03-31 800 does. This is by design: the evidence multiple
+`k_evid` is calibrated so only sub-700 m races (the 400s) are forced behind the
+aerobic (≥ 1500 m) frontier and never bind it (see the v_max section above);
+800s are *not* held against that constraint, so a strong one defines the line,
+while a same-session 400 sits behind it rather than tied to it. (History: under
+the earlier flat-edge model a ≥ 1500 m demo cutoff was tried and reverted; the
+per-profile evidence multiple supersedes it — "a 400 never defines the frontier"
+now falls out of the calibration instead of being a hard rule.) Only sub-120 s
+sprints (the 400s) stay display-only — never demos, read down via the evidence
+multiple. **Dashboard: predictions are direct
 frontier projections** — "the fastest I could physically run this, given
 the current frontier", no empirical residual offsets (the old
 recency-weighted long-run residual machinery is gone) — evaluated AS OF

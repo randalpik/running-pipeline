@@ -67,10 +67,12 @@ input[type="checkbox"]:checked {
      fire), and it animates from the previous size. Because the border, the
      clip and the box shape are all on this one element, the edge and the clip
      animate together.
-   - INNER `.tt-inner` is the text layer. Its `width: max-content` is INTRINSIC
-     — it ignores the parent's animating width — so line-wrapping is decided
-     the instant the content is set and never reflows. The outer box reveals /
-     clips it as it animates; the text bounds are left alone. */
+   - INNER `.tt-inner` is the text layer, sized to its own content (independent
+     of the parent's animating width) so line-wrapping is decided the instant
+     the content is set and never reflows. cursor_tooltip.js measures the
+     actual post-wrap layout and pins both layers to the widest rendered line,
+     so the box always hugs the text. The outer box reveals / clips the inner
+     as it animates; the text bounds are left alone. */
 .rp-tooltip {
   position: fixed; top: 0; left: 0;
   box-sizing: border-box;
@@ -92,17 +94,21 @@ input[type="checkbox"]:checked {
   line-height: 1.5;
   /* Sized to its own content, independent of the outer box's animated width,
      so wrapping is fixed at content-set time. 358 + the 2px outer border =
-     360 total (the prior max box width); content area = 358 − 28 padding =
-     330, unchanged. */
+     360 total (the max box width); content area = 358 − 28 padding = 330. */
   width: max-content;
   min-width: 200px;
   max-width: 358px;
-  /* Each line stays on one line; a line wider than max-width is clipped
-     (overflow: hidden). Content that should wrap instead of clipping (long
-     watch rep lists) goes in a .tt-wrap span, which restores normal wrapping
-     at max-width — never narrower, since the inner width doesn't track the
-     animating outer box. */
-  white-space: nowrap;
+  /* Body text WRAPS by default: a line wider than max-width breaks instead of
+     being clipped, so no plot has to remember a wrapper span. The scaffold
+     (cursor_tooltip.js) measures the actual post-wrap layout and pins the box
+     to the widest rendered line, so `max-content` + this wrap never leaves the
+     box wider than the text. Things that must stay on one line opt out with
+     `white-space: nowrap` (see .tt-row). */
+  white-space: normal;
+  /* Last-resort break inside an over-long unbroken token so it can never push
+     past the box edge. Only fires when normal (space) breaks aren't enough;
+     no effect on .tt-row, which stays nowrap. */
+  overflow-wrap: anywhere;
   overflow: hidden;
 }
 .rp-tooltip .tt-date {
@@ -125,6 +131,8 @@ input[type="checkbox"]:checked {
 }
 .rp-tooltip .tt-row > span:first-child { color: #aaa; }
 .rp-tooltip .tt-mute { color: #999; }
+/* No-op since .tt-inner now wraps by default; kept so existing markup that
+   still emits `class="tt-wrap"` stays valid. */
 .rp-tooltip .tt-wrap { white-space: normal; }
 .rp-tooltip b { color: #fff; font-weight: 600; }
 

@@ -138,10 +138,9 @@ def workout_hover(r, single_type=False):
         body = f"{rep_count} × {rep_dist}m @ {sec_to_mss(pace)}/mi"
     if pd.notna(r.get('rest_per_mile')) and r['rest_per_mile'] > 0:
         body += f", rest {sec_to_mss(r['rest_per_mile'])}/mi"
-    # Wrap the decomposition so a long measured-rep `structure` string wraps at
-    # the tooltip width instead of being clipped by the nowrap/overflow:hidden
-    # tooltip (the appended Watch / Watch-adj sub-lines carry their own wrap).
-    body = f'<span class="tt-wrap">{body}</span>'
+    # Tooltip body wraps by default (see base.css / cursor_tooltip.js), so a
+    # long measured-rep `structure` string reflows at the tooltip width with no
+    # per-line wrapper needed.
     measured = r.get('measured_line')
     if isinstance(measured, str) and measured:
         body += f"<br>{measured}"
@@ -268,7 +267,7 @@ def measured_lines():
     .csv, written by src/coros/reps.py). Only trusted statuses appear;
     mismatch-demoted days are skipped (their watch data was rejected — the
     hover shows the parser estimate like any non-enriched day). Reps show
-    absolute time, not pace; the .tt-wrap span wraps at tooltip width."""
+    absolute time, not pace."""
     path = DATA_DIR / 'workout_measured.csv'
     if not path.exists():
         return {}
@@ -280,8 +279,7 @@ def measured_lines():
         parts = [f"{int(r['dist_m'])}{'cf' if r['kind'] == 'cf' else ''}"
                  f"@{_rep_time(r['time_s'])}"
                  for _, r in day.iterrows()]
-        lines[date] = ('<b>Watch:</b> <span class="tt-wrap">'
-                       + ' · '.join(parts) + '</span>')
+        lines[date] = '<b>Watch:</b> ' + ' · '.join(parts)
     return lines
 
 
@@ -300,8 +298,7 @@ def hill_measured_lines():
     for date, day in m.groupby('date'):
         if (day['status'] == 'hill-exact').all() and len(day) > 1:
             splits = ' · '.join(sec_to_mss(t) for t in day['time_s'])
-            lines[date] = (f'<b>Watch:</b> <span class="tt-wrap">'
-                           f'loops {splits}</span>')
+            lines[date] = f'<b>Watch:</b> loops {splits}'
     return lines
 
 
@@ -327,8 +324,7 @@ def hill_rep_measured_lines():
                  for _, r in day.iterrows()]
         lines[date] = {
             'total_gain_ft': total_gain, 'avg_grade': avg_grade,
-            'reps_html': ('<b>Watch:</b> <span class="tt-wrap">'
-                          + ' · '.join(parts) + '</span>'),
+            'reps_html': '<b>Watch:</b> ' + ' · '.join(parts),
         }
     return lines
 
