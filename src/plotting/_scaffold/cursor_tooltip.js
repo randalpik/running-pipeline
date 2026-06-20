@@ -56,15 +56,68 @@
   var pending = { show: false, x: 0, y: 0, html: '', spikeX: 0 };
   var ttW = 0, ttH = 0;
 
-  // Size the tooltip for `html` to its ACTUAL post-wrap layout. The inner is
-  // `width: max-content` capped at `max-width` — but `max-content` is the
-  // content's *unwrapped* preferred width, so a line wider than the cap gets
-  // capped-then-clipped, and any wrapped line pins the box to the full cap even
-  // when its widest rendered line is narrower (dead space to the right). Both
-  // are the same bug. Here we instead compute the widest *rendered* line and
-  // hug it. Returns the outer border-box dims (`w`,`h`), the inner content-box
-  // width to pin on the visible tooltip (`innerW`), and diagnostics the layout
-  // test asserts on (`content`,`pad`,`min`,`cap`).
+  // Max width of a list of client rects (line boxes).
+  function maxRectWidth(rects) {
+    var w = 0;
+    for (var i = 0; i < rects.length; i++) if (rects[i].width > w) w = rects[i].width;
+    return w;
+  }
+
+  function isBlockish(el) {
+    var d = getComputedStyle(el).display;
+    return d === 'block' || d === 'list-item' || d === 'table' ||
+           d.indexOf('flex') >= 0 || d.indexOf('grid') >= 0;
+  }
+
+  // Natural one-line width of a flex row (e.g. `.tt-row`). The row stretches to
+  // the box (space-between), and its value is often a bare text node (an
+  // anonymous flex item, invisible to `.children`) — so measure it shrink-wrapped
+  // at `max-content`, which counts every flex item including the anonymous text.
+  function flexRowWidth(row) {
+    var pw = row.style.width, pd = row.style.display;
+    row.style.display = 'inline-flex';
+    row.style.width = 'max-content';
+    var w = row.getBoundingClientRect().width;
+    row.style.width = pw;
+    row.style.display = pd;
+    return w;
+  }
+
+  // Widest *rendered* line in `el`'s subtree, as currently laid out. A line can
+  // span several inline fragments (text + <b> + <span>), so we measure whole
+  // line boxes (Range.getClientRects over a block's inline contents) rather than
+  // individual text nodes; flex rows are measured at their natural width; nested
+  // block containers recurse. Used only when content overflows the cap (so it
+  // has to wrap) — the common, fits-without-wrapping case uses `max-content`.
+  function widestLine(el) {
+    var d = getComputedStyle(el).display;
+    if (d.indexOf('flex') >= 0 || d.indexOf('grid') >= 0) return flexRowWidth(el);
+    var kids = el.children, hasBlockKid = false;
+    for (var i = 0; i < kids.length; i++) if (isBlockish(kids[i])) { hasBlockKid = true; break; }
+    var rng = document.createRange();
+    if (!hasBlockKid) {            // pure inline content — measure its line boxes
+      rng.selectNodeContents(el);
+      return maxRectWidth(rng.getClientRects());
+    }
+    var w = 0;                     // mixed: recurse blocks, measure loose text runs
+    for (var j = 0; j < kids.length; j++) w = Math.max(w, widestLine(kids[j]));
+    for (var n = el.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 3 && n.nodeValue && n.nodeValue.replace(/\s+/g, '')) {
+        rng.selectNode(n);
+        w = Math.max(w, maxRectWidth(rng.getClientRects()));
+      }
+    }
+    return w;
+  }
+
+  // Size the tooltip for `html`. The box hugs its content: it is the content's
+  // `max-content` width (which correctly accounts for bare text-node values and
+  // multi-fragment lines) when that fits within `max-width`; otherwise the
+  // content must wrap, and the box hugs the widest *rendered* line so it never
+  // sits wider than its text (no dead space) and never clips a line. Clamped to
+  // `[min-width, max-width]`. Returns the outer border-box dims (`w`,`h`), the
+  // inner content-box width to pin on the visible tooltip (`innerW`), and the
+  // diagnostics the layout test asserts on (`content`,`pad`,`min`,`cap`).
   function measure(html) {
     ghostInner.innerHTML = html;
     // Reset inline overrides from a prior call so computed style reflects the
@@ -75,37 +128,30 @@
     var cap = parseFloat(cs.maxWidth); if (!isFinite(cap)) cap = 1e9;
     var min = parseFloat(cs.minWidth) || 0;
     var pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
-    // Lay the content out exactly as it will display: wrapped at the cap.
+
+    // Pass 1: natural (unwrapped) width. `max-content` is reliable here — it
+    // includes anonymous text-node flex-item values and full multi-fragment
+    // lines that piecewise measurement would miss.
+    ghostInner.style.maxWidth = 'none';
     ghostInner.style.width = 'max-content';
+    var natural = Math.ceil(ghostInner.getBoundingClientRect().width);  // border-box
 
-    // Rr — widest `.tt-row` at its INTRINSIC width. space-between rows stretch
-    // to the box, so the row's own width is meaningless; sum its (non-growing)
-    // children + the flex gaps to recover the natural label+value width.
-    var Rr = 0, rows = ghostInner.querySelectorAll('.tt-row');
-    for (var ri = 0; ri < rows.length; ri++) {
-      var kids = rows[ri].children;
-      var gap  = parseFloat(getComputedStyle(rows[ri]).columnGap) || 0;
-      var sum  = 0;
-      for (var ki = 0; ki < kids.length; ki++) sum += kids[ki].getBoundingClientRect().width;
-      if (kids.length > 1) sum += gap * (kids.length - 1);
-      if (sum > Rr) Rr = sum;
+    var content, innerW;
+    if (natural <= cap) {
+      // Fits without wrapping — box = natural, so every line shows in full and
+      // nothing clips. (min-width may floor it; that's the intended floor.)
+      content = natural - pad;
+      innerW  = Math.ceil(Math.min(Math.max(natural, min), cap));
+    } else {
+      // Overflows the cap → must wrap. Lay out at the cap, then hug the widest
+      // rendered line so the box doesn't sit at the full cap with dead space.
+      ghostInner.style.maxWidth = '';
+      ghostInner.style.width = cap + 'px';
+      content = widestLine(ghostInner);
+      innerW  = Math.ceil(Math.min(Math.max(content + pad, min), cap));
     }
 
-    // Rw — widest rendered line of text OUTSIDE any row. Range line boxes hug
-    // the glyphs, so a wrapped paragraph reports its longest line (not its
-    // unwrapped width) and flex stretching never inflates the result.
-    var Rw = 0, rng = document.createRange();
-    var walker = document.createTreeWalker(ghostInner, NodeFilter.SHOW_TEXT, null, false);
-    for (var tn = walker.nextNode(); tn; tn = walker.nextNode()) {
-      if (!tn.nodeValue || !tn.nodeValue.replace(/\s+/g, '')) continue;
-      if (tn.parentElement && tn.parentElement.closest('.tt-row')) continue;
-      rng.selectNodeContents(tn);
-      var rects = rng.getClientRects();
-      for (var i = 0; i < rects.length; i++) if (rects[i].width > Rw) Rw = rects[i].width;
-    }
-
-    var content = Math.max(Rr, Rw);
-    var innerW  = Math.ceil(Math.min(Math.max(content + pad, min), cap));
+    ghostInner.style.maxWidth = '';
     ghostInner.style.width = innerW + 'px';
     var h = Math.ceil(ghostInner.getBoundingClientRect().height);
     // +2 = the outer `.rp-tooltip` 1px border on each side.

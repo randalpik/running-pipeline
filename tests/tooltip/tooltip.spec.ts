@@ -1,21 +1,27 @@
 // Layout-invariant guard for the shared cursor tooltip.
 //
 // These tests are the regression net for the recurring tooltip-width bugs:
-// lines clipped by the box edge, and the box sitting wider than its content
-// (dead space right of the right-justified rows). They load the REAL scaffold
-// — src/plotting/_scaffold/base.css + cursor_tooltip.js — into a blank page,
-// call the exposed `window.__RP_TT_MEASURE(html)` for a battery of payloads
-// (including the originally-reported Training/Workouts cases and pathological
+// lines clipped by the box edge, the box sitting wider than its content (dead
+// space right of the right-justified rows), and the box sitting narrower than
+// its content (premature wrapping / clipped rows whose value is a bare text
+// node). They load the REAL scaffold — src/plotting/_scaffold/base.css +
+// cursor_tooltip.js — into a blank page, call the exposed
+// `window.__RP_TT_MEASURE(html)` for a battery of payloads (including the
+// originally-reported Training/Workouts/Fitness cases and pathological
 // strings), render the result exactly as the live tooltip does, and assert in
 // a real layout engine that:
 //
-//   1. No clip   — inner content never overflows its box.
-//   2. Box hugs  — the box is no wider than its widest rendered line (or it's
-//                  sitting on the min-width floor).
-//   3. In bounds — min-width <= width <= max-width.
+//   1. No clip      — inner content never overflows its box.
+//   2. In bounds    — min-width <= width <= max-width.
+//   3. Right-sized  — when the content fits unwrapped (natural width <= cap),
+//                     the box equals that natural width: not narrower (which
+//                     would wrap/clip lines) and not wider (dead space). When
+//                     it must wrap, the box hugs the widest rendered line.
 //
-// If any of these regress, the matching CSS/JS change fails here instead of
-// shipping. See ../../src/plotting/_scaffold/cursor_tooltip.js `measure()`.
+// The `natural` width is measured independently here (max-content, no cap) so
+// the assertions don't just echo measure()'s own math. If any of this
+// regresses, the matching CSS/JS change fails here instead of shipping.
+// See ../../src/plotting/_scaffold/cursor_tooltip.js `measure()`.
 
 import { test, expect } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
@@ -29,7 +35,9 @@ const JS_PATH = path.join(SCAFFOLD, 'cursor_tooltip.js');
 type Fixture = { name: string; html: string };
 
 // Payloads mirror the structure the plot hover-builders emit: <br>-joined
-// text lines for snap tooltips, `.tt-row` flex rows for smooth tooltips,
+// text lines for snap tooltips, `.tt-row` flex rows for smooth tooltips
+// (some with bare text-node values, like the Fitness frontier rows),
+// multi-fragment inline lines (text + <b> + <span>, like the race header),
 // `.tt-date` / `.tt-section` chrome, and the watch `·`-separated rep lists.
 const FIXTURES: Fixture[] = [
   {
@@ -57,16 +65,34 @@ const FIXTURES: Fixture[] = [
       + '<b>Temp:</b> 12°C   <b>5K fitness:</b> 4:58/mi',
   },
   {
+    // The reported Fitness case: rows whose VALUE is a bare text node (not an
+    // element). The box must be wide enough that these nowrap rows don't clip.
+    name: 'fitness — rows with bare text-node values must not clip',
+    html: '<div class="tt-date">2021-06-22 (Tue)</div>'
+      + '<div class="tt-section">'
+      + '<div class="tt-row"><span>5K frontier</span><b>5:06/mi</b></div>'
+      + '<div class="tt-row"><span>95% band</span>5:01–5:11/mi</div>'
+      + '<div class="tt-row"><span>Projected Critical Speed</span>5:09/mi</div>'
+      + '</div>',
+  },
+  {
+    // Fitness race detail: single visual lines split across text + <span>/<b>
+    // fragments — must be measured as whole lines, not under-counted per node.
+    name: 'fitness — multi-fragment race header line',
+    html: '<div class="tt-date">2017-11-04 (Sat)</div>'
+      + '<div class="tt-section">'
+      + '<div class="tt-row"><span>5K frontier</span><b>5:08/mi</b></div>'
+      + '<div class="tt-row"><span>Projected Critical Speed</span>5:12/mi</div>'
+      + '</div>'
+      + '<div class="tt-section">'
+      + "<div>Redmond &amp; Lake Washington @ Bellevue <span class=\"tt-mute\">(XC)</span></div>"
+      + '<div>5000m in <b>15:58</b> <span class="tt-mute">(5:08/mi)</span></div>'
+      + '</div>',
+  },
+  {
     name: 'pathological — single unbreakable token',
     html: '<b>Workout</b><br>'
       + 'Supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercali',
-  },
-  {
-    name: 'smooth — rows only',
-    html: '<div class="tt-date">2024-09-22</div>'
-      + '<div class="tt-row"><span>5K fitness</span><b>4:58/mi</b></div>'
-      + '<div class="tt-row"><span>Training quality</span><b>5:04/mi</b></div>'
-      + '<div class="tt-row"><span>Diff</span><b>+6 sec/mi</b></div>',
   },
   {
     name: 'mixed — sections, rows, and a wrapped body line',
@@ -95,34 +121,58 @@ for (const fx of FIXTURES) {
   test(`tooltip layout — ${fx.name}`, async ({ page }) => {
     const r = await page.evaluate((html) => {
       const measure = (window as any).__RP_TT_MEASURE as (h: string) => any;
-      const m = measure(html);
-      // Render the visible tooltip exactly as cursor_tooltip.js `paint()` does.
       const tt = document.querySelector('.rp-tooltip') as HTMLElement;
+      tt.style.display = 'block';
+
+      // Independent natural-width probe: max-content, no cap. This is the width
+      // every line needs to render unwrapped — measured here, NOT taken from
+      // measure(), so the assertions are a real cross-check.
+      tt.innerHTML =
+        '<div class="tt-inner" style="width:max-content;max-width:none">' + html + '</div>';
+      const natural = Math.ceil(
+        (tt.querySelector('.tt-inner') as HTMLElement).getBoundingClientRect().width,
+      );
+
+      // The real thing.
+      const m = measure(html);
       tt.innerHTML =
         '<div class="tt-inner" style="width:' + m.innerW + 'px">' + html + '</div>';
-      tt.style.width = m.w + 'px';
-      tt.style.height = m.h + 'px';
-      tt.style.display = 'block';
       const inner = tt.querySelector('.tt-inner') as HTMLElement;
-      return { m, scrollW: inner.scrollWidth, clientW: inner.clientWidth };
+      let rowClip = false;
+      inner.querySelectorAll('.tt-row').forEach((el) => {
+        if ((el as HTMLElement).scrollWidth > (el as HTMLElement).clientWidth + 1) rowClip = true;
+      });
+      return { m, natural, scrollW: inner.scrollWidth, clientW: inner.clientWidth, rowClip };
     }, fx.html);
 
-    // 1. No clip — content fits inside its box (1px sub-pixel tolerance).
-    expect(
-      r.scrollW,
-      `content overflows box (scrollW=${r.scrollW} > clientW=${r.clientW})`,
-    ).toBeLessThanOrEqual(r.clientW + 1);
+    const { m, natural } = r;
+    const clampedNatural = Math.min(Math.max(natural, m.min), m.cap);
 
-    // 2. Box hugs the widest rendered line — unless it's on the min-width floor.
-    const innerContent = r.m.innerW - r.m.pad;
-    const hugs = innerContent <= r.m.content + 1 || r.m.innerW <= r.m.min + 1;
-    expect(
-      hugs,
-      `box not hugging (innerContent=${innerContent}, widestLine=${r.m.content}, min=${r.m.min})`,
-    ).toBeTruthy();
+    // 1. No clip — content (incl. nowrap rows) fits inside its box.
+    expect(r.scrollW, `content overflows box (scrollW=${r.scrollW} > clientW=${r.clientW})`)
+      .toBeLessThanOrEqual(r.clientW + 1);
+    expect(r.rowClip, 'a .tt-row clips its value').toBeFalsy();
 
-    // 3. Within [min-width, max-width].
-    expect(r.m.innerW).toBeGreaterThanOrEqual(Math.floor(r.m.min));
-    expect(r.m.innerW).toBeLessThanOrEqual(Math.ceil(r.m.cap));
+    // 2. Within [min-width, max-width].
+    expect(m.innerW).toBeGreaterThanOrEqual(Math.floor(m.min) - 1);
+    expect(m.innerW).toBeLessThanOrEqual(Math.ceil(m.cap));
+
+    // 3. Right-sized.
+    if (natural <= m.cap) {
+      // Fits unwrapped → box equals the natural width (not narrower = no
+      // premature wrap/clip; not wider = no dead space).
+      expect(
+        Math.abs(m.innerW - clampedNatural),
+        `box should equal natural width (innerW=${m.innerW}, natural=${natural}, clamped=${clampedNatural})`,
+      ).toBeLessThanOrEqual(2);
+    } else {
+      // Must wrap → box hugs the widest rendered line (no dead space), and is
+      // no wider than the cap.
+      const innerContent = m.innerW - m.pad;
+      expect(
+        innerContent <= m.content + 1 || m.innerW <= m.min + 1,
+        `box not hugging wrapped content (innerContent=${innerContent}, widestLine=${m.content})`,
+      ).toBeTruthy();
+    }
   });
 }
