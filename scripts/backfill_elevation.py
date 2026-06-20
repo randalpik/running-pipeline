@@ -253,6 +253,18 @@ def main():
                         'line per ~100 points fetched — chatty)')
     args = p.parse_args()
 
+    # One-time, network-free upgrade of the DEM point cache to the current
+    # lookup grid (see dem_elevation.migrate_cache / KEY_DECIMALS). A legacy
+    # ~1 m-keyed cache stored ~4x duplicate near-points that never reused across
+    # runs; collapsing to the ~10 m grid makes repeated routes cache-hit and
+    # shrinks the cache. Idempotent — re-saves only when it actually changed.
+    cache = DEM._load_cache()
+    migrated = DEM.migrate_cache(cache)
+    if len(migrated) < len(cache):
+        DEM._save_cache(migrated)
+        print(f"[elevation] DEM cache upgraded to {DEM.KEY_DECIMALS}-decimal "
+              f"grid: {len(cache):,} -> {len(migrated):,} points", flush=True)
+
     ids_by_date = _elev_ids_by_date()
     if ids_by_date is None:
         print('[elevation] no watch_activities.csv index — run watch_daily '

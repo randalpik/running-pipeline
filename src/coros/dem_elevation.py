@@ -47,6 +47,23 @@ CACHE_PATH = DATA_DIR / 'dem_cache.json'
 _NED = 'https://api.opentopodata.org/v1/ned10m'
 _SRTM = 'https://api.opentopodata.org/v1/srtm30m'
 
+# Cache/query grid. 4 decimals ≈ 10 m, matching the DEM's own 10 m (NED) / 30 m
+# (SRTM) resolution, so snapping the lookup to the grid is lossless (it's below
+# what the data resolves, and gain/loss is computed from a profile smoothed over
+# SMOOTH_M=120 m anyway). It also makes REPEATED routes reuse cached points: a
+# finer ~1 m key (5 decimals) never collided across runs — GPS jitter (~3-10 m)
+# plus the shifting 30 m resample grid put every pass in a fresh cell, so the
+# cache stored ~4x near-duplicates and re-fetched whole tracks every time. The
+# query point is the cell itself (parsed back from the key), so the cached value
+# and the queried point are always consistent. See migrate_cache for the one-
+# time, network-free collapse of a legacy finer cache onto this grid.
+KEY_DECIMALS = 4
+
+
+def _key(la, lo):
+    """On-grid cache key for a coordinate."""
+    return f'{la:.{KEY_DECIMALS}f},{lo:.{KEY_DECIMALS}f}'
+
 
 def _sc(v):
     """Coros lat/lon are integer micro-degrees (×1e7); pass through if already
@@ -177,6 +194,21 @@ def _load_cache():
     return {}
 
 
+def migrate_cache(cache):
+    """Collapse a point cache onto the current ``_key`` grid, averaging any
+    points that fall in the same cell. Network-free — it only re-keys points
+    already fetched, so upgrading a finer legacy cache (5-decimal, ~1 m) keeps
+    every fetched point while ~4x-deduplicating near-identical neighbours.
+    Idempotent: a cache already on-grid round-trips to an equivalent dict."""
+    agg = {}
+    for k, v in cache.items():
+        la, lo = k.split(',')
+        nk = _key(float(la), float(lo))
+        s, c = agg.get(nk, (0.0, 0))
+        agg[nk] = (s + v, c + 1)
+    return {k: s / c for k, (s, c) in agg.items()}
+
+
 def _save_cache(cache):
     # Atomic write: a mid-loop flush can be killed by a CI step timeout while
     # the file is being written. Serialize to a temp file then os-rename so the
@@ -197,39 +229,37 @@ def _query(latlons, dataset):
 
 
 def dem_elevations(lat, lon, cache, sleep_s=SLEEP_S, verbose=False):
-    """Elevation (m) at each (lat, lon) via NED10m (CONUS) with SRTM30m
-    fallback for misses. Cached per rounded point. Mutates ``cache``."""
-    n = len(lat)
-    out = [None] * n
-    todo = []
-    for i in range(n):
-        key = f'{lat[i]:.5f},{lon[i]:.5f}'
-        if key in cache:
-            out[i] = cache[key]
-        else:
-            todo.append(i)
+    """Elevation (m) at each (lat, lon) via NED10m (CONUS) with SRTM30m fallback
+    for misses. Cached per on-grid cell (``_key``); the query point is the cell
+    itself, so the cached value and the queried point are consistent and
+    repeated routes reuse cached cells. Mutates ``cache``. Returns one elevation
+    (or None) per input point."""
+    keys = [_key(lat[i], lon[i]) for i in range(len(lat))]
+    # Unique not-yet-cached cells: a 30 m-resampled track can put several points
+    # in one ~10 m cell, and repeated routes share cells — query each only once.
+    pend0 = list(dict.fromkeys(k for k in keys if k not in cache))
     for ds in (_NED, _SRTM):
-        pend = [i for i in todo if out[i] is None]
+        pend = [k for k in pend0 if k not in cache]
         if not pend:
             break
         for b in range(0, len(pend), BATCH):
-            idx = pend[b:b + BATCH]
+            chunk = pend[b:b + BATCH]
+            latlons = [tuple(map(float, k.split(','))) for k in chunk]
             try:
-                elevs = _query([(lat[i], lon[i]) for i in idx], ds)
+                elevs = _query(latlons, ds)
             except Exception as e:  # network/HTTP — leave as misses
                 if verbose:
                     print(f'  DEM query failed ({ds.split("/")[-1]}): {e}')
-                elevs = [None] * len(idx)
-            for i, ev in zip(idx, elevs):
+                elevs = [None] * len(chunk)
+            for k, ev in zip(chunk, elevs):
                 if ev is not None:
-                    out[i] = ev
-                    cache[f'{lat[i]:.5f},{lon[i]:.5f}'] = ev
+                    cache[k] = ev
             if verbose:
                 done = min(b + BATCH, len(pend))
                 print(f"      [dem] {ds.split('/')[-1]} {done}/{len(pend)} "
-                      f"pts ({len(cache):,} cached)", flush=True)
+                      f"cells ({len(cache):,} cached)", flush=True)
             time.sleep(sleep_s)
-    return out
+    return [cache.get(k) for k in keys]
 
 
 def measure_run_elevation(recs, cache, verbose=False):
