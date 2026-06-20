@@ -267,9 +267,26 @@ STRIDE_SUFFIX_RX = re.compile(r'/\s*(?:\d+\s*x\s*)?\d+\s*(?:st|sp)\b',
 # back to 2018; watch enrichment, when present, wins over the rule. Lives here
 # (not workouts.py) so both the long-run projection and the recovery fit consume
 # it without a circular import.
+# Tuple: (route_substring, start, end_exclusive, factor, match_miles).
+# match_miles=None applies the factor to every day on the route; a number
+# fires the rule ONLY on days logged at that distance — needed where one
+# location holds distinct logged values with different errors (McCabe: the
+# 7.2/7.5 days are the mislog, the stray 8.1/2.4 dorm days are not).
 MISLOGGED_ROUTES = (
-    ('belle meade', '2018-01-01', '2022-04-15', 1.05),
-    ('greenway',    '2018-01-01', '2022-04-15', 1.05),
+    ('belle meade', '2018-01-01', '2022-04-15', 1.05, None),
+    ('greenway',    '2018-01-01', '2022-04-15', 1.05, None),
+    # McCabe (Max-specific, re-measured 2026-06-20). The dorm-era route logged
+    # 7.2 is truly 6.7 — a segment-add math error propagated from his Aug-2018
+    # dorm start point to the March-2020 move (factor 7.2/6.7). Post-move he
+    # re-derived the new route from the same bad 7.2 as 7.5, then quietly fixed
+    # it to 7.1 without back-propagating; 7.5 is the same route as the accurate
+    # 7.1 (factor 7.5/7.1). Both windows are pre-watch (watch starts 2021-01),
+    # so neither overlaps a rec_watch day. Distance-keyed so only the mislogged
+    # bins are touched. The watch confirms the post-move route honest at ~7.2,
+    # and the sporadic 2022-23 7.2 logs are a different approach through the
+    # park entirely — both correctly left uncorrected.
+    ('mccabe', '2018-08-01', '2020-03-15', 7.2 / 6.7, 7.2),
+    ('mccabe', '2020-03-15', '2020-08-01', 7.5 / 7.1, 7.5),
 )
 
 
@@ -386,10 +403,12 @@ def add_watch_corrections(rec):
 
     loc = (rec.get('location', pd.Series(np.nan, index=rec.index))
            .astype(str).str.strip().str.lower())
-    for route, start, end, factor in MISLOGGED_ROUTES:
+    for route, start, end, factor, match_miles in MISLOGGED_ROUTES:
         rule = (~rec['rec_watch'] & (loc == route)
                 & (rec['date'] >= pd.Timestamp(start))
                 & (rec['date'] < pd.Timestamp(end)))
+        if match_miles is not None:
+            rule &= np.isclose(rec['miles'].astype(float), match_miles, atol=0.05)
         if not rule.any():
             continue
         # corr_pace reduces to logged_pace x factor (the polluted logged

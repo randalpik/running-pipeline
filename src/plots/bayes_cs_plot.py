@@ -554,7 +554,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         title_slug=f'cs_timeline{suffix}',
         page_title='5K fitness',
         title='5K fitness over time',
-        subtitle='Posterior-median 5K fitness from a Bayesian latent-process model, with projected Critical Speed, compared to actual race performance',
+        subtitle='Posterior-median 5K fitness from a Bayesian latent-process model, compared to actual race performance',
         cursor_tooltip=CursorTooltip(
             payload=payload,
             build_js=build_js,

@@ -682,7 +682,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         title_slug='workouts',
         page_title='Workouts',
         title='All workouts at 5K-equivalent pace',
-        subtitle='Corrections applied per category',
+        subtitle='Includes detailed data per rep, and shows excluded workouts as logged',
         cursor_tooltip=CursorTooltip(
             payload=payload,
             build_js=build_js,

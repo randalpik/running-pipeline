@@ -385,10 +385,12 @@ def _lr_watch_corrections(lr):
                 lr.loc[hit, col] = sub[col].to_numpy()
 
     loc = lr['location'].astype(str).str.strip().str.lower()
-    for route, start, end, factor in MISLOGGED_ROUTES:
+    for route, start, end, factor, match_miles in MISLOGGED_ROUTES:
         rule = (~lr['lr_watch'] & (loc == route)
                 & (lr['date'] >= pd.Timestamp(start))
                 & (lr['date'] < pd.Timestamp(end)))
+        if match_miles is not None:
+            rule &= np.isclose(lr['miles'].astype(float), match_miles, atol=0.05)
         if not rule.any():
             continue
         corr_mi = lr.loc[rule, 'miles'] / factor

@@ -1063,7 +1063,7 @@ function buildTooltip(day, isSnap, pointHtml, ctx) {
         title_slug='race_pace_by_distance',
         page_title='Races by distance',
         title='Lifetime races by distance',
-        subtitle='Races grouped by standard distance, each compared to modeled 5K fitness projected to that distance (Critical Speed at 5K and below, World Athletics scoring above)',
+        subtitle='Races grouped by standard distance, compared to projected fitness at each distance',
         cursor_tooltip=CursorTooltip(
             payload=payload_by_dist,
             build_js=smooth_build_js_by_dist,

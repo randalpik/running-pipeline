@@ -950,7 +950,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         '<div id="tq-norm-toggle" class="rp-sidebar rp-sidebar-compact" '
         'style="right:60px; top:20px">'
         '<label class="rp-row" style="margin:0">'
-        '<input type="checkbox" id="tq-norm-cb" checked> Normalize to 5K fitness'
+        '<input type="checkbox" id="tq-norm-cb" checked> Normalize to fitness baseline'
         '</label></div>'
     )
     # Long-run adjustments box: documents EVERYTHING subtracted from a long
