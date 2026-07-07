@@ -43,7 +43,8 @@ from src.shared.plot_window import data_span, first_race_date, axis_pad_entry
 from src.shared.cs_projection import load_cs_outputs, project_races_to_5k_pace
 from src.shared.performance_frontier import standard_demos, build_frontier_band
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
-                            sec_to_mss, sec_to_mss_full, SURFACES, rgba, GRID,
+                            sec_to_mss, sec_to_mss_prec, time_decimals,
+                            SURFACES, rgba, GRID,
                             FRONTIER_LINE, CAT_COLORS, CAT_LABEL, yearly_x_axis_kwargs,
                             nice_time_ticks, marker_half_px, tt_title)
 
@@ -253,8 +254,12 @@ def main():
                          row.get('pace_sec_per_mi'))
         pace_raw = (sec_to_mss(p_orig)
                     if p_orig is not None and not pd.isna(p_orig) else '')
-        is_xc = str(row.get('surface', '')).upper() == 'XC'
         is_5k = abs(dist - 5000.0) < 1.0
+        # Entered precision (races.csv time_dec) — the original time displays
+        # exactly as logged, and the course-corrected time inherits the same
+        # decimals (no more, no less). Value-inference is only a fallback.
+        td = row.get('time_dec')
+        td = int(td) if td is not None and not pd.isna(td) else time_decimals(t_orig)
 
         # Course correction (§B): the race's time/pace at its OWN distance after
         # the physical route correction (+ XC categorical, whatever applied) —
@@ -265,22 +270,23 @@ def main():
         has_corr = abs(t_corr - t_orig) >= 1.0
         corr_line = ''
         if has_corr:
-            corr_line = (f"<div>Course correction: <b>{sec_to_mss_full(t_corr)}</b> "
+            corr_line = (f"<div>Course correction: <b>{sec_to_mss_prec(t_corr, td)}</b> "
                          f"<span class='tt-mute'>"
                          f"({sec_to_mss(t_corr / dist_mi)}/mi)</span></div>")
 
-        # 5K-equiv (the diamond's y). Suppressed only when it would just echo
-        # the actual time (a flat, uncorrected 5K — no XC, no route correction).
+        # 5K-equiv (the diamond's y). Suppressed for every 5K: the projection
+        # is exact identity at 5000m, so the line would only echo the actual
+        # time (uncorrected 5K) or the course-correction line (corrected 5K).
         equiv_pace_sec = float(row['pace_norm_min']) * 60
         equiv_time_sec = equiv_pace_sec * 5000.0 / METERS_PER_MILE
         equiv_line = ''
-        if (not is_5k) or is_xc or has_corr:
+        if not is_5k:
             equiv_line = (f"<div>5K equivalent: <b>{sec_to_mss(equiv_time_sec)}</b> "
                           f"<span class='tt-mute'>"
                           f"({sec_to_mss(equiv_pace_sec)}/mi)</span></div>")
         return (f"<div><b>{ev}</b> <span class='tt-mute'>({row['surface']})</span></div>"
                 f"<div>{int(dist)}m in "
-                f"<b>{sec_to_mss_full(t_orig)}</b> "
+                f"<b>{sec_to_mss_prec(t_orig, td)}</b> "
                 f"<span class='tt-mute'>({pace_raw}/mi)</span></div>"
                 f"{corr_line}{equiv_line}")
 

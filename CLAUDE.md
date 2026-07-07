@@ -34,6 +34,7 @@ This is a personal running-data pipeline: parsers and transformations turning da
 - **Workout jog segments (`Nj`):** N is **minutes**, not miles.
 - **Quality distances (`Nt@`/`Ni@`/`Nr@`/`Nf@`):** N is **meters**.
 - **Daily Miles column** is always the authoritative total — don't recompute from segments.
+- **Race time precision:** `races.csv` carries `time_dec` — the decimal places of the time exactly as entered, trailing zeros included (parsed from log literals; the snapshot `additions` section reads `time_sec` as text to preserve it). Display entered times and same-distance conversions (course corrections) with `sec_to_mss_prec(t, time_dec)` — never more or fewer decimals. Cross-distance conversions (5K-equivalents) round to the nearest second. `time_decimals()` value-inference is only a fallback; it cannot recover trailing zeros.
 
 ## Workout string coding
 

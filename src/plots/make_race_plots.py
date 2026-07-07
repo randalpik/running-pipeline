@@ -52,7 +52,8 @@ from src.shared.cs_projection import (load_cs_outputs, project_races_to_5k_pace,
                                       pace5k_series_to_anchor)
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             right_margin_for_anchored_box,
-                            sec_to_mss, sec_to_mss_full,
+                            sec_to_mss, sec_to_mss_full, sec_to_mss_prec,
+                            time_decimals,
                             SURFACES, CS_LINE, CS_LINE_WIDTH, GRID,
                             pr_marker, is_pr_eligible, marker_half_px,
                             PR_LEGEND_NAME, PR_LEGEND_RANK,
@@ -203,12 +204,22 @@ def ordinal(n):
     return f"{n}{suffix}"
 
 
+def entered_time(row):
+    """The race time formatted with its entered precision (races.csv
+    time_dec), so it reads exactly as logged — trailing zeros included.
+    Value-inference is only the fallback for rows without the column."""
+    t = float(row['time_sec_original'])
+    td = row.get('time_dec')
+    td = int(td) if td is not None and not pd.isna(td) else time_decimals(t)
+    return sec_to_mss_prec(t, td)
+
+
 def build_hover(row):
     # The smart-spikeline scaffold prepends the date itself in smooth
     # mode, so this content focuses on what's race-specific. Bold-label
     # rows (tt_kv) match every other tab's detail block.
     parts = [tt_kv('Distance', friendly_distance(row['distance_m'])),
-             tt_kv('Time', sec_to_mss_full(row['time_sec_original']))]
+             tt_kv('Time', entered_time(row))]
     # Show the projected 5K-equivalent unless the race already IS a 5K
     is_5k = abs(float(row['distance_m']) - 5000.0) < 1.0
     if not is_5k:
@@ -234,7 +245,7 @@ def build_hover_anchored(row, anchor_m):
     """Hover string for the by-distance plot. Includes projection to the
     panel's anchor distance and Δ vs CS expectation on that date."""
     parts = [tt_kv('Distance', friendly_distance(row['distance_m'])),
-             tt_kv('Time', sec_to_mss_full(row['time_sec_original']))]
+             tt_kv('Time', entered_time(row))]
     is_at_anchor = abs(float(row['distance_m']) - float(anchor_m)) < 1.0
     if not is_at_anchor:
         proj_sec = float(row['time_norm_sec'])

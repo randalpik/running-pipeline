@@ -110,6 +110,31 @@ def _safe_float(v):
         return None
 
 
+def time_literal_decimals(time_str):
+    """Decimal places in an entered time literal ('4:38.30' -> 2, '16:58' -> 0).
+
+    Carried through to races.csv as `time_dec` so race times display exactly
+    as entered — trailing zeros included, which a parsed float can't preserve.
+    """
+    s = str(time_str)
+    return len(s.split(".")[1]) if "." in s else 0
+
+
+def time_value_decimals(v):
+    """Decimal places (0-2) demonstrably present in a numeric seconds value.
+
+    Fallback for times that arrive as numbers (legacy xlsx additions,
+    numeric change-sheet cells) where the entered string is gone: trailing
+    zeros are unrecoverable, so this infers the minimum faithful precision.
+    """
+    hundredths = int(round(float(v) * 100))
+    if hundredths % 100 == 0:
+        return 0
+    if hundredths % 10 == 0:
+        return 1
+    return 2
+
+
 def parse_time_to_seconds(time_str):
     """Parse 'SS.cc', 'M:SS(.cc)?', or 'H:MM:SS(.cc)?' -> float seconds."""
     if time_str is None:
@@ -249,7 +274,9 @@ def extract_quality_segment(workout_str, year):
 
 def extract_races(workout_str, year):
     """Extract all race segments in order. Returns list of
-    {distance_m, time_sec, event}.
+    {distance_m, time_sec, event, time_dec} — time_dec is the decimal
+    places of the entered time literal, so displays can reproduce the
+    time exactly as logged (including trailing zeros).
 
     Event-name attribution (two sources, with adjacent winning over trailing):
       1. Adjacent: `race@time [Event]` — bracket immediately follows (with optional
@@ -296,18 +323,21 @@ def extract_races(workout_str, year):
         for m in re.finditer(r"(\d+)\s*r@([\d:.]+)" + _BRACKET, s):
             candidates.append((m.start(), int(m.group(1)),
                                parse_time_to_seconds(m.group(2)),
-                               _pick_event(m.group(3))))
+                               _pick_event(m.group(3)),
+                               time_literal_decimals(m.group(2))))
         for m in re.finditer(r"(\d+)\s*r\s+(\d+[:.]?\d[\d:.]*)" + _BRACKET, s.lower()):
             dist = int(m.group(1))
             time_sec = parse_time_to_seconds(m.group(2))
-            already = any(d == dist and t == time_sec for _, d, t, _e in candidates)
+            already = any(d == dist and t == time_sec for _, d, t, _e, _td in candidates)
             if not already:
-                candidates.append((m.start(), dist, time_sec, _pick_event(m.group(3))))
+                candidates.append((m.start(), dist, time_sec, _pick_event(m.group(3)),
+                                   time_literal_decimals(m.group(2))))
     else:
         for m in re.finditer(r"(\d+)\s*race@([\d:.]+)" + _BRACKET, s):
             candidates.append((m.start(), int(m.group(1)),
                                parse_time_to_seconds(m.group(2)),
-                               _pick_event(m.group(3))))
+                               _pick_event(m.group(3)),
+                               time_literal_decimals(m.group(2))))
 
     # Relay legs only count if there's already at least one race on this day
     if candidates and year != 2016:
@@ -318,18 +348,20 @@ def extract_races(workout_str, year):
             leg_times = [t for t in (t1, t2) if t is not None]
 
             def _is_dup_leg(c, _leg_times=leg_times):
-                _pos, d, t_c, _e = c
+                _pos, d, t_c, _e, _td = c
                 if d != 400 or t_c is None:
                     return False
                 return any(abs(t_c - lt) < 0.05 for lt in _leg_times)
 
             candidates = [c for c in candidates if not _is_dup_leg(c)]
-            candidates.append((m.start(), 400, t1, event))
-            candidates.append((m.start() + 1, 400, t2, event))
+            candidates.append((m.start(), 400, t1, event,
+                               time_literal_decimals(m.group(1))))
+            candidates.append((m.start() + 1, 400, t2, event,
+                               time_literal_decimals(m.group(2))))
 
     candidates.sort(key=lambda x: x[0])
-    return [{"distance_m": d, "time_sec": t, "event": e}
-            for _, d, t, e in candidates]
+    return [{"distance_m": d, "time_sec": t, "event": e, "time_dec": td}
+            for _, d, t, e, td in candidates]
 
 
 def split_2016_notes(notes_str):
@@ -773,7 +805,8 @@ def ingest_year_standard_csv(df_or_path, year, source_file=None):
 # failing on a column-less DataFrame.
 RACE_SEGMENT_COLUMNS = [
     "date", "year", "race_seq", "fatigued", "distance_m", "time_sec",
-    "pace_sec_per_mi", "location", "temp_c", "weather", "conditions", "shoes",
+    "time_dec", "pace_sec_per_mi", "location", "temp_c", "weather",
+    "conditions", "shoes",
     "surface", "event", "note", "surface_source", "workout_raw", "source_file",
 ]
 
@@ -805,6 +838,7 @@ def build_race_segments(daily_rows):
                 "fatigued": i > 0,
                 "distance_m": dist_m,
                 "time_sec": time_sec,
+                "time_dec": race.get("time_dec"),
                 "pace_sec_per_mi": pace,
                 "location": g(row, "location"),
                 "temp_c": g(row, "temp_c"),
@@ -875,7 +909,7 @@ def set_race_surface_source(row):
 # ---------- adjustments ----------
 
 _NUMERIC_FIELDS = {"distance_m", "time_sec", "pace_sec_per_mi", "temp_c",
-                   "race_seq"}
+                   "race_seq", "time_dec"}
 
 
 def _coerce_value(field, value):
@@ -963,6 +997,15 @@ def apply_adjustments_from_df(races_df, changes_df):
             t = races_df.at[idx, "time_sec"]
             if d and t:
                 races_df.at[idx, "pace_sec_per_mi"] = t / (d / METERS_PER_MILE)
+        if field == "time_sec" and "time_dec" in races_df.columns:
+            # An adjusted time replaces the entered one, so its precision
+            # replaces the entered precision: literal decimals when the
+            # change-sheet value is text ('4:38.30'), value-inferred when
+            # the cell arrived numeric.
+            if isinstance(value, str):
+                races_df.at[idx, "time_dec"] = time_literal_decimals(value)
+            elif isinstance(new_val, (int, float)) and not pd.isna(new_val):
+                races_df.at[idx, "time_dec"] = time_value_decimals(new_val)
         if note is not None and not pd.isna(note) and str(note).strip():
             existing = races_df.at[idx, "note"] if "note" in races_df.columns else None
             if existing and not pd.isna(existing) and str(existing).strip():
@@ -1037,10 +1080,15 @@ def ingest_additions_from_df(additions_df, source_label="snapshot:additions"):
         except (ValueError, TypeError):
             print(f"[additions] row {r_idx}: bad distance_m {dist_v!r} — skipping")
             continue
+        # The snapshot reader hands time_sec through as TEXT so entered
+        # precision survives ('307.40' -> time_dec=2, trailing zero kept).
+        # Numeric values (legacy xlsx path) fall back to value-inference.
         if isinstance(time_v, (int, float)):
             time_sec = float(time_v)
+            time_dec = time_value_decimals(time_sec)
         else:
             time_sec = parse_time_to_seconds(time_v)
+            time_dec = time_literal_decimals(time_v)
         if time_sec is None:
             print(f"[additions] row {r_idx}: bad time_sec {time_v!r} — skipping")
             continue
@@ -1069,6 +1117,7 @@ def ingest_additions_from_df(additions_df, source_label="snapshot:additions"):
             "fatigued": False,
             "distance_m": dist_m,
             "time_sec": time_sec,
+            "time_dec": time_dec,
             "pace_sec_per_mi": pace,
             "location": location,
             "temp_c": None,

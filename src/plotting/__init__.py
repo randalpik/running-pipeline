@@ -7,7 +7,8 @@ from .tokens import (
     CS_LINE, CS_LINE_WIDTH, FRONTIER_LINE, TREND_LINE, TREND_WIDTH,
     SURFACES, CAT_COLORS, TAG_COLORS, WEATHER_CF_COLORS, CONDITIONS_CF_COLORS, rgba,
 )
-from .formatters import (sec_to_mss, sec_to_mss_full, signed_sec, fmt_min,
+from .formatters import (sec_to_mss, sec_to_mss_full, sec_to_mss_prec,
+                         time_decimals, signed_sec, fmt_min,
                          route_label, route_paren)
 from .hover import (tt_row, tt_kv, tt_title, long_run_lines,
                     hill_measured_lines, hill_rep_measured_lines,
@@ -31,7 +32,8 @@ __all__ = [
     'TOOLTIP_BG', 'BORDER',
     'CS_LINE', 'CS_LINE_WIDTH', 'FRONTIER_LINE', 'TREND_LINE', 'TREND_WIDTH',
     'SURFACES', 'CAT_COLORS', 'TAG_COLORS', 'WEATHER_CF_COLORS', 'CONDITIONS_CF_COLORS',
-    'sec_to_mss', 'sec_to_mss_full', 'signed_sec', 'fmt_min',
+    'sec_to_mss', 'sec_to_mss_full', 'sec_to_mss_prec', 'time_decimals',
+    'signed_sec', 'fmt_min',
     'route_label', 'route_paren',
     'tt_row', 'tt_kv', 'tt_title', 'long_run_lines', 'CAT_LABEL',
     'hill_measured_lines', 'hill_rep_measured_lines',

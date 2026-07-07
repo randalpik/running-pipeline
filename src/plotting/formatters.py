@@ -83,6 +83,53 @@ def sec_to_mss_full(s) -> str:
     return f'{body}.{frac}' if frac > 0 else body
 
 
+def time_decimals(s) -> int:
+    """Decimal places (0-2) demonstrably present in a seconds value.
+
+    Display-side fallback for race rows without an entered-precision
+    ``time_dec`` field. Trailing zeros in the entered form are not
+    recoverable from a float (an entered ``16:58.0`` infers as ``16:58``) —
+    that's exactly what ``time_dec`` exists to preserve; use this only when
+    the field is absent.
+    """
+    if _is_missing(s):
+        return 0
+    hundredths = int(round(float(s) * 100))
+    if hundredths % 100 == 0:
+        return 0
+    if hundredths % 10 == 0:
+        return 1
+    return 2
+
+
+def sec_to_mss_prec(s, decimals) -> str:
+    """Format seconds as ``M:SS`` / ``H:MM:SS`` with exactly ``decimals``
+    (0-2) decimal places — the entered-precision formatter for race times.
+
+    ``'16:58.0'`` stays ``16:58.0``, ``'4:48.47'`` keeps both digits, and a
+    whole-second entry never grows a fake ``.0``. Course corrections format
+    with the ORIGINAL time's decimals so a converted time carries the same
+    precision as entered — no more, no less.
+    """
+    if _is_missing(s):
+        return ''
+    decimals = int(decimals)
+    scale = 10 ** decimals
+    # Round in the target precision first to avoid float-representation
+    # artifacts (same trick as sec_to_mss_full).
+    units_total = int(round(float(s) * scale))
+    whole, frac = divmod(units_total, scale)
+    if whole >= 3600:
+        h = whole // 3600
+        m = (whole % 3600) // 60
+        ss = whole % 60
+        body = f'{h}:{m:02d}:{ss:02d}'
+    else:
+        m, ss = divmod(whole, 60)
+        body = f'{m}:{ss:02d}'
+    return f'{body}.{frac:0{decimals}d}' if decimals else body
+
+
 def signed_sec(s) -> str:
     """Signed M:SS / H:MM:SS — shows ``+`` for positive, ``-`` for negative.
 

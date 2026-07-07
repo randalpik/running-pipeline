@@ -147,8 +147,12 @@ def read_snapshot(path):
             return
         body = ''.join(current_buf).strip()
         if body:
+            # additions carries entered-precision race times ('307.40'):
+            # read time_sec as text so trailing zeros survive to
+            # ingest_additions_from_df instead of dying in dtype inference.
+            dtype = {'time_sec': str} if current_name == 'additions' else None
             try:
-                df = pd.read_csv(io.StringIO(body))
+                df = pd.read_csv(io.StringIO(body), dtype=dtype)
             except pd.errors.EmptyDataError:
                 df = pd.DataFrame()
         else:
