@@ -436,18 +436,28 @@ chosen empirically by inspecting the actual residual distributions of long
 vs short races; long and short need different treatments because their
 residual structures are different.
 
-### Tier 1 — Marathon (≥25K) and HM (15K–24.999K)
+### Tier 1 — long races (≥15K: HM + Marathon)
 
-Symmetric ±2yr same-band median residual in seconds. Prune if absolute
-residual exceeds the band-specific threshold:
+Retuned **July 2026** to match the WA switch: residuals are measured in
+**log WA-5K-equivalent time** — the same space the fit's likelihood
+consumes — instead of raw same-band seconds. For each ≥15K race, residual =
+own `log(t5k)` minus the median `log(t5k)` of **all eligible aerobic races
+(≥1500m, any distance)** within a symmetric ±2yr window (self excluded,
+n≥2 guard; pools run 20–95 races vs the old same-band 2–5). Prune if the
+residual exceeds **+6%** (`tier1_thresh=0.06`, log-space fraction).
 
-- **Marathon: > +115s** — kept marathons cluster from −925s up to +113s
-  (Nashville 2018 debut, sparse n=2). First excluded marathon is Berlin
-  2023 at +118s. Threshold of +115s sits in the +5s gap.
-- **HM: > +500s** — kept HMs span −159s to +177s (Craft Classic 2024).
-  Only excluded HM is Deception Pass at +1754s (extreme XC course).
-  Threshold of +500s gives wide safety margin for future summer-HM
-  variability.
+One threshold covers both bands with wide margins: kept long races top out
+at +3.40% (Boston 2025) vs the first excluded at +7.51% (Nashville RnR
+2021); on the HM side kept-max is +1.31% (Craft Classic 2024) vs Deception
+Pass 2016 at +24.14%. Excluded: Boston 2021 (+18.18%), Boston 2024
+(+8.01%), Boulderthon 2024 (+7.74%), Nashville RnR 2021 (+7.51%),
+Deception Pass 2016 (+24.14%). The retune **readmitted five marathons**
+the old raw-seconds rule pruned — Nashville 2019 (+1.19%), Boston 2022
+(+1.92%), Berlin 2023 (+2.32%), Boston 2025 (+3.40%), Seattle 2025
+(+1.53%) — races far from the marathon-band median in raw seconds but
+entirely consistent with concurrent short-race fitness once WA-converted
+(Seattle 2025's 5K-equiv, 15:33 corrected, was *faster* than a 5K five
+weeks earlier).
 
 Why symmetric (not past-only): marathons have bonk-polluted past medians
 (2021 Boston/Nashville bonks pull subsequent past-medians upward, making
@@ -491,7 +501,7 @@ land at z > 2.5 and auto-prune; otherwise the model handles it.
 ### Tunable parameters
 
 `derive_exclusions()` exposes thresholds as keyword args:
-`tier1_marathon_thresh=115.0`, `tier1_hm_thresh=500.0`, `tier2_z_thresh=2.5`,
+`tier1_thresh=0.06` (log WA-5K-equiv fraction, ≈ +6%), `tier2_z_thresh=2.5`,
 `tier2_kmin=5`, `window_years=2.0`, `trim_pct=0.02`, `sigma_iters=3`. Edit
 defaults in the function signature if recalibration is needed.
 
@@ -537,13 +547,25 @@ defaults in the function signature if recalibration is needed.
   averaged across all 5K-eq projections. Rejected; the Riegel-merged
   metric's signal-to-noise is worse than per-band metric's despite
   higher data density.
-- **Asymmetric Tier 1 thresholds for HM and Marathon**. Marathon and HM
-  needed split thresholds (+115s vs +500s) because their kept-residual
-  spreads differ structurally: marathons cluster tightly at good days
-  (kept_max +113), HMs span wider (kept_max +177). A single threshold
-  would either miss Berlin 2023 (+118 marathon) or prune Craft Classic
-  HMs (+151, +177). Cleanest fix was split thresholds, accepted as a
-  permanent design choice.
+- **Asymmetric Tier 1 thresholds for HM and Marathon** (+115s vs +500s,
+  raw same-band seconds). SUPERSEDED July 2026: the raw-seconds metric
+  predated the WA switch — it judged marathons only against other
+  marathons, so the threshold had to thread a +5s knife-edge (kept_max
+  +113s vs excl_min +118s) and still excluded races whose 5K-equivalents
+  were consistent with concurrent fitness (Seattle 2025). In WA 5K-equiv
+  space the kept/bonk gap is wide (+3.4% vs +7.5%) and one 6% threshold
+  covers both bands; the split is no longer needed.
+- **A single percentage threshold for ALL distances** (extending the
+  Tier 1 WA-space rule below 15K to retire Tier 2). Investigated July
+  2026, rejected: symmetric 6% flips 24 kept races out — the 2013–16
+  rise era (symmetric medians are biased wherever fitness changed fast),
+  hot-course summer 5Ks (Pies/Derby Days/Turkey Trot at +7–10%), and the
+  2021 comeback TTs — because short races have ~3× the percent spread of
+  long ones in 5K-equiv terms. A past-only ~11% single rule avoids the
+  flips but readmits Boston 2024/Boulderthon (kept 5Ks sit at +9.7%,
+  above those bonks) with a thin +9.7%/+12.0% margin. Tier 2 isn't a
+  special case for two races — it's what protects early-career and
+  short-race data from a threshold calibrated on long-race physiology.
 - **Single Tier 2 z-threshold catching all "obvious" XC bonks** (e.g.
   WGP 2016 XC, WGP 2019 XC, Tahoma 2013). Rejected because at any z
   catching them, the rule also prunes equivalently-residualized kept
@@ -591,8 +613,10 @@ timescale are cleanly visible. Findings:
   factor for 3600 ft up+down over the HM = 1.138 (a 13.8% time penalty —
   bigger than the 8% XC correction); stacking terrain × climb (1.08 ×
   1.138 = 1.229) brings the residual from +114 to +61 s/mi at the 5K
-  anchor — ~+866s on the exclusion metric, still well over the +500s HM
-  threshold. Landing at normal race scatter (+15 s/mi) would need a
+  anchor — ~+866s on the then-current raw-seconds exclusion metric, still
+  well over its +500s HM threshold (and +24% on the July 2026 WA-space
+  rule vs its 6% cutoff — the conclusion survives the retune).
+  Landing at normal race scatter (+15 s/mi) would need a
   total factor of 1.40 (~6,500 ft at the Minetti curve): the remainder
   is stairs/bottlenecked singletrack/sand that no grade-or-footing
   model prices in. That race is excluded because it genuinely isn't

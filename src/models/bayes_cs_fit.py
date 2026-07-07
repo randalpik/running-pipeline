@@ -119,8 +119,7 @@ def build_eligible(races_path):
 
 
 def derive_exclusions(elig, xc_correction=0.06,
-                      tier1_marathon_thresh=115.0,
-                      tier1_hm_thresh=500.0,
+                      tier1_thresh=0.06,
                       tier2_z_thresh=2.5,
                       tier2_kmin=5,
                       window_years=2.0,
@@ -132,13 +131,21 @@ def derive_exclusions(elig, xc_correction=0.06,
     treats long and short races differently because their residual
     distributions are structurally different:
 
-    Tier 1 — Marathon (>=25K) and HM (15K-24.999K):
-        Symmetric ±window_years same-band median residual in seconds. The
-        kept-marathon residuals cluster tightly (good days) and bonks stick
-        up clearly above; an absolute residual threshold separates them.
-        Different thresholds for HM and Marathon because the noise floors
-        differ (HM: kept_max +177s, excl_min +1754s — wide gap. Marathon:
-        kept_max +113s, excl_min +118s — tight).
+    Tier 1 — long races (>=15K: HM + Marathon):
+        Symmetric ±window_years residual in log WA-5K-equivalent time versus
+        the median of ALL eligible aerobic races (>=1500m, any distance) in
+        the window — the same space the fit's likelihood consumes. Prune if
+        the residual exceeds tier1_thresh (log-space fraction; 0.06 ≈ +6%).
+
+        One threshold covers HM and Marathon: kept long races top out at
+        +3.4% (Boston 2025) while the first genuine bonk sits at +7.5%
+        (Nashville RnR 2021); on the HM side kept-max is +1.3% vs Deception
+        Pass 2016 at +24%. The pre-WA rule (raw same-band seconds, split
+        115s marathon / 500s HM thresholds, marathon knife-edge) was retired
+        July 2026 — judging marathons only against other marathons excluded
+        races (e.g. Seattle 2025, +166s vs the marathon-band median) whose
+        5K-equivalents were entirely consistent with concurrent short-race
+        fitness.
 
     Tier 2 — sub-marathon (<15K):
         Same-band past-only ±window_years log-pace median, K_min ≥ tier2_kmin.
@@ -200,20 +207,26 @@ def derive_exclusions(elig, xc_correction=0.06,
     df['band'] = df['distance_m'].apply(band)
     df['log_pace'] = np.log(df['time_sec_corr'] / (df['distance_m'] / METERS_PER_MILE))
 
-    # ---- Tier 1: Marathon + HM, symmetric ±window_years same-band median ----
-    df['t1_resid_sec'] = np.nan
-    df['t1_n']         = 0
+    # ---- Tier 1: long races (>=15K), symmetric ±window_years residual in ----
+    # ---- log WA-5K-equiv time vs ALL aerobic races in the window         ----
+    df['log_t5k'] = np.nan
+    aero_mask = df['distance_m'] >= 1500
+    df.loc[aero_mask, 'log_t5k'] = [
+        float(np.log(wa_5k_equiv_time(float(d), float(t))))
+        for d, t in zip(df.loc[aero_mask, 'distance_m'],
+                        df.loc[aero_mask, 'time_sec_corr'])
+    ]
+    df['t1_resid'] = np.nan
+    df['t1_n']     = 0
     win = pd.Timedelta(days=int(window_years * 365))
-    for b in ('Marathon', 'HM'):
-        idx = df.index[df['band'] == b].tolist()
-        sub = df.loc[idx]
-        for i in idx:
-            d_i = df.loc[i, 'date']
-            mask = (sub['date'] >= d_i - win) & (sub['date'] <= d_i + win) & (sub.index != i)
-            nb = sub[mask]
-            df.loc[i, 't1_n'] = len(nb)
-            if len(nb) >= 2:
-                df.loc[i, 't1_resid_sec'] = df.loc[i, 'time_sec_corr'] - nb['time_sec_corr'].median()
+    aero = df[aero_mask]
+    for i in df.index[df['distance_m'] >= 15000].tolist():
+        d_i = df.loc[i, 'date']
+        mask = (aero['date'] >= d_i - win) & (aero['date'] <= d_i + win) & (aero.index != i)
+        nb = aero[mask]
+        df.loc[i, 't1_n'] = len(nb)
+        if len(nb) >= 2:
+            df.loc[i, 't1_resid'] = df.loc[i, 'log_t5k'] - nb['log_t5k'].median()
 
     # ---- Tier 2: sub-marathon, past-only same-band log-pace ----
     sub_bands = ['<1500m', '1500-3499m', '5K', '5mi-8K', '10K']
@@ -250,27 +263,15 @@ def derive_exclusions(elig, xc_correction=0.06,
     # ---- Apply rules; build audit trail ----
     rows = []
     for _, r in df.iterrows():
-        if r['band'] == 'Marathon':
-            if pd.notna(r['t1_resid_sec']) and r['t1_resid_sec'] > tier1_marathon_thresh:
+        if r['distance_m'] >= 15000:
+            if pd.notna(r['t1_resid']) and r['t1_resid'] > tier1_thresh:
                 rows.append({
                     'date': r['date'].date() if hasattr(r['date'], 'date') else r['date'],
                     'distance_m': int(r['distance_m']),
                     'event': r.get('event', ''), 'surface': r.get('surface', ''),
-                    'tier': 'M', 'metric': 'symmetric_resid_sec',
-                    'value': round(float(r['t1_resid_sec']), 1),
-                    'threshold': tier1_marathon_thresh,
-                    'n_neighbors': int(r['t1_n']),
-                    'sigma_global': '',
-                })
-        elif r['band'] == 'HM':
-            if pd.notna(r['t1_resid_sec']) and r['t1_resid_sec'] > tier1_hm_thresh:
-                rows.append({
-                    'date': r['date'].date() if hasattr(r['date'], 'date') else r['date'],
-                    'distance_m': int(r['distance_m']),
-                    'event': r.get('event', ''), 'surface': r.get('surface', ''),
-                    'tier': 'HM', 'metric': 'symmetric_resid_sec',
-                    'value': round(float(r['t1_resid_sec']), 1),
-                    'threshold': tier1_hm_thresh,
+                    'tier': 'long', 'metric': 'symmetric_t5k_resid_pct',
+                    'value': round(float(r['t1_resid']) * 100, 2),
+                    'threshold': round(tier1_thresh * 100, 2),
                     'n_neighbors': int(r['t1_n']),
                     'sigma_global': '',
                 })
