@@ -119,11 +119,13 @@ Matchers: `event_contains`, `event_endswith`, `event_regex`. Targets: `infer_loc
 
 ## Snapshot bundle format
 
-Single CSV with `# section: NAME key=val` markers between seven blocks: `current_log` (year=YYYY), `changes`, `additions`, `locations`, `hills`, `coordinates`, `historical`. Read with `snapshot.read_snapshot()`.
+Single CSV with `# section: NAME key=val` markers between eight blocks: `current_log` (year=YYYY), `changes`, `additions`, `locations`, `hills`, `coordinates`, `historical`, `training`. Read with `snapshot.read_snapshot()`.
 
 `historical` schema: `city_state, min_hist, max_hist, log_location` (last column optional). Two roles: (a) seed cities on the world map that have no daily rows (Sapporo, JP); (b) override `city_state` (always) and `location` (where blank, or where a prior historical entry set it — never over a parser-set route) on non-race daily rows whose dates fall in the range. Multiple rows per city express disjoint visit windows; entries are applied in row order with last-wins on overlapping ranges (for both `city_state` and `log_location`). This replaces the legacy date-range branch of `infer_2016_2017_location`.
 
 `coordinates` schema: `city_state, latitude, longitude` — overrides applied on top of the Nominatim cache so geocoding fixes are reproducible from source.
+
+`training` schema: `date, location, type, decomp` — hand-verified legacy workouts (2014-15), trusted at the watch tier. Decomp blocks are `[Nx]DIST@TIME` (bare distance = meters, `mi` = miles; `@M:SS`/`@SS` = time **per rep**, `@Nmin`/`@H:MM:SS` = total; optional `/REST r` reserved). Grammar lives in `src/parsers/legacy_training.py`; build_dataset writes `data/training_legacy.csv` — **never daily rows**, so zero mileage impact (2014-15 volume is the dashboard `UNLOGGED_MILES` constants). Quality days join `workout_decomposed.csv` via `parse_workouts`; long runs are injected inside `project_long_runs` only (never the route-beta fits). Legacy days pass both TQ gates, feed the corpus/frontier, and wear a lavender halo; Workouts/Training/Long Runs floor their x-axis at `training_floor()` while all other daily plots keep `daily_floor()`. XC correction fires natively (fall windows 2014-16 + the 5K-tempo rule via backfilled `quality_distance_m`/`terrain_type`). Hill types are stored, not yet plotted.
 
 `build_dataset` resolution order: `--snapshot` flag → `data/drive_snapshot.csv` → Drive auto-fetch (last resort). Flags: `--refresh-snapshot`, `--no-fetch`.
 

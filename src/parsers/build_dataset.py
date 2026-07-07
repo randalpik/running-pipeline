@@ -315,6 +315,7 @@ def main():
     additions_df = sections.get("additions", pd.DataFrame())
     locations_df = sections.get("locations", pd.DataFrame())
     historical_df = sections.get("historical", pd.DataFrame())
+    training_df = sections.get("training", pd.DataFrame())
 
     current_year = args.current_year
     if current_year is None:
@@ -665,6 +666,32 @@ def main():
     races_out = os.path.join(args.out_dir, "races.csv")
     daily.to_csv(daily_out, index=False)
     races.to_csv(races_out, index=False)
+
+    # ---------- training_legacy.csv (legacy hand-verified workouts) ----------
+    # Snapshot `training` rows become their own artifact — NEVER daily rows,
+    # so they add no mileage (covered by UNLOGGED_MILES) and can't move
+    # daily_floor(). Location metadata is joined here so downstream consumers
+    # (tooltips, the XC track exemption) need no second join, and
+    # quality_distance_m is stamped from the decomp so the XC 5K-tempo rule
+    # can fire for legacy days. Header-only when the section is absent, so
+    # loaders always see a stable shape.
+    from legacy_training import LEGACY_COLUMNS, quality_total_m, QUALITY_TYPES
+    training_out = os.path.join(args.out_dir, "training_legacy.csv")
+    if len(training_df):
+        training = training_df.copy()
+        training = _join_location_metadata(training, locations_df)
+        training["quality_distance_m"] = [
+            quality_total_m(r["decomp"]) if r["type"] in QUALITY_TYPES else None
+            for _, r in training.iterrows()]
+        for col in LEGACY_COLUMNS:
+            if col not in training.columns:
+                training[col] = None
+        training = training[LEGACY_COLUMNS].sort_values("date")
+        training.to_csv(training_out, index=False)
+        print(f"[training] wrote {len(training)} legacy training row(s) "
+              f"({training['type'].value_counts().to_dict()})")
+    else:
+        pd.DataFrame(columns=LEGACY_COLUMNS).to_csv(training_out, index=False)
 
     # ---------- summary ----------
     print()

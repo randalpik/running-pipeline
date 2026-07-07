@@ -19,7 +19,7 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import daily_floor, clip_to_daily_floor
+from src.shared.plot_window import training_floor, clip_to_daily_floor
 from src.shared.workouts import (
     load_cs, add_cs,
     project_workouts, project_long_runs, project_hill_continuous,
@@ -576,7 +576,10 @@ def main():
     corpus_demos = corpus.rename(columns={'p5k_corr_min': 'pace_min'})
     demos = standard_demos(daily_summary, beta_long, d_thresh, xc_corr,
                            corpus=corpus_demos)
-    front_plot = clip_to_daily_floor(daily_summary).copy()
+    # training_floor(): axis + reference lines extend back to the first
+    # legacy training entry when the profile has one, else = daily_floor.
+    plot_floor = training_floor()
+    front_plot = clip_to_daily_floor(daily_summary, floor=plot_floor).copy()
     frontier, _ = build_frontier(demos, pd.DatetimeIndex(front_plot['date']),
                                  front_plot['p5k_implied_min'])
     print(f'Frontier: computed over {len(front_plot)} daily points')
@@ -596,7 +599,7 @@ def main():
 
     fig = go.Figure()
 
-    cs_plot = clip_to_daily_floor(cs)
+    cs_plot = clip_to_daily_floor(cs, floor=plot_floor)
     cs_raw  = _y_safe(cs_plot['p5k_implied_min'].values)
     cs_norm = [0.0] * len(cs_plot)
     fig.add_trace(go.Scatter(
@@ -767,7 +770,7 @@ def main():
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     groupclick='toggleitem'),
         xaxis=yearly_x_axis_kwargs(
-            daily_floor(),
+            plot_floor,
             combined['date'].max() + pd.Timedelta(days=30),
         ),
         yaxis=dict(title='Residual from 5K fitness (sec/mi)',
@@ -782,7 +785,7 @@ def main():
     # day-since-1970 (not the in-script 2016-01-01 epoch).
     js_epoch = pd.Timestamp('1970-01-01')
 
-    plot_start = daily_floor()
+    plot_start = plot_floor
     plot_end   = combined['date'].max() + pd.Timedelta(days=30)
     all_days   = pd.date_range(plot_start, plot_end, freq='D')
 

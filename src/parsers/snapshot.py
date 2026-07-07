@@ -1,6 +1,6 @@
 """Snapshot file format: reader, writer, and converters from other formats.
 
-A snapshot concatenates seven CSV tables into one file, separated by
+A snapshot concatenates eight CSV tables into one file, separated by
 `# section: NAME [key=value]*` marker lines. Each section below its marker
 is a well-formed CSV with a header row.
 
@@ -23,6 +23,12 @@ Sections:
                           non-race daily rows whose dates fall in the
                           range — replaces the legacy 2016-17
                           infer_2016_2017_location code path.
+  training                hand-verified legacy workouts from pre-log years
+                          (2014-15): date, location, type, decomp. decomp is
+                          comma-separated distance@time blocks (see
+                          legacy_training.parse_decomp). These become
+                          data/training_legacy.csv — never daily rows, so
+                          they add no mileage (covered by UNLOGGED_MILES).
 
 Missing sections return as empty DataFrames on read. Sections can appear in
 any order.
@@ -218,7 +224,7 @@ def _df_to_rows(df, columns):
 
 def write_snapshot(path, *, current_year, current_log_df,
                    changes_df, additions_df, locations_df, hills_df=None,
-                   coordinates_df=None, historical_df=None):
+                   coordinates_df=None, historical_df=None, training_df=None):
     """Write a snapshot file at `path`."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     buf = io.StringIO()
@@ -277,6 +283,12 @@ def write_snapshot(path, *, current_year, current_log_df,
     historical_cols = ["city_state", "min_hist", "max_hist", "log_location"]
     _write_section(buf, "historical", historical_cols,
                    _df_to_rows(historical_df, historical_cols))
+
+    # training: hand-verified legacy workouts (pre-log 2014-15). Empty
+    # section keeps the on-disk shape stable for profiles without one.
+    training_cols = ["date", "location", "type", "decomp"]
+    _write_section(buf, "training", training_cols,
+                   _df_to_rows(training_df, training_cols))
 
     with open(path, "w") as f:
         f.write(buf.getvalue())
@@ -361,17 +373,17 @@ def current_log_df_from_markdown(md_path, year):
 
 def adjustments_dfs_from_markdown(md_path):
     """Parse a markdown adjustments dump into (changes, additions, locations,
-    hills, coordinates, historical).
+    hills, coordinates, historical, training).
 
-    The hills, coordinates, and historical tables are optional for backward
-    compatibility with older dumps. When absent they're returned as empty
-    DataFrames.
+    The hills, coordinates, historical, and training tables are optional for
+    backward compatibility with older dumps. When absent they're returned as
+    empty DataFrames.
     """
     with open(md_path) as f:
         md = f.read()
     tables = list(_split_md_tables(md))
-    if len(tables) < 3 or len(tables) > 6:
-        raise ValueError(f"expected 3-6 adjustment tables, got {len(tables)}")
+    if len(tables) < 3 or len(tables) > 7:
+        raise ValueError(f"expected 3-7 adjustment tables, got {len(tables)}")
 
     def _classify(t):
         hdr = "|".join((_unescape_md(h) or "").lower() for h in t[0])
@@ -379,6 +391,8 @@ def adjustments_dfs_from_markdown(md_path):
             return "changes"
         if "distance_m" in hdr:
             return "additions"
+        if "decomp" in hdr:
+            return "training"
         if "log_location" in hdr:
             return "locations"
         if "abbrev" in hdr:
@@ -410,19 +424,22 @@ def adjustments_dfs_from_markdown(md_path):
                  if "coordinates" in by_name else pd.DataFrame())
     historical_df = (_to_df(by_name["historical"])
                      if "historical" in by_name else pd.DataFrame())
+    training_df = (_to_df(by_name["training"])
+                   if "training" in by_name else pd.DataFrame())
     return (_to_df(by_name["changes"]),
             _to_df(by_name["additions"]),
             _to_df(by_name["locations"]),
             hills_df,
             coords_df,
-            historical_df)
+            historical_df,
+            training_df)
 
 
 def snapshot_from_markdown(log_md_path, log_year, adj_md_path, out_path):
     """High-level: markdown files → snapshot CSV at `out_path`."""
     log_df = current_log_df_from_markdown(log_md_path, log_year)
     (changes_df, additions_df, locations_df, hills_df, coordinates_df,
-     historical_df) = adjustments_dfs_from_markdown(adj_md_path)
+     historical_df, training_df) = adjustments_dfs_from_markdown(adj_md_path)
     size = write_snapshot(out_path,
                           current_year=log_year,
                           current_log_df=log_df,
@@ -431,12 +448,13 @@ def snapshot_from_markdown(log_md_path, log_year, adj_md_path, out_path):
                           locations_df=locations_df,
                           hills_df=hills_df,
                           coordinates_df=coordinates_df,
-                          historical_df=historical_df)
+                          historical_df=historical_df,
+                          training_df=training_df)
     print(f"[snapshot] wrote {out_path}  ({size} bytes)  "
           f"log={len(log_df)}, changes={len(changes_df)}, "
           f"additions={len(additions_df)}, locations={len(locations_df)}, "
           f"hills={len(hills_df)}, coordinates={len(coordinates_df)}, "
-          f"historical={len(historical_df)}")
+          f"historical={len(historical_df)}, training={len(training_df)}")
 
 
 # ---------- xlsx → snapshot ----------
@@ -508,10 +526,10 @@ def current_log_df_from_xlsx(xlsx_path, year, sheet_name=None):
 
 def adjustments_dfs_from_xlsx(xlsx_path):
     """Parse the adjustments xlsx into (changes, additions, locations, hills,
-    coordinates, historical) DataFrames.
+    coordinates, historical, training) DataFrames.
 
-    The hills, coordinates, and historical sheets are optional; absence
-    yields an empty DataFrame.
+    The hills, coordinates, historical, and training sheets are optional;
+    absence yields an empty DataFrame.
     """
     import openpyxl
     wb = openpyxl.load_workbook(xlsx_path, data_only=True)
@@ -552,14 +570,15 @@ def adjustments_dfs_from_xlsx(xlsx_path):
     historical = _sheet_to_df("historical",
                               ["city_state", "min_hist", "max_hist",
                                "log_location"])
-    return changes, additions, locations, hills, coordinates, historical
+    training = _sheet_to_df("training", ["date", "location", "type", "decomp"])
+    return changes, additions, locations, hills, coordinates, historical, training
 
 
 def snapshot_from_xlsx(log_xlsx_path, log_year, adj_xlsx_path, out_path):
     """High-level: xlsx files → snapshot CSV at `out_path`."""
     log_df = current_log_df_from_xlsx(log_xlsx_path, log_year)
     (changes_df, additions_df, locations_df, hills_df, coordinates_df,
-     historical_df) = adjustments_dfs_from_xlsx(adj_xlsx_path)
+     historical_df, training_df) = adjustments_dfs_from_xlsx(adj_xlsx_path)
     size = write_snapshot(out_path,
                           current_year=log_year,
                           current_log_df=log_df,
@@ -568,12 +587,13 @@ def snapshot_from_xlsx(log_xlsx_path, log_year, adj_xlsx_path, out_path):
                           locations_df=locations_df,
                           hills_df=hills_df,
                           coordinates_df=coordinates_df,
-                          historical_df=historical_df)
+                          historical_df=historical_df,
+                          training_df=training_df)
     print(f"[snapshot] wrote {out_path}  ({size} bytes)  "
           f"log={len(log_df)}, changes={len(changes_df)}, "
           f"additions={len(additions_df)}, locations={len(locations_df)}, "
           f"hills={len(hills_df)}, coordinates={len(coordinates_df)}, "
-          f"historical={len(historical_df)}")
+          f"historical={len(historical_df)}, training={len(training_df)}")
 
 
 # ---------- CLI ----------

@@ -703,6 +703,21 @@ def main():
             print(f'Watch-demoted (log mismatch, parser fallback): '
                   f'{", ".join(demoted)}')
 
+    # Legacy hand-verified quality days (snapshot `training` section, via
+    # data/training_legacy.csv). These dates have no daily row, so neither
+    # decompose() nor the watch path can emit them — pure additions, trusted
+    # at the watch tier via workouts._legacy_verified_dates.
+    from legacy_training import load_legacy_training, legacy_quality_rows
+    legacy = load_legacy_training()
+    if len(legacy):
+        l_rows = legacy_quality_rows(legacy, dp3_at=dp3_at,
+                                     rest_model=rest_model)
+        if l_rows:
+            decomposed = pd.concat(
+                [decomposed, pd.DataFrame(l_rows)], ignore_index=True)
+            print(f'Legacy-enriched: {len(l_rows)} hand-verified day(s) '
+                  f'from training_legacy.csv')
+
     decomposed = decomposed.sort_values('date').reset_index(drop=True)
     pruned = pruned.sort_values('date').reset_index(drop=True) if len(pruned) else pruned
 

@@ -147,6 +147,7 @@ def build_coros_data(profile, env, *, rebuild, fit=False):
         str(snapshot_path), current_year=current_year, current_log_df=df,
         changes_df=empty, additions_df=additions_df, locations_df=locations_df,
         hills_df=empty, coordinates_df=empty, historical_df=empty,
+        training_df=empty,
     )
     print(f"[{profile.id}] wrote snapshot {snapshot_path}")
 

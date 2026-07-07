@@ -549,16 +549,31 @@ def project_workouts(cs, epoch):
         else:
             w[opt] = np.nan
     w = w.merge(daily[daily_cols], on='date', how='left')
+
+    # Legacy hand-verified days (snapshot `training` section) have no daily
+    # row, so the merge leaves their metadata NaN. Backfill display fields,
+    # terrain and quality_distance_m from training_legacy.csv so tooltips and
+    # the XC rules below treat them like any logged day.
+    leg_meta = _legacy_meta_by_date()
+    if leg_meta is not None:
+        for col in ('display_name', 'city_state', 'terrain_type',
+                    'quality_distance_m'):
+            if col in leg_meta.columns:
+                w[col] = w[col].where(w[col].notna(),
+                                      w['date'].map(leg_meta[col]))
     w['is_track'] = w['terrain_type'].astype(str).str.lower() == 'track'
 
     # XC correction (always applied — same convention as XC race correction).
     # Track locations are categorically exempt: the rules target XC-course
-    # efforts (fall season window; HS 5K course tempos run as 5×segments),
+    # efforts (fall season windows; HS 5K course tempos run as 5×segments),
     # and a workout on an actual track is neither (2021-04-26, a 5000m track
-    # tempo, was the one mis-hit).
-    fall_2016 = (w['date'] >= pd.Timestamp('2016-07-01')) & (w['date'] <= pd.Timestamp('2016-10-31'))
+    # tempo, was the one mis-hit). The fall windows cover the HS-era XC
+    # seasons: 2016 (logged) plus 2014-15 (legacy `training` section — same
+    # inference, and no non-legacy decomposed rows exist before 2016).
+    fall_xc = (w['date'].dt.month.isin((7, 8, 9, 10))
+               & w['date'].dt.year.isin((2014, 2015, 2016)))
     hs_5k = (w['type'] == 'tempo') & (w['quality_distance_m'] == 5000)
-    xc_mask = (fall_2016 | hs_5k) & ~w['is_track']
+    xc_mask = (fall_xc | hs_5k) & ~w['is_track']
     w.loc[xc_mask, 'pace_per_mile'] = w.loc[xc_mask, 'pace_per_mile'] / 1.06
     w['xc_corrected'] = xc_mask
 
@@ -615,11 +630,14 @@ def project_workouts(cs, epoch):
     varsity = partners.str.contains('varsity', na=False)
     # Mismatch-demoted days don't count as verified — see watch_log_demotions.
     watch = w['date'].dt.strftime('%Y-%m-%d').isin(verified - watch_log_demotions())
+    # Hand-verified legacy days (snapshot `training`): Max recorded exact
+    # decomps and times, trusted at the watch tier for BOTH gates.
+    legacy = w['date'].dt.strftime('%Y-%m-%d').isin(_legacy_verified_dates())
     continuous = w['rest_per_mile'].fillna(-1) == 0
     staple = ((w['date'].dt.year <= 2017)
               & w['workout_raw'].astype(str).str.contains(
                   r'5000t@|6400t@|4800f@', regex=True, na=False))
-    course_trusted = watch | w['is_track'] | varsity | continuous | staple
+    course_trusted = watch | w['is_track'] | varsity | continuous | staple | legacy
 
     # GATE 2 prep — uncertain STRUCTURE (do we know the rep decomposition?):
     # known only from watch data, an EXPLICIT "Nx" log (the legacy "10x500i"
@@ -642,7 +660,8 @@ def project_workouts(cs, epoch):
     known_struct = (w['workout_raw'].astype(str).str.contains(
                         r'5000t@|6400t@|4800f@', regex=True, na=False)
                     | (w['type'].astype(str) == 'continuous_fartlek'))
-    w['structure_verified'] = (watch | explicit_nx | continuous | known_struct).to_numpy()
+    w['structure_verified'] = (watch | explicit_nx | continuous | known_struct
+                               | legacy).to_numpy()
 
     snow_w = w['workout_raw'].astype(str).str.contains('snow', case=False, na=False)
     snow_c = w['conditions'].astype(str).str.contains('snow', case=False, na=False)
@@ -795,6 +814,16 @@ def project_long_runs(cs, epoch):
     details cache).
     """
     d = pd.read_csv(DAILY_PATH, parse_dates=['date'])
+    # Legacy hand-verified long runs (snapshot `training`) are injected HERE
+    # and only here — they must never reach daily.csv (mileage is covered by
+    # UNLOGGED_MILES) nor the pooled physical-route fit (long_run_fit_rows
+    # reads daily.csv independently). Reindexing to daily's columns leaves
+    # every unset field NaN, which the downstream reads all guard.
+    from src.parsers.legacy_training import legacy_long_run_rows
+    leg_lr = legacy_long_run_rows()
+    if len(leg_lr):
+        d = pd.concat([d, leg_lr.reindex(columns=d.columns)],
+                      ignore_index=True).sort_values('date')
     lr = _long_run_gated(d)
 
     lr = add_cs(lr, cs, epoch)
@@ -907,6 +936,31 @@ def _watch_verified_dates():
         return set()
     m = pd.read_csv(path)
     return set(m.loc[m['status'].isin(['exact', 'watch-only']), 'date'])
+
+
+def _legacy_verified_dates():
+    """Hand-verified legacy training days (snapshot `training` section, via
+    training_legacy.csv) — the pre-watch trust tier: Max recorded exact
+    decomps and times, so these pass both projection gates like watch days.
+    Empty set when the profile has no legacy section."""
+    from src.parsers.legacy_training import legacy_dates
+    return legacy_dates()
+
+
+def _legacy_meta_by_date():
+    """training_legacy.csv metadata indexed by date (Timestamp), for
+    backfilling the daily-merge columns on legacy rows in project_workouts.
+    Quality rows win when a date carries several types. None when empty."""
+    from src.parsers.legacy_training import load_legacy_training, QUALITY_TYPES
+    leg = load_legacy_training()
+    if leg.empty:
+        return None
+    leg = leg.copy()
+    leg['date'] = pd.to_datetime(leg['date'])
+    leg['_q'] = leg['type'].isin(QUALITY_TYPES)
+    leg = (leg.sort_values(['date', '_q'], ascending=[True, False])
+              .drop_duplicates('date', keep='first'))
+    return leg.set_index('date')
 
 
 def watch_log_demotions():

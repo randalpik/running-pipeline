@@ -66,11 +66,13 @@ FILTER_BINS = [
 # Unlogged training miles per year, Max-only: hand-verified cumulative totals
 # from paper logs that exist in no CSV, with race miles EXCLUDED — those races
 # are snapshot:additions stubs in daily.csv and are summed from there, so
-# including them here would double-count. 2014: cumulative log total 1312
-# minus 38.92 stub race miles, rounded (the 2014 log was mile-granular).
+# including them here would double-count. 
+# 
+# 2014: cumulative log total 1312 minus 39 race miles.
+# 2015: paper track and XC season log totals minus 40 in-season race miles.
 UNLOGGED_MILES = {
     2014: 1273,
-    2015: 0,  # pending: confirmed legacy-log total minus its race miles
+    2015: 667,
 }
 TRAINING_SHOE_RUN_THRESHOLD = 3  # consecutive recovery runs to qualify
 # The current pair's mileage block ends once this many recovery runs in a row

@@ -27,9 +27,9 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import daily_floor, clip_to_daily_floor
+from src.shared.plot_window import training_floor, clip_to_daily_floor
 from src.shared.workouts import (
-    load_cs, watch_log_demotions,
+    load_cs, watch_log_demotions, _legacy_verified_dates,
     project_workouts, project_hill_continuous, project_hill_reps,
 )
 from src.shared.cs_projection import load_cs_outputs
@@ -71,6 +71,7 @@ TAG_LEGEND = {
     'outlier':             'Slow outlier',
     'xc':                  'XC-corrected',
     'enriched':            'Watch-enriched',
+    'legacy':              'Hand-verified (legacy)',
 }
 
 
@@ -92,6 +93,8 @@ def session_tag(r):
     if not isinstance(er, str) and (
             isinstance(r.get('measured_line'), str) or r.get('watch_measured')):
         return 'enriched'
+    if not isinstance(er, str) and r.get('legacy_verified'):
+        return 'legacy'
     return None
 
 
@@ -307,6 +310,9 @@ def main():
     workouts = project_workouts(cs, epoch)
     hills_c  = project_hill_continuous(cs, epoch)
     hills_r  = project_hill_reps(cs, epoch)
+    # Hand-verified legacy days (snapshot `training`) get their own halo ring.
+    workouts['legacy_verified'] = (
+        workouts['date'].dt.strftime('%Y-%m-%d').isin(_legacy_verified_dates()))
 
     lines = measured_lines()
     if lines:
@@ -407,7 +413,10 @@ def main():
     fig = go.Figure()
 
     # Gold CS-implied 5K reference curve (same color/style as other tabs).
-    cs_plot = clip_to_daily_floor(cs)
+    # training_floor(): the axis (and the reference lines) extend back to the
+    # first legacy training entry when the profile has one, else = daily_floor.
+    plot_floor = training_floor()
+    cs_plot = clip_to_daily_floor(cs, floor=plot_floor)
     fig.add_trace(go.Scatter(
         x=cs_plot['date'], y=_y_safe(cs_plot['p5k_implied_min'].values),
         mode='lines', name='5K fitness',
@@ -419,7 +428,7 @@ def main():
     # construction as Fitness (src/shared/performance_frontier.py; corpus
     # artifact written by plot_training_quality, which runs earlier).
     daily_summary, _beta_long, _d_thresh, _xc = load_cs_outputs(str(DATA_DIR))
-    front_plot = clip_to_daily_floor(daily_summary).copy()
+    front_plot = clip_to_daily_floor(daily_summary, floor=plot_floor).copy()
     front_demos = standard_demos(daily_summary, _beta_long, _d_thresh, _xc)
     frontier, _ = build_frontier(front_demos, pd.DatetimeIndex(front_plot['date']),
                                  front_plot['p5k_implied_min'])
@@ -548,7 +557,7 @@ def main():
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     groupclick='toggleitem'),
         xaxis=yearly_x_axis_kwargs(
-            daily_floor(),
+            plot_floor,
             pd.Timestamp(workouts['date'].max()) + pd.Timedelta(days=30),
         ),
         yaxis=dict(title='5K-equivalent pace (min/mi)',
@@ -560,7 +569,7 @@ def main():
     # ---------- cursor-tooltip payload ----------
     # Smooth mode shows date + CS pace; snap mode shows the session details.
     js_epoch = pd.Timestamp('1970-01-01')
-    plot_start = daily_floor()
+    plot_start = plot_floor
     plot_end   = pd.Timestamp(workouts['date'].max()) + pd.Timedelta(days=30)
     all_days   = pd.date_range(plot_start, plot_end, freq='D')
 

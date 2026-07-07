@@ -27,6 +27,21 @@ def daily_floor(daily=None) -> pd.Timestamp:
     return pd.Timestamp(src['date'].min())
 
 
+def training_floor(daily=None) -> pd.Timestamp:
+    """Left bound for the workout-centric plots (Workouts, Training, Long
+    Runs): ``daily_floor()`` extended back to the first legacy training entry
+    (snapshot ``training`` section) when one exists. Legacy days deliberately
+    never enter daily.csv, so ``daily_floor()`` itself — and every other
+    daily-centric plot — stays put; only the three tabs that actually display
+    legacy workouts use this variant."""
+    floor = daily_floor(daily)
+    from src.parsers.legacy_training import load_legacy_training
+    leg = load_legacy_training()
+    if len(leg):
+        floor = min(floor, pd.Timestamp(pd.to_datetime(leg['date']).min()))
+    return floor
+
+
 def clip_to_daily_floor(df, date_col: str = 'date', floor=None):
     """Restrict ``df`` to rows on/after the daily plot floor — the
     ``df[df['date'] >= daily_floor()]`` idiom shared across daily-centric

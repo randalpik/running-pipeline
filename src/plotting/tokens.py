@@ -114,6 +114,10 @@ TAG_COLORS = {
                                              # run excluded from Training
                                              # (distinct from the amber
                                              # outlier ring's orange cast)
+    'legacy':             '#C3A6FF',         # lavender — hand-verified legacy
+                                             # (snapshot `training`, 2014-15):
+                                             # trusted like watch-enriched but
+                                             # visually distinct from its gray
 }
 
 

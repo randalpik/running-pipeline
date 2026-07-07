@@ -32,8 +32,8 @@ import plotly.graph_objects as go
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.units import METERS_PER_MILE
-from src.shared.plot_window import daily_floor, clip_to_daily_floor, axis_pad_entry
-from src.shared.workouts import load_cs, project_long_runs
+from src.shared.plot_window import training_floor, clip_to_daily_floor, axis_pad_entry
+from src.shared.workouts import load_cs, project_long_runs, _legacy_verified_dates
 from src.shared.cs_projection import load_cs_outputs
 from src.shared.performance_frontier import (standard_demos, build_frontier,
                                               frontier_at_anchor)
@@ -86,6 +86,7 @@ LR_TAG_LEGEND = {
     'snow':               'Snow',
     'partners':           'Partner run',
     'enriched':           'Watch-enriched',
+    'legacy':             'Hand-verified (legacy)',
 }
 
 
@@ -106,6 +107,8 @@ def lr_tag(r):
         return 'partners'
     if r.get('lr_watch'):
         return 'enriched'
+    if r.get('legacy_verified'):
+        return 'legacy'
     return None
 
 
@@ -136,6 +139,10 @@ def long_run_hover(r):
 def main():
     cs, epoch = load_cs()
     lr = project_long_runs(cs, epoch)
+    # Hand-verified legacy long runs (snapshot `training`, injected inside
+    # project_long_runs) get their own halo ring.
+    lr['legacy_verified'] = (
+        lr['date'].dt.strftime('%Y-%m-%d').isin(_legacy_verified_dates()))
     # Drop implausibly-slow "long runs": these are trail runs / hikes the watch
     # recorded as ordinary runs (Trail Run not selected at start), not running
     # long runs. Real easy long runs for these athletes top out ~10 min/mi;
@@ -148,7 +155,10 @@ def main():
     # CS reference curves at HM and marathon. cs_line_at_anchor returns total
     # time in seconds; convert to pace (min/mi) for display.
     daily_summary, beta_long, d_thresh, _ = load_cs_outputs(str(DATA_DIR), '')
-    daily_plot = clip_to_daily_floor(daily_summary).copy()
+    # training_floor(): axis + reference curves extend back to the first
+    # legacy training entry when the profile has one, else = daily_floor.
+    plot_floor = training_floor()
+    daily_plot = clip_to_daily_floor(daily_summary, floor=plot_floor).copy()
 
     hm_dist_m, mar_dist_m = 21097.5, 42195.0
 
@@ -309,7 +319,7 @@ def main():
 
     # Tight date range (first daily run → last long run); the half-marker pixel
     # gutter is added at render time by axis_pad.js and re-applied on resize.
-    lr_lo, lr_hi = daily_floor(), lr['date'].max()
+    lr_lo, lr_hi = plot_floor, lr['date'].max()
     axis_pad_lr = [axis_pad_entry(lr_lo, lr_hi, marker_half_px(8, symbol='circle', line_width=0.5))]
 
     apply_default_layout(
