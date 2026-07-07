@@ -33,7 +33,6 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.units import METERS_PER_MILE
-from src.shared.plot_window import clip_to_daily_floor
 from src.shared.effective_mileage import effective_daily_miles
 from src.shared.workouts import (
     TAU,
@@ -64,7 +63,15 @@ FILTER_BINS = [
     ('Marathon', 42195),
 ]
 
-PRE_2016_VERIFIED_MILES = 1419
+# Unlogged training miles per year, Max-only: hand-verified cumulative totals
+# from paper logs that exist in no CSV, with race miles EXCLUDED — those races
+# are snapshot:additions stubs in daily.csv and are summed from there, so
+# including them here would double-count. 2014: cumulative log total 1312
+# minus 38.92 stub race miles, rounded (the 2014 log was mile-granular).
+UNLOGGED_MILES = {
+    2014: 1273,
+    2015: 0,  # pending: confirmed legacy-log total minus its race miles
+}
 TRAINING_SHOE_RUN_THRESHOLD = 3  # consecutive recovery runs to qualify
 # The current pair's mileage block ends once this many recovery runs in a row
 # use a different shoe. Counting *runs* (not days) means a no-running gap can't
@@ -194,13 +201,13 @@ def compute_stats(daily, races, now_utc):
     streak_active = is_streak_active(last_log_date, now_utc)
 
     # --- miles logged ---
-    # PRE_2016_VERIFIED_MILES is a Max-specific hand-verified pre-2016 total
-    # (his paper logs aren't in the CSV); it must not be added to other
-    # profiles, whose data starts when their device history does.
-    since_2016 = clip_to_daily_floor(daily)
-    pre_floor_miles = (PRE_2016_VERIFIED_MILES
-                       if os.environ.get('RP_PROFILE', 'max') == 'max' else 0)
-    miles_logged = int(math.floor(since_2016['miles'].sum() + pre_floor_miles))
+    # All of daily counts, including pre-floor race-addition stubs (their
+    # mileage is real). UNLOGGED_MILES adds Max's off-CSV paper-log years;
+    # it must not be added to other profiles, whose data starts when their
+    # device history does.
+    unlogged = (sum(UNLOGGED_MILES.values())
+                if os.environ.get('RP_PROFILE', 'max') == 'max' else 0)
+    miles_logged = int(math.floor(daily['miles'].sum() + unlogged))
 
     # --- miles projected ---
     today_utc = now_utc.date()
