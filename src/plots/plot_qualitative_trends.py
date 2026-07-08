@@ -61,7 +61,7 @@ from src.parsers.snapshot import (find_snapshot, read_snapshot,
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             FG, FG_DIM, GRID, widgets,
                             WEATHER_CF_COLORS, CONDITIONS_CF_COLORS,
-                            yearly_x_axis_kwargs)
+                            auto_date_x_axis_kwargs)
 from src.plotting.raster import render_gradient_raster
 
 
@@ -926,7 +926,7 @@ def build_single(args, key, start, full, panels, cond_cf, weather_syn, wcolor):
         kw['tickvals'] = TIME_TICKVALS
         kw['ticktext'] = TIME_TICKTEXT
     fig.update_yaxes(row=1, col=1, **kw)
-    fig.update_xaxes(**yearly_x_axis_kwargs(str(x0.date()), str(x1.date())))
+    fig.update_xaxes(**auto_date_x_axis_kwargs(str(x0.date()), str(x1.date())))
     apply_default_layout(
         fig, font=dict(color=FG, size=12),
         margin=dict(t=20, l=70, r=40, b=28),
@@ -1031,7 +1031,7 @@ def _build_page_fig(page_panels, full, dates, start, *, cond_cf, weather_syn,
             ykw.update(tickmode='array', tickvals=TIME_TICKVALS,
                        ticktext=TIME_TICKTEXT)
         fig.update_yaxes(row=pn['row'], col=1, **ykw)
-    fig.update_xaxes(**yearly_x_axis_kwargs(start, str(dates.max().date())))
+    fig.update_xaxes(**auto_date_x_axis_kwargs(start, str(dates.max().date())))
     apply_default_layout(
         fig, font=dict(color=FG, size=12),
         margin=dict(t=20, l=70, r=40, b=28), showlegend=False, hovermode=False)

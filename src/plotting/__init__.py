@@ -14,7 +14,7 @@ from .hover import (tt_row, tt_kv, tt_title, long_run_lines,
                     hill_measured_lines, hill_rep_measured_lines,
                     hill_cont_lines, hill_rep_lines)
 from .tokens import CAT_LABEL
-from .axes import (thin_yearly_ticks, yearly_x_axis_kwargs,
+from .axes import (thin_yearly_ticks, yearly_x_axis_kwargs, auto_date_x_axis_kwargs,
                    nice_time_interval, time_ticks_at_interval, nice_time_ticks,
                    TIME_LADDER)
 from .markers import (
@@ -38,7 +38,7 @@ __all__ = [
     'tt_row', 'tt_kv', 'tt_title', 'long_run_lines', 'CAT_LABEL',
     'hill_measured_lines', 'hill_rep_measured_lines',
     'hill_cont_lines', 'hill_rep_lines',
-    'thin_yearly_ticks', 'yearly_x_axis_kwargs',
+    'thin_yearly_ticks', 'yearly_x_axis_kwargs', 'auto_date_x_axis_kwargs',
     'nice_time_interval', 'time_ticks_at_interval', 'nice_time_ticks', 'TIME_LADDER',
     'pr_marker', 'is_pr_eligible', 'marker_half_px',
     'PR_EXCLUDED_SURFACES', 'PR_LEGEND_NAME', 'PR_LEGEND_RANK',

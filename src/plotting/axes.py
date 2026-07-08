@@ -84,6 +84,19 @@ def thin_yearly_ticks(x_lo, x_hi, *, max_labels=11):
     return tickvals, ticktext
 
 
+def auto_date_x_axis_kwargs(x_lo, x_hi, *, nticks=12, **extra) -> dict[str, Any]:
+    """``yearly_x_axis_kwargs`` styling with Plotly's span-derived auto date
+    ticks instead of baked Jan-1 array ticks — for zoomable date axes
+    (Misc Trends), where tick density must re-derive from the CURRENT range
+    on every relayout (years at a decade, months at a year, weeks at a
+    quarter) and a sub-year profile needs month ticks at first render
+    rather than a lone Jan-1 tick. ``nticks`` bounds the density: >= 12
+    keeps a full decade at one gridline per year (Plotly's unhinted default
+    thins a 10-year span to 2-year ticks)."""
+    return yearly_x_axis_kwargs(x_lo, x_hi, tickmode='auto', tickvals=None,
+                                ticktext=None, nticks=nticks, **extra)
+
+
 def yearly_x_axis_kwargs(x_lo, x_hi, *, max_labels=11, **extra) -> dict[str, Any]:
     """Standard yearly x-axis config — pass to ``update_xaxes(...)`` or
     spread into ``xaxis=dict(...)``. ``extra`` overrides any returned key.

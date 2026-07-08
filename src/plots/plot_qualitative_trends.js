@@ -27,9 +27,10 @@
 // mouseup issues a programmatic Plotly.relayout of the master x-axis range
 // (programmatic calls work under staticPlot — it only disables user input).
 // shared_xaxes makes the bottom row the master (matches=null); the other rows
-// follow via matches, but each axis draws its own gridlines from its own tick
-// config, so the zoom patch swaps the yearly array ticks for auto date ticks
-// on EVERY x-axis (and reset restores the yearly snapshot on every axis).
+// follow via matches. Ticks/gridlines need NO handling here: every x-axis is
+// tickmode='auto' (auto_date_x_axis_kwargs), so density re-derives from the
+// current range on every relayout — the same rule at first render (years for
+// a decade profile, months for a sub-year one) and at any zoom depth.
 // window.__rpZoomDragging tells the tooltip scaffold to hide during a drag.
 // Reset: double-click in the plot area, or the .rp-zoom-reset pill.
 //
@@ -281,7 +282,6 @@
   var zoomed = false;
   var zoomRangeMs = null; // [t0, t1] ms while zoomed (drives re-raster)
   var homeRange = null;   // master x range at first load (same on both pages)
-  var homeTicks = null;   // yearly {tickvals, ticktext} snapshot, or null
   var dragStartX = null;  // clientX at mousedown; null = not armed
   var band = null;        // the .rp-zoomband element
 
@@ -339,28 +339,15 @@
 
   function captureHome(gd) {
     if (homeRange) return;
-    var fl = gd._fullLayout;
-    var mk = masterXKey(fl);
-    homeRange = fl[mk].range.slice();
-    // Yearly tick snapshot from the user layout (identical on every x-axis
-    // and both pages by construction — yearly_x_axis_kwargs).
-    var lay = (gd.layout && gd.layout[mk]) || {};
-    homeTicks = (lay.tickvals && lay.tickvals.length)
-      ? { tickvals: lay.tickvals.slice(), ticktext: (lay.ticktext || []).slice() }
-      : null;
+    homeRange = gd._fullLayout[masterXKey(gd._fullLayout)].range.slice();
   }
 
-  // Zoom to [t0, t1] ms: master range + auto date ticks on every x-axis +
-  // the native-resolution gradient re-render, all in ONE relayout.
+  // Zoom to [t0, t1] ms: master range + the native-resolution gradient
+  // re-render in ONE relayout. Ticks/gridlines re-derive on their own
+  // (auto date ticks on every axis).
   function applyZoomRange(gd, msRange) {
-    var fl = gd._fullLayout;
     var patch = {};
-    patch[masterXKey(fl) + '.range'] = msRange.slice();
-    xKeys(fl).forEach(function (k) {
-      patch[k + '.tickmode'] = 'auto';
-      patch[k + '.tickvals'] = null;
-      patch[k + '.ticktext'] = null;
-    });
+    patch[masterXKey(gd._fullLayout) + '.range'] = msRange.slice();
     Object.assign(patch, rasterImagePatch(gd, msRange[0], msRange[1]));
     return Plotly.relayout(gd, patch);
   }
@@ -368,18 +355,8 @@
   function resetZoom() {
     var gd = pdiv();
     if (!gd || !gd._fullLayout || !zoomed || !homeRange) return;
-    var fl = gd._fullLayout;
     var patch = {};
-    patch[masterXKey(fl) + '.range'] = homeRange.slice();
-    xKeys(fl).forEach(function (k) {
-      if (homeTicks) {
-        patch[k + '.tickmode'] = 'array';
-        patch[k + '.tickvals'] = homeTicks.tickvals;
-        patch[k + '.ticktext'] = homeTicks.ticktext;
-      } else {
-        patch[k + '.tickmode'] = 'auto';
-      }
-    });
+    patch[masterXKey(gd._fullLayout) + '.range'] = homeRange.slice();
     // Restore the baked full-range PNGs (a downscale at home range — crisp).
     (origImages[page] || []).forEach(function (o, k) {
       patch['images[' + k + '].source'] = o.source;
