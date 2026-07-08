@@ -396,6 +396,13 @@
     }
 
     pdiv.addEventListener('mousemove', function (e) {
+      // A plot-specific zoom drag owns the cursor while this flag is set
+      // (e.g. Misc Trends' drag-to-zoom band) — hide tooltip + spike.
+      if (window.__rpZoomDragging) {
+        pending.show = false;
+        schedule();
+        return;
+      }
       var sp = findSubplotAt(pdiv, e.clientX, e.clientY);
       if (!sp) {
         pending.show = false;

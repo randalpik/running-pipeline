@@ -29,3 +29,11 @@ if `measure()` in `cursor_tooltip.js` or the `.tt-inner` rules in `base.css`
 regress, a fixture fails. To confirm the net actually works, revert the
 `measure()` change to the old `ghost.getBoundingClientRect()` and watch the
 long-decomposition / wrapped-list fixtures fail.
+
+## zoom.spec.ts
+
+Regression net for the Misc Trends drag-to-zoom (the `__rpZoomDragging`
+tooltip-suppression guard + the drag/relayout/reset flow). Drives the REAL
+built page, so it needs `python src/plots/plot_qualitative_trends.py` to have
+run first; the spec skips (not fails) when `output/qualitative_trends.html`
+is absent.

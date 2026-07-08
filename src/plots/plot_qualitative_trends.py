@@ -458,14 +458,14 @@ def env_edges(lo_in, hi_in, distance, gap_break=ENVELOPE_GAP_BREAK_DAYS):
 
 # ---------- solar raster color ramp ----------
 
-def solar_column_colors(date_py, lat, lon, tz_min, y_p):
+def solar_ramp_from_anchors(a, y_p):
     """(len(y_p), 3) uint8 ramp for one day: night -> twilight -> sunrise
     (orange) -> blue (once the sun reaches +18deg) -> noon -> blue -> +18deg
     -> sunset (orange) -> twilight -> night, anchored at the day's solar times.
     The orange->blue shoulder is the sunrise..+18deg span (astronomically tied,
-    wider than a fixed clock offset). ``y_p`` is the array of pixel-row clock
+    wider than a fixed clock offset). ``a`` is a precomputed
+    ``solar_anchors_local`` dict; ``y_p`` is the array of pixel-row clock
     minutes (descending, top=late)."""
-    a = solar_anchors_local(date_py, lat, lon, tz_min)
     noon = a['solar_noon'] if a['solar_noon'] is not None else 720.0
     pts = [(0.0, SOLAR_NIGHT)]  # (minute, color)
     if a['twilight_begin'] is not None:
@@ -668,13 +668,15 @@ def render_panel(fig, pn, row, full, dates, *, cond_cf, weather_syn, wcolor,
 
     Drives both the multi-panel figure (``row = pn['row']``) and a single-panel
     standalone figure (``row = 1``) — same traces/images/shapes/payload either
-    way. Returns ``(image_idx, shape_idx, tab, data_range)`` where ``image_idx``
-    / ``shape_idx`` are the indices of the layout images / shapes this panel
-    added (for the page-visibility relayout), ``tab`` is a tooltip-payload
-    fragment (``{'avg':…, 'lo':…, 'hi':…, 'day':…}``) to merge into the page's
-    tab, and ``data_range`` is this panel's ``(first_date, last_date)`` data
-    extent (``None`` if empty) — the standalone single-panel build tightens its
-    x-axis to exactly that, since it shares no axis with the other panels.
+    way. Returns ``(image_idx, shape_idx, tab, data_range, rd)`` where
+    ``image_idx`` / ``shape_idx`` are the indices of the layout images / shapes
+    this panel added (for the page-visibility relayout), ``tab`` is a
+    tooltip-payload fragment (``{'avg':…, 'lo':…, 'hi':…, 'day':…}``) to merge
+    into the page's tab, ``data_range`` is this panel's
+    ``(first_date, last_date)`` data extent (``None`` if empty) — the
+    standalone single-panel build tightens its x-axis to exactly that, since it
+    shares no axis with the other panels — and ``rd`` is the client-side
+    re-raster payload fragment (``None`` for the scatter panel).
     ``visible`` is the initial visibility of the raster + trend shapes (the
     multi-panel page toggle flips it; single-panel passes ``True``)."""
     page = pn['page']
@@ -708,7 +710,7 @@ def render_panel(fig, pn, row, full, dates, *, cond_cf, weather_syn, wcolor,
         tab['day']['conditions'] = _str_arr(full['conditions'])
         tab['day']['cond_temp'] = _round_arr(full['temp_c'], 1)
         drange = (sub.index.min(), sub.index.max()) if len(sub.index) else None
-        return image_idx, shape_idx, tab, drange
+        return image_idx, shape_idx, tab, drange, None
 
     # ---- envelope panel: gradient raster fill + vector trend shape(s) ----
     key = pn['key']
@@ -756,7 +758,10 @@ def render_panel(fig, pn, row, full, dates, *, cond_cf, weather_syn, wcolor,
             tab['day']['time_est'] = [bool(v) for v in full['time_est'].values]
 
     # Per-day colour ramp: the per-day solar gradient (Time) or a constant
-    # anchor-based vertical ramp (every other panel).
+    # anchor-based vertical ramp (every other panel). Solar anchors are
+    # precomputed per day so the SAME numbers drive the baked raster and the
+    # client-side re-raster payload below.
+    solar_rows = None
     if pn.get('solar'):
         y_p = y1 - (np.arange(RASTER_H) + 0.5) / RASTER_H * (y1 - y0)
         date_py = [d.date() for d in dates]
@@ -765,11 +770,16 @@ def render_panel(fig, pn, row, full, dates, *, cond_cf, weather_syn, wcolor,
         lat_arr = full['lat'].ffill().bfill().fillna(40.015).values
         lon_arr = full['lon'].ffill().bfill().fillna(-105.27).values
         tz_arr = full['tz_min'].ffill().bfill().fillna(-420).values
+        day_anch = [solar_anchors_local(date_py[d], float(lat_arr[d]),
+                                        float(lon_arr[d]), int(tz_arr[d]))
+                    for d in range(len(date_py))]
+        solar_rows = [[None if a[k] is None else round(float(a[k]), 1)
+                       for k in ('twilight_begin', 'sunrise', 'blue_begin',
+                                 'solar_noon', 'blue_end', 'sunset',
+                                 'twilight_end')] for a in day_anch]
 
-        def column_colors(d, _yp=y_p, _dp=date_py,
-                          _lat=lat_arr, _lon=lon_arr, _tz=tz_arr):
-            return solar_column_colors(
-                _dp[d], float(_lat[d]), float(_lon[d]), int(_tz[d]), _yp)
+        def column_colors(d, _yp=y_p, _a=day_anch):
+            return solar_ramp_from_anchors(_a[d], _yp)
     else:
         ramp = gradient_ramp(pn['anchors'], y0, y1, RASTER_H)
 
@@ -781,6 +791,19 @@ def render_panel(fig, pn, row, full, dates, *, cond_cf, weather_syn, wcolor,
         fig, row, dates, lo_s, hi_s, column_colors,
         y_range=(y0, y1), h_px=RASTER_H, layer='above', visible=visible)
     image_idx.append(idx)
+
+    # Client-side re-raster payload (drives the sibling JS canvas renderer):
+    # on every zoom the JS redraws this panel's gradient at native display
+    # resolution — band polygon between the per-day env edges, filled with
+    # the same piecewise-linear ramp — and swaps it into images[img] via
+    # relayout, so the band never shows PNG upscale blur or stairsteps.
+    # The baked PNG above still serves the unzoomed home view.
+    rd = {'key': key, 'row': row, 'img': idx, 'y0': y0, 'y1': y1,
+          'lo': _round_arr(lo_s, 2), 'hi': _round_arr(hi_s, 2)}
+    if solar_rows is not None:
+        rd['solar'] = solar_rows
+    else:
+        rd['anchors'] = [[float(v), c] for v, c in pn['anchors']]
 
     # White trend(s) as crisp vector path shapes ABOVE the raster (a trace
     # would be hidden under the above-layer image; a baked line blurs under
@@ -799,7 +822,7 @@ def render_panel(fig, pn, row, full, dates, *, cond_cf, weather_syn, wcolor,
             shape_idx.append(len(fig.layout.shapes) - 1)
     vd = env_valid.index[env_valid.to_numpy()]
     drange = (vd.min(), vd.max()) if len(vd) else None
-    return image_idx, shape_idx, tab, drange
+    return image_idx, shape_idx, tab, drange, rd
 
 
 def _inset_html(panels, single_key=None):
@@ -833,6 +856,34 @@ def _inset_html(panels, single_key=None):
     return '\n'.join(parts)
 
 
+def _raster_payload(first_day, raster_pages):
+    """Root of the client-side re-raster payload (window.__PLOT_RASTER_DATA).
+
+    ``raster_pages`` maps page -> list of per-panel fragments from
+    ``render_panel`` (env edges + ramp anchors / per-day solar anchors +
+    the panel's ``images`` index). ``solar_colors`` ships the palette so the
+    JS renderer and ``solar_ramp_from_anchors`` stay a single source."""
+    return {
+        'first_day': first_day,
+        'solar_colors': {
+            'night': list(SOLAR_NIGHT), 'twilight': list(SOLAR_TWILIGHT),
+            'horizon': list(SOLAR_HORIZON), 'noon': list(SOLAR_NOON)},
+        'pages': raster_pages,
+    }
+
+
+def _zoom_overlay_html():
+    """Drag-to-zoom chrome: the x-only selection band + the reset pill.
+
+    Both start hidden; the sibling ``.js`` drives them (band position per
+    frame during a drag, pill visibility while zoomed). Styled by the
+    sibling ``.css``."""
+    pill = widgets.button_row([('trends-zoom-reset-btn', 'Reset zoom')],
+                              pill=True)
+    return ('<div class="rp-zoomband"></div>\n'
+            f'<div class="rp-zoom-reset">{pill}</div>')
+
+
 def build_single(args, key, start, full, panels, cond_cf, weather_syn, wcolor):
     """Render one panel as its own full-height, chrome-free standalone page
     (``qualitative_trends_<key>.html``) — the target of an inset ↗ link."""
@@ -859,9 +910,10 @@ def build_single(args, key, start, full, panels, cond_cf, weather_syn, wcolor):
         marker=dict(opacity=0), hoverinfo='skip', showlegend=False),
         row=1, col=1)
 
-    _, _, tab, drange = render_panel(fig, pn, 1, full, dates, cond_cf=cond_cf,
-                                     weather_syn=weather_syn, wcolor=wcolor,
-                                     visible=True)
+    _, _, tab, drange, rd = render_panel(fig, pn, 1, full, dates,
+                                         cond_cf=cond_cf,
+                                         weather_syn=weather_syn,
+                                         wcolor=wcolor, visible=True)
 
     # Standalone page: x-axis is exactly this panel's data extent (no shared
     # axis to line up with). Falls back to the full window if the panel is empty.
@@ -907,6 +959,8 @@ def build_single(args, key, start, full, panels, cond_cf, weather_syn, wcolor):
     insets = _inset_html(panels, single_key=key)
     single_js = (f'<script>\nwindow.__rpActiveTab = {json.dumps(page)};\n'
                  f'window.__rpSingle = {json.dumps(key)};\n</script>')
+    raster_html = widgets.js_globals({'RASTER_DATA': _raster_payload(
+        first_day, {page: [rd] if rd is not None else []})})
 
     out_path = os.path.join(args.out_dir, f'qualitative_trends_{key}.html')
     render_plot(
@@ -916,11 +970,13 @@ def build_single(args, key, start, full, panels, cond_cf, weather_syn, wcolor):
         # No title bar: "just that trend graph, no top bar." The inset label is
         # the only chrome; --rp-title-h:0 lets the plot fill the iframe.
         title=None,
-        overlay_html=insets + '\n' + single_js,
+        overlay_html=(insets + '\n' + single_js + '\n' + raster_html + '\n'
+                      + _zoom_overlay_html()),
         overlay_js_files=[str(sib)],
         extra_head_css=':root{--rp-title-h:0px;}\n'
                        '.rp-tooltip .tt-sep{height:1px;margin:6px 0;'
                        'background:#444;}',
+        extra_head_css_files=[str(sib.with_suffix('.css'))],
         cursor_tooltip=CursorTooltip(
             payload=payload,
             build_js=_BUILD_JS,
@@ -940,7 +996,8 @@ def _build_page_fig(page_panels, full, dates, start, *, cond_cf, weather_syn,
     the single-page version used and the only one that reliably renders
     gridlines. The toggle swaps whole figures (Plotly.newPlot), so axes are
     never resized at runtime (which never redraws gridlines). Returns
-    ``(fig, tab)`` where ``tab`` is this page's cursor-tooltip payload fragment.
+    ``(fig, tab, rds)`` where ``tab`` is this page's cursor-tooltip payload
+    fragment and ``rds`` the page's client-side re-raster panel payloads.
     """
     k = max(len(page_panels), 1)
     for i, pn in enumerate(page_panels, start=1):
@@ -955,12 +1012,15 @@ def _build_page_fig(page_panels, full, dates, start, *, cond_cf, weather_syn,
             marker=dict(opacity=0), hoverinfo='skip', showlegend=False),
             row=r, col=1)
     tab = {'avg': {}, 'lo': {}, 'hi': {}, 'day': {}}
+    rds = []
     for pn in page_panels:
-        _, _, ptab, _ = render_panel(
+        _, _, ptab, _, rd = render_panel(
             fig, pn, pn['row'], full, dates,
             cond_cf=cond_cf, weather_syn=weather_syn, wcolor=wcolor, visible=True)
         for grp in ('avg', 'lo', 'hi', 'day'):
             tab[grp].update(ptab[grp])
+        if rd is not None:
+            rds.append(rd)
     # The make_subplots default domains already fill the height in k equal bands
     # — no override. Bake range/ticks/grid; only the bottom row keeps x labels.
     for pn in page_panels:
@@ -975,7 +1035,7 @@ def _build_page_fig(page_panels, full, dates, start, *, cond_cf, weather_syn,
     apply_default_layout(
         fig, font=dict(color=FG, size=12),
         margin=dict(t=20, l=70, r=40, b=28), showlegend=False, hovermode=False)
-    return fig, tab
+    return fig, tab, rds
 
 
 def main():
@@ -1013,15 +1073,18 @@ def main():
     figs = {}
     pay = {'weather': {'avg': {}, 'lo': {}, 'hi': {}, 'day': {}},
            'other': {'avg': {}, 'lo': {}, 'hi': {}, 'day': {}}}
+    raster_pages = {}
     for page, page_panels in (('weather', weather_panels),
                               ('other', other_panels)):
         if not page_panels:
             continue
-        pfig, ptab = _build_page_fig(page_panels, full, dates, start,
-                                     cond_cf=cond_cf, weather_syn=weather_syn,
-                                     wcolor=wcolor)
+        pfig, ptab, rds = _build_page_fig(page_panels, full, dates, start,
+                                          cond_cf=cond_cf,
+                                          weather_syn=weather_syn,
+                                          wcolor=wcolor)
         figs[page] = pfig
         pay[page] = ptab
+        raster_pages[page] = rds
 
     epoch = pd.Timestamp('1970-01-01')
     first_day = int((pd.Timestamp(start) - epoch).days)
@@ -1054,8 +1117,10 @@ def main():
         'trends-toggle',
         [('weather', 'Weather'), ('other', 'Other')],
         default_id='weather')
-    globals_html = widgets.js_globals({'TRENDS_FIGS': figs_json,
-                                       'TRENDS_CONFIG': plot_config})
+    globals_html = widgets.js_globals({
+        'TRENDS_FIGS': figs_json,
+        'TRENDS_CONFIG': plot_config,
+        'RASTER_DATA': _raster_payload(first_day, raster_pages)})
     insets = _inset_html(panels)
 
     primary = figs.get('weather') or next(iter(figs.values()))
@@ -1067,10 +1132,12 @@ def main():
         title='Miscellaneous trends',
         subtitle='Weather and other daily conditions as moving-average trends '
                  'with rolling min-max envelopes',
-        overlay_html=toggle + '\n' + globals_html + '\n' + insets,
+        overlay_html=(toggle + '\n' + globals_html + '\n' + insets + '\n'
+                      + _zoom_overlay_html()),
         overlay_js_files=[str(sib)],
         extra_head_css='.rp-tooltip .tt-sep{height:1px;margin:6px 0;'
                        'background:#444;}',
+        extra_head_css_files=[str(sib.with_suffix('.css'))],
         cursor_tooltip=CursorTooltip(
             payload=payload,
             build_js=_BUILD_JS,
@@ -1078,9 +1145,10 @@ def main():
             last_day=last_day,
             spike_full_plot=True,
         ),
-        # Fully non-interactive: no native zoom/pan/double-click. The toggle
-        # (Plotly.newPlot swap), cursor tooltip, and spike are all custom — none
-        # rely on Plotly's drag interactions.
+        # No NATIVE Plotly interaction: the toggle (Plotly.newPlot swap),
+        # cursor tooltip, spike, and drag-to-zoom (a programmatic
+        # Plotly.relayout of the master x-range — works under staticPlot,
+        # which only disables user input) are all custom.
         plotly_config={'staticPlot': True},
     )
     print(f'wrote {out_path}')
