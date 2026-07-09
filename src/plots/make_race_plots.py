@@ -704,29 +704,24 @@ function buildTooltip(day, isSnap, pointHtml) {
     print(f'Wrote {out1}')
 
     # ---------- plot 2: 8 distance-bin subplots ----------
-    # Each panel is rendered in its own time-at-anchor coordinates:
-    # the anchor is the MODE distance for that bin (so e.g. the Mile panel's
-    # anchor is whichever of 1500/1600/1609 you raced most often). The CS
-    # line is the model's predicted time at that anchor on each date —
-    # rescaled but same shape as the 5K-equiv curve. The hand-drawn cubic
-    # is converted to time-at-anchor too (only visible on the 5K panel
-    # because no other bin has races during 2008-2013). Each marker's
-    # hover includes Δ vs CS — how much that race fell above/below what
-    # the model thought you were capable of at that distance on that date.
+    # Each panel is rendered in its own time-at-anchor coordinates: the
+    # anchor is the group's NOMINAL distance (Max, July 2026 — the Mile
+    # panel sits at METERS_PER_MILE exactly; the old mode-of-raced-
+    # distances rule left it "Projected to 1600m" on a 20x1600 HS log).
+    # Near-anchor projections are sub-1%, so canonical panel coordinates
+    # win. The CS line is the model's predicted time at that anchor on
+    # each date — rescaled but same shape as the 5K-equiv curve. The
+    # hand-drawn cubic is converted to time-at-anchor too (only visible on
+    # the 5K panel because no other bin has races during 2008-2013). Each
+    # marker's hover includes Δ vs CS — how much that race fell
+    # above/below what the model thought you were capable of at that
+    # distance on that date.
     group_names = [g[0] for g in GROUPS]
     nominal_lookup = dict(GROUPS)
 
-    # Per-bin anchor = mode distance among races in that bin (fall back to
-    # the nominal target if the bin is empty).
-    bin_anchors = {}
-    bin_counts = {}
-    for name in group_names:
-        sub = elig[elig['group'] == name]
-        bin_counts[name] = len(sub)
-        if len(sub):
-            bin_anchors[name] = float(sub['distance_m'].mode().iloc[0])
-        else:
-            bin_anchors[name] = float(nominal_lookup[name])
+    bin_anchors = {name: float(nominal_lookup[name]) for name in group_names}
+    bin_counts = {name: int((elig['group'] == name).sum())
+                  for name in group_names}
 
     # Subplot title: clean per-bin display name + count. β-calibration not
     # mentioned — see SUBPLOT_DISPLAY docstring.
