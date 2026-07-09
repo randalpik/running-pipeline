@@ -46,7 +46,8 @@ from src.shared.performance_frontier import (standard_demos,
                                               build_frontier_band,
                                               frontier_at_anchor,
                                               bin_frontier, p5k_from_asym)
-from src.plotting.formatters import sec_to_mss, sec_to_mss_full
+from src.plotting.formatters import (sec_to_mss, sec_to_mss_full,
+                                     sec_to_mss_prec, time_decimals)
 from src.plotting.markers import PR_EXCLUDED_SURFACES
 from src.plotting.render import _TAB_KEY_FORWARDER_JS
 
@@ -122,6 +123,17 @@ def fmt_race_time(sec):
     frac = tenths_total % 10
     m, ss = divmod(whole, 60)
     return f'{m}:{ss:02d}.{frac}'
+
+
+def fmt_pr_time(sec, time_dec):
+    """PR display: entered-precision hundredths for sub-10-minute PRs whose
+    log entry carried them (Max, July 2026 — a 4:29.47 mile PR must not
+    round to 4:29.5); everything else keeps the fmt_race_time style."""
+    if (sec is not None and not pd.isna(sec) and float(sec) < 600.0
+            and time_dec is not None and not pd.isna(time_dec)
+            and int(time_dec) >= 2):
+        return sec_to_mss_prec(sec, 2)
+    return fmt_race_time(sec)
 
 
 def fmt_pace_per_mi(sec_per_mi):
@@ -356,6 +368,12 @@ def compute_prs(races):
         out.append({
             'distance': name,
             'time_sec': float(best['time_sec']),
+            # Entered precision for display (CLAUDE.md race-time-precision
+            # convention); value-inference fallback only when the field is
+            # absent — it cannot recover trailing zeros.
+            'time_dec': (int(best['time_dec'])
+                         if pd.notna(best.get('time_dec'))
+                         else time_decimals(best['time_sec'])),
             'date':     best['date'],
             'event':    best.get('event') if pd.notna(best.get('event')) else None,
             'location': best.get('location') if pd.notna(best.get('location')) else None,
@@ -624,7 +642,8 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
         pr_rows.append(
             f'<tr>'
             f'<td>{escape(r["distance"])}</td>'
-            f'<td class="num"><b style="color:{gold}">{fmt_race_time(r["time_sec"])}</b></td>'
+            f'<td class="num"><b style="color:{gold}">'
+            f'{fmt_pr_time(r["time_sec"], r.get("time_dec"))}</b></td>'
             f'<td class="num">{fmt_friendly_date(r["date"])}</td>'
             f'<td>{evt}</td>'
             f'<td>{loc}</td>'
