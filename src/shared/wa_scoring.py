@@ -51,12 +51,18 @@ COEF = {
 _DISTS = sorted(COEF)
 ANCHOR_M = 5000.0
 
-# WA points are a downward parabola in time, valid only up to the vertex
-# (~24:00 for 5K). Performances SLOWER than that are off the bottom of the
-# table — wa_points clamps to the points floor, which would map every such
-# race to the same ~7:00/mi 5K-equivalent. For those (very slow early-career
-# races) we fall back to a monotone Riegel power-law equivalence to 5K.
-RIEGEL_EXP = 1.06
+# The published tables end at 1 point (5K 23:41, HM 1:57:17 — the quadratic
+# coefficients reproduce those marks to 2 decimals); the quadratic's vertex
+# (~24:00 for 5K, where dP/dT -> 0) sits just past that end, so P >= 1 stays
+# on the monotone branch of every event with margin. Performances slower
+# than the 1-point mark are genuinely off-table: they extend LINEARLY at the
+# table's own 1-point equivalence ratio (t * T1(target)/T1(source)) —
+# continuous at the boundary, monotone beyond it. (History: a Riegel 1.06
+# fallback plus a P=50 bisection floor discarded the valid P in [1, 50) band
+# — 5K 21:46-23:41, a novice profile's whole range — and Riegel's flat 4.60
+# HM/5K ratio disagreed with both the table's low end (4.95) and Maddy's
+# demonstrated 5.01, seeding a non-monotone seam at 21:46. July 2026.)
+TABLE_END_P = 1.0
 
 # Aerobic anchors for the smooth monotone iso-time curve (real race distances).
 _AERO = (5000.0, 10000.0, 21097.5, 42195.0)
@@ -131,7 +137,7 @@ def wa_points(dist_m, time_s):
     if time_s <= 0 or dist_m <= 0:
         return float('nan')
     if dist_m >= ANCHOR_M:                       # aerobic: smooth monotone curve
-        lo, hi = 50.0, 1400.0                    # (exact at the anchors, so no special case)
+        lo, hi = TABLE_END_P, 1400.0             # (exact at the anchors, so no special case)
         for _ in range(60):
             mid = (lo + hi) / 2
             lo, hi = (mid, hi) if _aero_isotime(dist_m, mid) > time_s else (lo, mid)
@@ -151,7 +157,7 @@ def wa_points(dist_m, time_s):
         return math.exp((1 - w) * math.log(_time_at(lo_d, P))
                         + w * math.log(_time_at(hi_d, P)))
 
-    lo, hi = 50.0, 1400.0
+    lo, hi = TABLE_END_P, 1400.0
     for _ in range(60):
         mid = (lo + hi) / 2
         lo, hi = (mid, hi) if iso_time(mid) > time_s else (lo, mid)
@@ -177,34 +183,37 @@ def _time_at_dist(dist_m, P):
                     + w * math.log(_time_at(hi_d, P)))
 
 
-def _off_table(dist_m, time_s, P):
-    """True if (dist_m, time_s) is slower than the WA table supports — wa_points
-    has clamped to its floor, so the round-trip can't recover time_s. Valid
-    round-trips agree to <0.1%; a clamp is off by ~20%+, so 1% cleanly splits."""
-    return abs(_time_at_dist(dist_m, P) - time_s) > 0.01 * time_s
+def _table_end_time(dist_m):
+    """Time (s) at dist_m scoring TABLE_END_P — the slow end of the published
+    table at that distance. Times beyond it are off-table. Also catches the
+    sub-5K quadratic's invalid branch (a slow mark past an event parabola's
+    vertex evaluates to spuriously rising points, but is always slower than
+    the 1-point mark, so it routes to the linear extension)."""
+    return _time_at_dist(dist_m, TABLE_END_P)
 
 
 def wa_5k_equiv_time(dist_m, time_s):
     """Equivalent 5K TIME (s) for a performance, via matching WA score (the
-    DOWN-conversion: any aerobic distance -> 5K). Identity at the 5K anchor;
-    Riegel power-law fallback for performances off the bottom of the table."""
+    DOWN-conversion: any aerobic distance -> 5K). Identity at the 5K anchor.
+    Beyond the table's 1-point end, extends linearly at the 1-point
+    equivalence ratio (continuous at the boundary, monotone beyond)."""
     if abs(dist_m - ANCHOR_M) / ANCHOR_M < 0.01:
         return time_s                                  # a 5K is its own 5K-equiv
-    P = wa_points(dist_m, time_s)
-    if _off_table(dist_m, time_s, P):
-        return time_s * (ANCHOR_M / dist_m) ** RIEGEL_EXP
-    return _time_at_dist(ANCHOR_M, P)
+    t_end = _table_end_time(dist_m)
+    if time_s > t_end:
+        return time_s * _table_end_time(ANCHOR_M) / t_end
+    return _time_at_dist(ANCHOR_M, wa_points(dist_m, time_s))
 
 
 def wa_equiv_time_at(dist_m, time_5k_s):
     """Equivalent TIME (s) at dist_m for a 5K performance (the UP-conversion:
     5K -> any aerobic distance) — inverse of wa_5k_equiv_time. Used to project
     the 5K-equivalent CS frontier up to HM/marathon anchors for predictions and
-    the by-distance race plot, replacing the retired beta_long fade. Riegel
-    fallback when the 5K time is off the bottom of the table (very slow eras)."""
+    the by-distance race plot, replacing the retired beta_long fade. Same
+    linear extension beyond the table's 1-point end."""
     if abs(dist_m - ANCHOR_M) / ANCHOR_M < 0.01:
         return time_5k_s
-    P = wa_points(ANCHOR_M, time_5k_s)
-    if _off_table(ANCHOR_M, time_5k_s, P):
-        return time_5k_s * (dist_m / ANCHOR_M) ** RIEGEL_EXP
-    return _time_at_dist(dist_m, P)
+    t_end = _table_end_time(ANCHOR_M)
+    if time_5k_s > t_end:
+        return time_5k_s * _table_end_time(dist_m) / t_end
+    return _time_at_dist(dist_m, wa_points(ANCHOR_M, time_5k_s))

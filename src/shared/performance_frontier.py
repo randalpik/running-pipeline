@@ -14,7 +14,6 @@ verified than anything derivable from demonstrations alone. Demonstrations
 contribute only their EXCESS above that floor:
 
     excess_i = log(cs5k_pace(t_i) / pace_i)          (clipped at 0)
-    frontier(t) = cs5k_pace(t) * exp(-max_i [ excess_i * w(t - t_i) ])
 
 so the red line rides the CS-5K curve through quiet stretches and bulges
 faster wherever something super-CS was demonstrated, relaxing back to the
@@ -24,15 +23,36 @@ bounded total loss (a 2017 peak's saturated tail clamped all of 2018 flat —
 "immortal tails"). Anchoring decay to distance-from-CS removes both.
 
 The two arms are different processes (Max, June 2026):
-  FORWARD (decay) — first-order relaxation, w = exp(-dt/TAU_FWD): loss
-  rate proportional to current distance from the floor ("the farther away
-  from the line, the faster we decay"), asymptotic into the reference line.
-  BACKWARD (build) — a Gaussian shoulder, w = exp(-(dt/TAU_BWD)^2): zero
-  slope at the peak ("you were nearly this fit just before a peak" —
-  fitness gains saturate approaching a peak), smooth steepening further
-  back, conceptually constrained by how fast fitness can physiologically
-  increase. Plain P=2 — smooth everywhere, unlike the rejected P=4
-  hold-then-cliff shoulder.
+  FORWARD (decay) — first-order relaxation in ABSOLUTE pace space, run as
+  a single-state recursion along the grid: each day the frontier loses
+  the fraction (1 - exp(-dt/TAU_FWD)) of its current gap to the floor
+  ("the farther away from the line, the faster we decay"), asymptotic
+  into the reference line. Crucially the relaxation acts on the absolute
+  pace, not the floor-relative excess: absent a new demonstration the
+  frontier can NEVER get absolutely faster day-over-day. (The pre-July-
+  2026 closed form frontier = floor * exp(-excess * e^(-dt/TAU_FWD))
+  decayed the RATIO and let the moving floor carry the bulge — on
+  Maddy's steeply improving novice curve the "decay" inverted into an
+  upward swing that out-ran every race ever completed. Dead.) Under a
+  static or IMPROVING floor, merged stretches sit on the fitness line
+  exactly and follow it up — that improvement is the race-pinned CS
+  fit's to give. Under a DECLINING-fitness floor the frontier lags at
+  the relaxation's standing gap (~TAU_FWD x floor slope): capability
+  decays at the detraining constant, not at the fit's pace (Max, July
+  2026 — replaces the earlier "rides the CS curve through quiet
+  stretches, declines included" rule).
+
+  Floors must be FITNESS-LINE-derived, never another frontier: a frontier
+  used as a floor injects its own bulge decay into the carry (double-
+  counting TAU and, on a dip-then-rise floor, latching values no
+  demonstration supports). Cross-frontier influence composes at the
+  consumer via min(), e.g. the per-bin prediction channel.
+  BACKWARD (build) — a Gaussian shoulder in excess space,
+  w = exp(-(dt/TAU_BWD)^2): zero slope at the peak ("you were nearly this
+  fit just before a peak" — fitness gains saturate approaching a peak),
+  smooth steepening further back, conceptually constrained by how fast
+  fitness can physiologically increase. Plain P=2 — smooth everywhere,
+  unlike the rejected P=4 hold-then-cliff shoulder.
 
 No gap machinery: a proof's influence dies within ~8 weeks by shape, and
 the CS baseline itself carries long absences (e.g. the 2020-21 labrum
@@ -50,8 +70,8 @@ from src.shared.units import METERS_PER_MILE
 from src.shared.cs_projection import (project_races_to_5k_pace,
                                       pace5k_series_to_anchor, load_cs_outputs)
 
-# FORWARD: first-order relaxation into the floor — excess decays at a rate
-# proportional to its current distance from the reference line. tau from
+# FORWARD: first-order relaxation into the floor — the frontier sheds a
+# fixed fraction of its current gap to the reference line per day. tau from
 # the Banister-range detraining literature + the June 2026 pure-decay fit.
 # BACKWARD: Gaussian build shoulder — flat at the peak, steepening back.
 # tau calibrated so a typical modern peak (~10 s/mi excess) implies a max
@@ -59,9 +79,19 @@ from src.shared.cs_projection import (project_races_to_5k_pace,
 # max slope of E*exp(-(dt/tau)^2) is E*sqrt(2/e)/tau -> tau ~= 34d.
 # (History: linear arms -> zigzag; bounded-loss exponentials -> immortal
 # tails; super-Gaussian P=4 both ways -> hold-then-cliff-then-stop, not a
-# physical process; symmetric exponential relaxation -> spiky builds.)
+# physical process; symmetric exponential relaxation -> spiky builds;
+# ratio-space forward decay -> moving-floor inversion on Maddy's novice
+# curve, July 2026.)
 TAU_FWD = 45.0   # days — forward (detraining) relaxation
 TAU_BWD = 34.0   # days — backward (build) Gaussian shoulder width
+
+# De-minimis excess (log units; ~0.05 s/mi at 8:00 pace — below display
+# resolution). Contributions at or below this don't mark the envelope. This
+# is annotation hygiene, not a value guard: the Gaussian shoulder has
+# infinite support, so an epsilon-excess demo would otherwise claim the
+# `binder`/`binding` labels across the whole grid while denting the curve
+# by nothing (mislabelled tooltips on the Fitness tab).
+MIN_EXCESS = 1e-4
 
 CORPUS_PATH = DATA_DIR / 'training_quality_corpus.csv'
 
@@ -215,6 +245,57 @@ def frontier_at_anchor(frontier, daily_summary, anchor_m, beta_long, d_thresh):
                                    daily_summary, anchor_m, beta_long, d_thresh)
 
 
+def p5k_from_asym(daily_summary, pace_col):
+    """5K-implied pace (min/mi) from an asymptotic-CS pace column of the
+    summary, holding dp_med — the same bridge load_cs_outputs applies for
+    the median (`p5k_implied_min`)."""
+    dp = daily_summary['dp_med'].to_numpy(float)
+    cs_mps = METERS_PER_MILE / (daily_summary[pace_col].to_numpy(float) * 60.0)
+    return (5000.0 - dp) / cs_mps / 5000.0 * METERS_PER_MILE / 60.0
+
+
+def bin_frontier(bin_races, anchor_m, grid_dates, daily_summary,
+                 beta_long, d_thresh, p5k_pace_min):
+    """Per-bin demonstrated-capability channel (Max, July 2026): a frontier
+    over the ACTUAL race times in one distance bin, relaxing toward the
+    fitness line converted to the bin anchor. Composes with the cross-
+    distance channel at the consumer — card = min(cross, bin) — so a race
+    at a distance proves that time at that distance regardless of what any
+    cross-distance conversion says, all the way down to 400 m.
+
+    bin_races: this bin's races (caller snaps distances to bins). Downhill
+    is excluded here (aided times would inflate proof); fatigued races and
+    time trials stay — a time actually run is proven capability. No XC
+    correction (raw-time proof can only under-claim). Near-anchor races
+    (3200 in the 2-Mile bin) are projected to the anchor with the same
+    evidence-direction conversion the race tabs use.
+
+    The floor is the FITNESS line at the anchor, never another frontier —
+    see the module docstring. Returns total-time seconds at anchor_m per
+    grid date; an empty bin returns the converted fitness line unchanged.
+    """
+    floor_t = np.asarray(pace5k_series_to_anchor(
+        p5k_pace_min, daily_summary, anchor_m, beta_long, d_thresh), float)
+    miles = anchor_m / METERS_PER_MILE
+    keep = bin_races[bin_races.get(
+        'surface', pd.Series('', index=bin_races.index)).fillna('') != 'Downhill']
+    if keep.empty:
+        return floor_t
+    proj = project_races_to_5k_pace(keep.copy(), daily_summary, beta_long,
+                                    d_thresh, apply_xc_correction=False,
+                                    apply_physical_correction=False,
+                                    norm_dist_m=anchor_m)
+    demos = pd.DataFrame({
+        'date': proj['date'],
+        'pace_min': proj['time_norm_sec'] / miles / 60.0,
+        'src': 'race', 'category': 'race',
+        'detail': (proj['event'].fillna('').astype(str)
+                   if 'event' in proj.columns else ''),
+    })
+    bf, _ = build_frontier(demos, grid_dates, floor_t / miles / 60.0)
+    return bf['frontier_pace_min'].to_numpy(float) * miles * 60.0
+
+
 def build_frontier_band(demos, grid_dates, daily_summary):
     """Frontier swept across the CS 95% CrI ("what would the frontier be if
     the floor sat anywhere in the CS interval"). Returns (frontier_med,
@@ -223,18 +304,23 @@ def build_frontier_band(demos, grid_dates, daily_summary):
     Where a demonstration binds, all three collapse onto the demo's pace
     (proof pins the prediction); on the floor the band equals the CS CrI.
     """
-    dp = daily_summary['dp_med'].to_numpy(float)
-
-    def p5k_from_asym(pace_col):
-        # 5K-implied pace from an asymptotic-CS pace column, holding dp_med:
-        # cs_mps = METERS_PER_MILE/(pace*60); p5k = (5000-dp)/cs_mps /5000*METERS_PER_MILE/60
-        cs_mps = METERS_PER_MILE / (daily_summary[pace_col].to_numpy(float) * 60.0)
-        return (5000.0 - dp) / cs_mps / 5000.0 * METERS_PER_MILE / 60.0
-
     med, demos_med = build_frontier(demos, grid_dates,
                                     daily_summary['p5k_implied_min'])
-    lo, _ = build_frontier(demos, grid_dates, p5k_from_asym('cs_pace_lo95'))
-    hi, _ = build_frontier(demos, grid_dates, p5k_from_asym('cs_pace_hi95'))
+    lo, _ = build_frontier(demos, grid_dates,
+                           p5k_from_asym(daily_summary, 'cs_pace_lo95'))
+    hi, _ = build_frontier(demos, grid_dates,
+                           p5k_from_asym(daily_summary, 'cs_pace_hi95'))
+    # The sweeps can bind on DIFFERENT demos (a slower floor deepens every
+    # excess, so e.g. a race's build shoulder reaches further back on the
+    # hi sweep), and the recursive forward arm relaxes each line toward its
+    # own floor — so raw sweeps can cross the median and put the line
+    # outside its own band. A sweep with a slower floor must never claim a
+    # faster capability: clamp the edges onto the median (no-op at binding
+    # demos, where all three already collapse onto the demo's pace).
+    lo['frontier_pace_min'] = np.minimum(lo['frontier_pace_min'],
+                                         med['frontier_pace_min'])
+    hi['frontier_pace_min'] = np.maximum(hi['frontier_pace_min'],
+                                         med['frontier_pace_min'])
     return med, lo, hi, demos_med
 
 
@@ -275,21 +361,63 @@ def build_frontier(demos, grid_dates, cs5k_pace_min):
     excess = np.maximum(excess, 0.0)
     demos['excess'] = excess
 
+    # Backward (build) shoulders + demo-date pins, in excess space. dt == 0
+    # lands here so every super-floor demo pins the frontier on its own date.
     env = np.zeros(len(gd))
     binder = np.full(len(gd), -1)
-    for i in np.nonzero(excess > 0)[0]:
+    for i in np.nonzero(excess > MIN_EXCESS)[0]:
         dt = gd - dd[i]
-        w = np.where(dt >= 0,
-                     np.exp(-np.abs(dt) / TAU_FWD),          # decay: relaxation
-                     np.exp(-(dt / TAU_BWD) ** 2))           # build: shoulder
+        w = np.where(dt <= 0, np.exp(-(dt / TAU_BWD) ** 2), 0.0)
         contrib = excess[i] * w
-        take = contrib > env
+        take = (contrib > env) & (contrib > MIN_EXCESS)
         env[take] = contrib[take]
         binder[take] = i
+    fp = cs5k * np.exp(-env)     # seed: floor, dented by builds/demo pins
+
+    # Demos BEFORE the grid start (windowed plot grids — workouts/TQ/long
+    # runs floor their x-axis mid-history) must still project their forward
+    # tails into the window: seed the carry at gd[0] with each pre-grid
+    # demo's relaxed claim. Constant-floor closed form against cs5k[0] —
+    # the same floor their excess saw (np.interp clamps there).
+    pre = np.nonzero((excess > MIN_EXCESS) & (dd < gd[0]))[0]
+    if len(pre) and np.isfinite(cs5k[0]):
+        pace_pre = demos['pace_min'].to_numpy(float)[pre]
+        cand = cs5k[0] - (cs5k[0] - pace_pre) * np.exp(-(gd[0] - dd[pre]) / TAU_FWD)
+        j = int(np.argmin(cand))
+        # De-minimis guard: only a claim meaningfully below the floor may arm
+        # the carry (mirror of the MIN_EXCESS cut in the envelope loop).
+        if cand[j] < fp[0] and np.log(fp[0] / cand[j]) > MIN_EXCESS:
+            fp[0] = cand[j]
+            binder[0] = int(pre[j])
+
+    # Forward (decay) arm — first-order relaxation in absolute pace space,
+    # carried recursively along the grid: yesterday's frontier value sheds
+    # the fraction (1 - exp(-step/TAU_FWD)) of its gap to today's floor.
+    # SINGLE-STATE (Max, July 2026): the carry is always live. Under a
+    # static or improving floor the min() keeps merged stretches on the
+    # fitness line exactly; under a declining-fitness (slowing) floor the
+    # frontier lags at the relaxation's standing gap (~TAU_FWD x slope) —
+    # capability decays at the detraining constant, not at the fit's pace.
+    # (Replaces the two-state binder-gated carry, whose arm/expire
+    # machinery existed only to force declines to be tracked exactly — a
+    # rule Max retired.) A NaN floor breaks the carry chain.
+    prev_pace = prev_day = np.nan
+    prev_binder = -1
+    for t in range(len(gd)):
+        if not np.isfinite(cs5k[t]):
+            prev_pace = np.nan
+            continue
+        if np.isfinite(prev_pace):
+            alpha = 1.0 - np.exp(-(gd[t] - prev_day) / TAU_FWD)
+            carry = prev_pace + alpha * (cs5k[t] - prev_pace)
+            if carry < fp[t]:
+                fp[t] = carry
+                binder[t] = prev_binder
+        prev_pace, prev_day, prev_binder = fp[t], gd[t], binder[t]
 
     frontier = pd.DataFrame({
         'date': grid_dates,
-        'frontier_pace_min': cs5k * np.exp(-env),
+        'frontier_pace_min': fp,
         'binder': binder,
     })
     bound_ids = set(int(b) for b in np.unique(binder) if b >= 0)

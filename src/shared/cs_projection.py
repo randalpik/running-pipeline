@@ -190,6 +190,21 @@ def vmax_predict(cs_mps):
 # −22 @800) and the error vanishes only at 5K, so IAAF was extended down.
 CP3_IAAF_BOUNDARY_M = 1500.0
 
+# PREDICTION-direction WA/CP3 split (July 2026). Anchors at or above this use
+# the WA up-conversion of the 5K capability; below it, CP3 + v_max_pred.
+# 3000 m is EMPIRICAL, not first-principles: Max's binding short races
+# (3000/3200/3218) conform to WA equivalence — they define the frontier
+# through it, so WA-inverse predictions reproduce them — while mile/1500
+# races run 6-10 s below WA (population leg-speed assumption fails for a
+# distance specialist there). Distinct from CP3_IAAF_BOUNDARY_M (1500 m, the
+# EVIDENCE direction): the asymmetry between the two is deliberate — see
+# t5k_to_anchor_time. FUTURE WORK (Max, July 2026): neither WA nor
+# CP3(k_evid) round-trips the 1500-3000 window cleanly (k_evid is calibrated
+# at 400/800 and runs ~27 s generous at the mile; WA runs ~8 s fast; both
+# drift by era — HS-balanced vs modern distance-skewed). Revisit after the
+# summer 2026 short-race season for both profiles.
+WA_PRED_BOUNDARY_M = 3000.0
+
 # D' is no longer a fitted time-series. Once every aerobic race (≥1500 m) is
 # IAAF-homogenized to a 5K-equivalent, the CP2 hyperbola is degenerate (only
 # (5000−D')/CS is identified, not CS and D' separately), so the CS fit became a
@@ -487,13 +502,14 @@ def t5k_to_anchor_time(t5k_s, dp3, anchor_dist_m, vmax):
     anchor_dist_m; t5k_s/dp3 may be scalars or aligned arrays.
 
     Use this for race-EVIDENCE placement (project_races_to_5k_pace leg-2 — the
-    down-conversion's mirror) and for >5K predictions (where it is pure WA, the
-    same as the prediction path). Do NOT use it for ≤5K *predictions*: an
-    up-conversion of the 5K capability to a short distance must stay on
-    CP3+v_max (cs_line_at_anchor / pace5k_series_to_anchor), because WA
-    up-conversion to short distances assumes population-typical leg speed and
-    over-predicts a distance specialist. The boundary asymmetry (1500m here vs
-    5000m there) is deliberate."""
+    down-conversion's mirror) and for ≥3000 m predictions (where it is pure WA,
+    the same as the prediction path). Do NOT use it for sub-3000 *predictions*:
+    an up-conversion of the 5K capability to a genuinely short distance must
+    stay on CP3+v_max (cs_line_at_anchor / pace5k_series_to_anchor), because WA
+    up-conversion there assumes population-typical leg speed and over-predicts
+    a distance specialist. The boundary asymmetry (1500 m here vs
+    WA_PRED_BOUNDARY_M = 3000 m there) is deliberate — see that constant's
+    comment for the empirical basis and the flagged 1500-3000 future work."""
     from src.shared.wa_scoring import wa_equiv_time_at
     if abs(anchor_dist_m - 5000.0) < 1.0:
         return t5k_s
@@ -513,21 +529,24 @@ def t5k_to_anchor_time(t5k_s, dp3, anchor_dist_m, vmax):
 
 def cs_line_at_anchor(daily_summary, anchor_dist_m, beta_long, d_thresh_long):
     """CS-predicted total time (seconds) at anchor_dist_m for each daily date.
-    Hybrid (June 2026): anchors ≤5K via the CP3 forward solve on (CS, D′₃);
-    anchors >5K via World Athletics up-conversion of the CS-implied 5K time
-    (replaces the retired β_long fade). Forward direction → prediction edge.
+    Hybrid (June 2026, boundary moved July 2026): anchors <3000 m via the CP3
+    forward solve on (CS, D′₃); anchors ≥WA_PRED_BOUNDARY_M (3000 m) via
+    World Athletics up-conversion of the CS-implied 5K time (replaces the
+    retired β_long fade). Forward direction → prediction edge.
     (beta_long/d_thresh_long retained for signature compat; ignored.)
 
-    NB the WA/CP3 split is at 5K here, NOT the 1500m split that
+    NB the WA/CP3 split is at 3000 m here, NOT the 1500 m split that
     t5k_to_anchor_time (the *evidence* down-conversion) uses: a prediction is
-    an UP-conversion of the 5K capability, and WA up-conversion to short
-    distances assumes population-typical leg speed — invalid for a distance
-    specialist. CP3+v_max caps short predictions at the athlete's own
-    demonstrated v_max instead. The asymmetry is deliberate."""
+    an UP-conversion of the 5K capability, and WA up-conversion to genuinely
+    short distances assumes population-typical leg speed — invalid for a
+    distance specialist (empirically, mile races run 6-10 s below WA while
+    3000/3200s conform; see WA_PRED_BOUNDARY_M). CP3+v_max caps sub-3000
+    predictions at the athlete's own demonstrated v_max instead. The
+    asymmetry is deliberate."""
     cs_mps = daily_summary['cs_mps_med'].values
     vmax = vmax_predict(cs_mps)          # prediction edge, per date
     dp3 = daily_summary['dp3_pred_med'].values
-    if anchor_dist_m > 5000.0:
+    if anchor_dist_m >= WA_PRED_BOUNDARY_M:
         from src.shared.wa_scoring import wa_equiv_time_at
         t5k = np.asarray(cp3_time(5000.0, cs_mps, dp3, vmax), float)
         return np.array([wa_equiv_time_at(anchor_dist_m, t) for t in t5k])
@@ -546,13 +565,15 @@ def pace5k_series_to_anchor(p5k_min, daily_summary, anchor_dist_m,
     hiatus-floor + CS-implied line the race plots draw). For a pace series
     that equals the model's own p5k_implied_min, the result matches
     cs_line_at_anchor exactly (the D′₃ bridge preserves the 5K solve).
-    Forward direction → prediction edge. The ≤5K leg stays on CP3+v_max, NOT
-    the 1500m-WA split t5k_to_anchor_time uses: this is an UP-conversion of the
-    5K capability, and WA up-conversion to short distances assumes population
-    leg speed (invalid for a specialist) — see cs_line_at_anchor. (beta_long/
+    Forward direction → prediction edge. Anchors ≥WA_PRED_BOUNDARY_M (3000 m)
+    ride the WA equivalence (identity at 5K) — so a race that binds the
+    frontier at those distances is reproduced by its own prediction; below
+    3000 m the CP3+v_max_pred solve caps predictions at the athlete's own
+    demonstrated leg speed (WA assumes population-typical leg speed there —
+    invalid for a specialist). See the WA_PRED_BOUNDARY_M comment. (beta_long/
     d_thresh_long retained for signature compat; ignored.)"""
     t5k = np.asarray(p5k_min, float) * 60.0 * 5000.0 / METERS_PER_MILE
-    if anchor_dist_m > 5000.0:   # hybrid: >5K up-converts via World Athletics
+    if anchor_dist_m >= WA_PRED_BOUNDARY_M:   # aerobic anchors: WA equivalence
         from src.shared.wa_scoring import wa_equiv_time_at
         return np.array([wa_equiv_time_at(anchor_dist_m, t) for t in t5k])
     # v_max from the date's FIT CS (prediction edge), not the series-implied cs.

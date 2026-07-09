@@ -784,10 +784,11 @@ function buildTooltip(day, isSnap, pointHtml) {
         # 2. CS-predicted time at this anchor for every date in summary —
         #    the blended 5K line (hiatus floor pre-2013, CS-implied after)
         #    up-converted to this anchor (CP3+v_max forward solve for anchors
-        #    ≤5K, WA up-conversion for >5K — the prediction-direction boundary;
-        #    see cs_projection.pace5k_series_to_anchor). The diamonds (step 1)
-        #    use the 1500 m down-conversion boundary, so a short-anchor line and
-        #    its diamonds are different objects by design.
+        #    <3000 m, WA up-conversion for ≥3000 m — the prediction-direction
+        #    boundary; see cs_projection.pace5k_series_to_anchor). The diamonds
+        #    (step 1) use the 1500 m down-conversion boundary, so a sub-3000
+        #    anchor's line and its diamonds are different objects by design;
+        #    at 3000 m and above both directions share the WA equivalence.
         front_times = pace5k_series_to_anchor(
             cs_line_5k, daily_summary, anchor, beta_long, d_thresh)
 

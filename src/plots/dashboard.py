@@ -44,7 +44,8 @@ from src.shared.cs_projection import (load_cs_outputs, t5k_to_anchor_time,
                                       vmax_predict)
 from src.shared.performance_frontier import (standard_demos,
                                               build_frontier_band,
-                                              frontier_at_anchor)
+                                              frontier_at_anchor,
+                                              bin_frontier, p5k_from_asym)
 from src.plotting.formatters import sec_to_mss, sec_to_mss_full
 from src.plotting.markers import PR_EXCLUDED_SURFACES
 from src.plotting.render import _TAB_KEY_FORWARDER_JS
@@ -363,14 +364,46 @@ def compute_prs(races):
 
 
 # ----- Race Predictions -----
+def _snap_bin(dist_m):
+    """Snap a race distance to the closest FILTER_BINS name (no tolerance
+    cap — same rule as compute_prs and the race plots)."""
+    return min(FILTER_BINS, key=lambda nt: abs(nt[1] - float(dist_m)))[0]
+
+
+# Prediction-bin families (Max, July 2026): distances close enough that a
+# race at one is comfortably claimed at the others — the 1500m and Mile
+# cards share one bin-channel demo pool (1600s snap to Mile). Local
+# conversions there are model-independent (WA / CP3-evid / CP3-pred agree
+# within ~0.3 s across 1500-1609, verified on the 2023-06 natural
+# experiment). 800 and 3000 are deliberately NOT members: conversion
+# models diverge at 2:1 ratios (±17 s at 1500->3000 — the flagged
+# 1500-3000 future-work window).
+PRED_BIN_FAMILIES = {'1500m': ('1500m', 'Mile'),
+                     'Mile':  ('1500m', 'Mile')}
+
+
 def compute_race_predictions(daily_summary, beta_long, d_thresh,
-                             front_med, front_lo, front_hi):
-    """Per FILTER_BIN distance: predicted time direct from today's frontier
-    ("the fastest I could physically race this distance"), with a band from
-    the frontier swept across the CS 95% CrI. Where a recent demonstration
-    binds, the three sweeps collapse onto it (proof pins the prediction);
-    on the floor the band equals the CS CrI. Short distances ride the CP3
-    bend inside frontier_at_anchor — no β_short."""
+                             front_med, front_lo, front_hi, races=None):
+    """Per FILTER_BIN distance: predicted time as the FASTER of two channels
+    (Max, July 2026):
+      cross — today's frontier converted to the anchor ("the fastest my
+        aerobic capability implies here"), WA ≥3000 m / CP3+v_max below;
+      bin   — the per-bin frontier over actual races AT this distance
+        (performance_frontier.bin_frontier): a raced time is proven at its
+        own distance regardless of any conversion, down to 400 m. Bins in
+        the same PRED_BIN_FAMILIES pool share demos (1500/Mile), projected
+        to the card's anchor by the standard evidence-direction conversion.
+    Band: both channels swept across the CS 95% CrI; where a recent
+    demonstration binds, the sweeps collapse onto it (proof pins the
+    prediction); on the floor the band equals the CS CrI."""
+    grid = pd.DatetimeIndex(daily_summary['date'])
+    p5k_sweeps = None
+    if races is not None:
+        races = races.dropna(subset=['distance_m', 'time_sec', 'date']).copy()
+        races['bin'] = races['distance_m'].map(_snap_bin)
+        p5k_sweeps = (daily_summary['p5k_implied_min'].to_numpy(float),
+                      p5k_from_asym(daily_summary, 'cs_pace_lo95'),
+                      p5k_from_asym(daily_summary, 'cs_pace_hi95'))
     out = []
     for name, d in FILTER_BINS:
         t_med = frontier_at_anchor(front_med, daily_summary, d, beta_long,
@@ -379,6 +412,15 @@ def compute_race_predictions(daily_summary, beta_long, d_thresh,
                                     d_thresh)[-1]
         t_slow = frontier_at_anchor(front_hi, daily_summary, d, beta_long,
                                     d_thresh)[-1]
+        if p5k_sweeps is not None:
+            sub = races[races['bin'].isin(PRED_BIN_FAMILIES.get(name, (name,)))]
+            if len(sub):
+                b = [bin_frontier(sub, d, grid, daily_summary, beta_long,
+                                  d_thresh, p)[-1] for p in p5k_sweeps]
+                t_med, t_fast, t_slow = (min(t_med, b[0]), min(t_fast, b[1]),
+                                         min(t_slow, b[2]))
+        # Ordering clamp (channels can bind on different demos per sweep).
+        t_fast, t_slow = min(t_fast, t_med), max(t_slow, t_med)
         # Asymmetric band: t_med is generally NOT the midpoint of
         # [t_fast, t_slow], so we keep both bounds rather than a half-width.
         out.append({'distance': name, 'time_sec': float(t_med),
@@ -734,7 +776,8 @@ def main():
     stats = compute_stats(daily, races, now_utc)
     prs = compute_prs(races)
     race_preds = compute_race_predictions(summary_asof, beta_long, d_thresh,
-                                          front_med, front_lo, front_hi)
+                                          front_med, front_lo, front_hi,
+                                          races=races)
     workout_preds = compute_workout_predictions(summary_asof, front_med)
 
     snapshot_path = DATA_DIR / 'drive_snapshot.csv'
