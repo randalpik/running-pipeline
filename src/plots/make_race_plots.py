@@ -361,6 +361,13 @@ def fit_hiatus_floor(daily_summary, races_path=DEFAULT_RACES, *,
     return floor_fn, t0, join
 
 
+def _search_texts(sub, col):
+    """Index-aligned lowercased strings for the JS search filter ('' for NaN)."""
+    if col not in sub.columns:
+        return [''] * len(sub)
+    return ['' if pd.isna(v) else str(v).lower() for v in sub[col]]
+
+
 def add_race_traces_filterable(fig, df, *, marker_size=9):
     """All-races-plot variant: emits one trace per (surface, bin) so the JS
     checkbox UI can toggle visibility per bin. Also emits one sentinel trace
@@ -413,7 +420,13 @@ def add_race_traces_filterable(fig, df, *, marker_size=9):
                 legendgroup=surf, showlegend=False,
                 meta={'filter_bin': bin_name,
                       'pr_eligible': is_pr_eligible(surf),
-                      'snap_eligible': True}))
+                      'snap_eligible': True,
+                      # Per-point lowercased strings for the search box;
+                      # index-aligned with x/y/customdata. meta survives
+                      # the JS masking restyles, so the full arrays stay
+                      # available for re-filtering.
+                      'search_loc': _search_texts(s2, 'location'),
+                      'search_event': _search_texts(s2, 'event')}))
 
 
 def add_pr_overlay_filterable(fig, df, *, value_col='pace_norm_min',
@@ -590,6 +603,9 @@ def main():
 
     out1 = os.path.join(args.out_dir, 'race_pace_all.html')
     filter_ui = build_distance_filter_ui([b[0] for b in FILTER_BINS])
+    search_ui = widgets.search_box(
+        'race-search', placeholder='Search location / event',
+        count_id='race-search-count')
 
     # Smooth-mode tooltip payload: per-day CS pace + sorted race list, so
     # the cursor scaffold can show "CS pace at this date + nearest race
@@ -697,7 +713,7 @@ function buildTooltip(day, isSnap, pointHtml) {
             first_day=cs_first_day,
             last_day=cs_last_day,
         ),
-        overlay_html=filter_ui,
+        overlay_html=filter_ui + search_ui,
         overlay_js_files=[_FILTER_JS],
         axis_pad=axis_pad_all,
     )

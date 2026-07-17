@@ -239,6 +239,46 @@ input[type="checkbox"]:checked {
   gap: 2px;
 }
 
+/* ----- Top-right search box (free-text point filter) -----
+   Same screen slot + chrome as .rp-toggle-bar (e.g., races
+   location/event search). */
+.rp-search {
+  position: fixed;
+  top: 14px; right: 20px;
+  background: rgba(26,26,26,0.92);
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 4px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rp-search-count {
+  color: #888;
+  font-size: 12px;
+  white-space: nowrap;
+  padding-left: 6px;
+  /* Fixed slot sized for a 3-digit count ("888 total") so the box
+     width doesn't shift as the number changes; right-aligned to keep
+     the text hugging the input. */
+  min-width: 48px;
+  text-align: right;
+}
+.rp-search input {
+  background: transparent;
+  border: 1px solid #555;
+  color: #eee;
+  padding: 3px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  border-radius: 4px;
+  width: 180px;
+  outline: none;
+}
+.rp-search input:focus { border-color: #93f; }
+.rp-search input::placeholder { color: #888; }
+
 /* ----- Buttons -----
    .rp-btn-row: flex container.
    .rp-btn: outlined sidebar button (All/None). Default rendering.

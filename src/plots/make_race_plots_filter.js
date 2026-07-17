@@ -1,4 +1,4 @@
-// Distance-filter sidebar for the all-races plot.
+// Distance-filter sidebar + location/event search for the all-races plot.
 //
 // Each checkbox toggles the visibility of all traces tagged with
 // meta.filter_bin matching the box's data-bin attribute. Sentinel
@@ -6,8 +6,17 @@
 // keeps each surface's legend entry alive even when all its bins are
 // unchecked.
 //
+// The search box (#race-search) is a per-POINT filter, so it can't ride
+// trace visibility: it masks each bin trace's x/y/customdata down to
+// the points whose meta.search_loc / meta.search_event contain the
+// query (case-insensitive substring). Original arrays are cached on
+// first use; an empty query restores them. Search composes with the
+// checkbox filter (trace `visible`) and the native surface legend
+// toggles (`legendonly`) as an AND — they act on orthogonal axes.
+//
 // The PR overlay (meta.is_pr_overlay) is recomputed on any visibility
-// change — both checkbox-driven AND legend-click-driven.
+// OR masking change — checkbox-, search-, and legend-click-driven all
+// funnel through the plotly_restyle listener.
 (function () {
   function findPlot() { return document.querySelector('.plotly-graph-div'); }
 
@@ -97,6 +106,75 @@
     Plotly.restyle(plot, { 'visible': updates });
   }
 
+  // Live "n total" readout inside #race-search: counts the points of
+  // every bin trace that survives all three filters (search masking
+  // shrinks the arrays; checkboxes/legend toggle trace visibility).
+  function updateCount() {
+    var plot = findPlot();
+    var el = document.getElementById('race-search-count');
+    if (!plot || !plot.data || !el) return;
+    var n = 0;
+    plot.data.forEach(function (t) {
+      if (!t.meta || !t.meta.filter_bin) return;
+      var v = t.visible;
+      if (v === false || v === 'legendonly') return;
+      var xs = asArray(t.x);
+      if (xs) n += xs.length;
+    });
+    el.textContent = n + ' total';
+  }
+
+  // ----- location/event search -----
+  // Cache of each bin trace's full arrays, built once the plot is ready.
+  // meta.search_* stay full-length on the trace, but x/y/customdata get
+  // rewritten by masking restyles — so the originals live here.
+  var searchCache = null;
+  function ensureSearchCache(plot) {
+    if (searchCache) return searchCache;
+    searchCache = [];
+    plot.data.forEach(function (t, idx) {
+      if (!t.meta || !t.meta.filter_bin) return;
+      var xs = asArray(t.x), ys = asArray(t.y), cd = asArray(t.customdata);
+      if (!xs || !ys) return;
+      searchCache.push({
+        idx: idx,
+        x: Array.prototype.slice.call(xs),
+        y: Array.prototype.slice.call(ys),
+        cd: cd ? Array.prototype.slice.call(cd) : null,
+        loc: t.meta.search_loc || [],
+        event: t.meta.search_event || [],
+      });
+    });
+    return searchCache;
+  }
+
+  function applySearch() {
+    var plot = findPlot();
+    if (!plot || !plot.data || !window.Plotly) { setTimeout(applySearch, 100); return; }
+    var input = document.querySelector('#race-search input');
+    if (!input) return;
+    var q = input.value.trim().toLowerCase();
+    var cache = ensureSearchCache(plot);
+    var xs = [], ys = [], cds = [], indices = [];
+    cache.forEach(function (c) {
+      var x = c.x, y = c.y, cd = c.cd;
+      if (q) {
+        x = []; y = []; cd = c.cd ? [] : null;
+        for (var i = 0; i < c.x.length; i++) {
+          var loc = c.loc[i] || '', ev = c.event[i] || '';
+          if (loc.indexOf(q) === -1 && ev.indexOf(q) === -1) continue;
+          x.push(c.x[i]);
+          y.push(c.y[i]);
+          if (cd) cd.push(c.cd[i]);
+        }
+      }
+      xs.push(x); ys.push(y); cds.push(cd); indices.push(c.idx);
+    });
+    if (!indices.length) return;
+    // The plotly_restyle listener recomputes PRs over the masked pool.
+    Plotly.restyle(plot, { x: xs, y: ys, customdata: cds }, indices);
+  }
+
   function attachLegendInterceptor() {
     var plot = findPlot();
     if (!plot || !plot.data || !window.Plotly) { setTimeout(attachLegendInterceptor, 100); return; }
@@ -122,8 +200,9 @@
       var prIdx = findOverlayIdx(plot);
       if (indices && indices.length === 1 && indices[0] === prIdx) return;
       // Defer slightly so any in-flight Plotly state updates settle.
-      setTimeout(recomputePRs, 0);
+      setTimeout(function () { recomputePRs(); updateCount(); }, 0);
     });
+    updateCount();
   }
 
   document.querySelectorAll('#bin-filter input[type=checkbox]').forEach(function (cb) {
@@ -137,5 +216,7 @@
     document.querySelectorAll('#bin-filter input[type=checkbox]').forEach(function (cb) { cb.checked = false; });
     update();
   });
+  var searchInput = document.querySelector('#race-search input');
+  if (searchInput) searchInput.addEventListener('input', applySearch);
   attachLegendInterceptor();
 })();

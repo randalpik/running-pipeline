@@ -140,6 +140,33 @@ def toggle_bar(
     )
 
 
+def search_box(
+    overlay_id: str,
+    *,
+    placeholder: str = '',
+    count_id: Optional[str] = None,
+) -> str:
+    """Fixed top-right free-text search field.
+
+    Same screen position as ``toggle_bar`` (``.rp-search`` shares the
+    top-right chrome). ``type="search"`` gives the native clear (✕)
+    control. The plot's JS binds an ``input`` listener via the
+    ``overlay_id``.
+
+    ``count_id`` adds a ``.rp-search-count`` span left of the input —
+    an empty slot the plot's JS fills with a live result count.
+    """
+    ph = f' placeholder="{escape(placeholder)}"' if placeholder else ''
+    count = (f'  <span id="{count_id}" class="rp-search-count"></span>\n'
+             if count_id else '')
+    return (
+        f'<div id="{overlay_id}" class="rp-search">\n'
+        f'{count}'
+        f'  <input type="search"{ph} autocomplete="off" spellcheck="false">\n'
+        f'</div>'
+    )
+
+
 def checkbox_rows(
     items: Iterable[tuple],
     *,
