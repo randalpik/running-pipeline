@@ -779,7 +779,7 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
         detail_rows.append(widgets.detail_row(
             'Off-road',
             f': β = {betas.get("is_offroad", 0):+.1f} s/mi, '
-            f': descent refunds {REFUND_RECOVERY["mixed"]:.0%} of ascent effort, vs '
+            f'descent refunds {REFUND_RECOVERY["mixed"]:.0%} of ascent effort, vs '
             f'{REFUND_RECOVERY["paved"]:.0%} on pavement (applies only with Elevation also on)'))
     if av.get('altitude', True):
         detail_rows.append(widgets.detail_row(
