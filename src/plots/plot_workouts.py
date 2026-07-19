@@ -27,7 +27,8 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import training_floor, clip_to_daily_floor
+from src.shared.plot_window import (training_floor, clip_to_daily_floor,
+                                    pad_range)
 from src.shared.workouts import (
     load_cs, watch_log_demotions, _legacy_verified_dates,
     project_workouts, project_hill_continuous, project_hill_reps,
@@ -550,16 +551,25 @@ def main():
     tickvals = [t / 60.0 for t in _ticks_sec]
     y_min, y_max = tickvals[0], tickvals[-1]
 
+    # Axis end covers EVERY plotted session type — a profile whose newest
+    # quality is a hill session (Maddy 2026-07-18) must not have it clipped
+    # by a flat-workouts-only max.
+    last_session = max(
+        [pd.Timestamp(workouts['date'].max())]
+        + ([pd.Timestamp(hills_c['date'].max())] if not hills_c.empty else [])
+        + ([pd.Timestamp(hills_r['date'].max())] if not hills_r.empty else []))
+    # Proportional (pixel-constant) right margin — a fixed N-day pad is a
+    # sliver on an 18-year profile but a wide empty strip on a first-season
+    # one (Max, July 2026).
+    _, plot_end = pad_range(plot_floor, last_session, 0.01)
+
     apply_default_layout(
         fig,
         margin=dict(t=20, l=70, r=200, b=28),
         hovermode=False,
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02,
                     groupclick='toggleitem'),
-        xaxis=yearly_x_axis_kwargs(
-            plot_floor,
-            pd.Timestamp(workouts['date'].max()) + pd.Timedelta(days=30),
-        ),
+        xaxis=yearly_x_axis_kwargs(plot_floor, plot_end),
         yaxis=dict(title='5K-equivalent pace (min/mi)',
                    range=[y_max, y_min],
                    tickmode='array', tickvals=tickvals, ticktext=ticktext,
@@ -570,7 +580,6 @@ def main():
     # Smooth mode shows date + CS pace; snap mode shows the session details.
     js_epoch = pd.Timestamp('1970-01-01')
     plot_start = plot_floor
-    plot_end   = pd.Timestamp(workouts['date'].max()) + pd.Timedelta(days=30)
     all_days   = pd.date_range(plot_start, plot_end, freq='D')
 
     days_2016 = (all_days - epoch).days.astype(float).to_numpy()

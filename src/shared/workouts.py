@@ -1016,14 +1016,16 @@ def _load_hill_measured_t():
 
 def _load_hillrep_measured():
     """date -> per-rep measured hill-rep arrays from workout_measured.csv
-    (hillrep-exact only): dist_m, climb_ft, time_s, rest_s (standing+jog),
-    rep-ordered. Empty dict when nothing is measured. Drives the watch-era
-    5K-equivalent projection in project_hill_reps."""
+    (hillrep-exact, or hillrep-watch on watch-only profiles): dist_m,
+    climb_ft, time_s, rest_s (standing+jog), rep-ordered. Empty dict when
+    nothing is measured. Drives the watch-era 5K-equivalent projection in
+    project_hill_reps."""
     path = DATA_DIR / 'workout_measured.csv'
     if not path.exists():
         return {}
     m = pd.read_csv(path, dtype={'date': str})
-    m = m[(m['rep_idx'] > 0) & (m['status'] == 'hillrep-exact')]
+    m = m[(m['rep_idx'] > 0)
+          & m['status'].isin(('hillrep-exact', 'hillrep-watch'))]
     if m.empty:
         return {}
     out = {}

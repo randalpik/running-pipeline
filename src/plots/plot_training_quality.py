@@ -19,7 +19,8 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
-from src.shared.plot_window import training_floor, clip_to_daily_floor
+from src.shared.plot_window import (training_floor, clip_to_daily_floor,
+                                    pad_range)
 from src.shared.workouts import (
     load_cs, add_cs,
     project_workouts, project_long_runs, project_hill_continuous,
@@ -771,7 +772,7 @@ def main():
                     groupclick='toggleitem'),
         xaxis=yearly_x_axis_kwargs(
             plot_floor,
-            combined['date'].max() + pd.Timedelta(days=30),
+            pad_range(plot_floor, combined['date'].max(), 0.01)[1],
         ),
         yaxis=dict(title='Residual from 5K fitness (sec/mi)',
                    range=norm_axis_range,
@@ -786,7 +787,7 @@ def main():
     js_epoch = pd.Timestamp('1970-01-01')
 
     plot_start = plot_floor
-    plot_end   = combined['date'].max() + pd.Timedelta(days=30)
+    plot_end   = pad_range(plot_floor, combined['date'].max(), 0.01)[1]
     all_days   = pd.date_range(plot_start, plot_end, freq='D')
 
     target_days_2016 = (all_days - epoch).days.astype(float).values

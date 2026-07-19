@@ -132,7 +132,8 @@ def hill_rep_measured_lines() -> dict:
     if not path.exists():
         return {}
     m = pd.read_csv(path, dtype={'date': str})
-    m = m[(m['rep_idx'] > 0) & (m['status'] == 'hillrep-exact')]
+    m = m[(m['rep_idx'] > 0)
+          & m['status'].isin(('hillrep-exact', 'hillrep-watch'))]
     out = {}
     for date, day in m.groupby('date'):
         total_gain = float(day['gain_ft'].sum())

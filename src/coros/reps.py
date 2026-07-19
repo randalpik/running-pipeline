@@ -431,6 +431,13 @@ HILLREP_MIN_DIST_M = 200.0    # m, min GPS-path distance for a rep
 HILLREP_MIN_DUR_S = 60.0      # s, min duration for a rep (excludes strides)
 HILLREP_TIME_BAND = (0.6, 1.4)  # accepted dur as fraction of logged rep time
 HILLREP_COLOC_M = 120.0       # m, max rep-start spread around the median start
+HILLREP_TAIL_TRIVIAL_S = 15.0   # s, descent tail at/below this = rep ends at
+HILLREP_TAIL_TRIVIAL_M = 50.0   # m, the pause (watch stopped at the top)
+# Self-anchored detection (watch-only profiles — no hand log):
+HILLREP_DETECT_MIN_REPS = 3     # co-located similar climbs to call it a hill day
+HILLREP_DETECT_MAX_DUR_S = 600.0
+HILLREP_DETECT_COLOC_M = 50.0   # m, rep starts around their median start
+HILLREP_DETECT_DUR_BAND = (0.7, 1.3)  # rep durations around the cluster median
 
 
 def _hillrep_stream(rec):
@@ -483,19 +490,48 @@ def _hillrep_segments(rec):
     return segs
 
 
+def _crest_split(sg):
+    """End index (exclusive) of a segment's rep portion.
+
+    The rep ends at the ALTITUDE CREST — the earliest sample at the segment's
+    max altitude. GPS lags and drifts; the baro is the sharper end-of-climb
+    signal (Max, July 2026 — validated on Maddy's 2026-07-18 up-down reps).
+    When the descent tail past the crest is trivial the runner stopped the
+    watch at the top, and the pause boundary is exact — return the whole
+    segment so pause-at-top days are measured unchanged."""
+    alts = [(j, a) for j, (_, a, _, _) in enumerate(sg) if a is not None]
+    if not alts:
+        return len(sg)
+    amax = max(a for _, a in alts)
+    j_peak = next(j for j, a in alts if a >= amax)
+    tail = sg[j_peak:]
+    t_dn = tail[-1][0] - tail[0][0] if len(tail) > 1 else 0.0
+    gps = [(la, lo) for _, _, la, lo in tail if la is not None and lo is not None]
+    d_dn = sum(_hav(gps[i], gps[i + 1]) for i in range(len(gps) - 1))
+    if t_dn <= HILLREP_TAIL_TRIVIAL_S and d_dn <= HILLREP_TAIL_TRIVIAL_M:
+        return len(sg)
+    return j_peak + 1
+
+
 def _hillrep_measure(sg):
-    """A moving segment's (is_rep, dur_s, dist_m, climb_m). Distance is the
-    haversine GPS path over locked fixes; climb is barometric, over REAL
-    altitude samples only (leading post-resume samples carry alt None — see
-    _hillrep_stream). A rep climbs net-up far/long enough; the jog-down
-    (net-down) and strides (short) are not."""
-    dur = sg[-1][0] - sg[0][0]
-    alts = [a for _, a, _, _ in sg if a is not None]
+    """A moving segment's REP PORTION as (is_rep, dur_s, dist_m, climb_m).
+
+    The portion runs to the altitude crest (_crest_split) — the whole segment
+    when the watch was stopped at the top, the climb only when the segment
+    rolls on into the jog-down (up-and-back protocol, or a forgotten stop).
+    Distance is the haversine GPS path over locked fixes; climb is barometric,
+    over REAL altitude samples only (leading post-resume samples carry alt
+    None — see _hillrep_stream). A rep climbs net-up far/long enough; the
+    jog-down (net-down, crest at its start) and strides (short) are not."""
+    part = sg[:_crest_split(sg)]
+    dur = part[-1][0] - part[0][0] if len(part) > 1 else 0.0
+    alts = [a for _, a, _, _ in part if a is not None]
     if alts:
         net, climb = alts[-1] - alts[0], max(alts) - alts[0]
     else:
         net = climb = 0.0
-    gps = [(la, lo) for _, _, la, lo in sg if la is not None and lo is not None]
+    gps = [(la, lo) for _, _, la, lo in part
+           if la is not None and lo is not None]
     dist = sum(_hav(gps[i], gps[i + 1]) for i in range(len(gps) - 1))
     is_rep = (net >= HILLREP_MIN_GAIN_M and dist >= HILLREP_MIN_DIST_M
               and dur >= HILLREP_MIN_DUR_S)
@@ -509,12 +545,14 @@ def _hillrep_candidates(segs, rep_time_s):
     HILLREP_COLOC_M of the candidates' median start (reps run ONE hill;
     warm-up/cooldown climbs happen elsewhere). Co-location needs >= 3
     GPS-locked candidates to define a meaningful median."""
-    idx = [i for i, s in enumerate(segs) if _hillrep_measure(s)[0]]
+    meas = {i: _hillrep_measure(s) for i, s in enumerate(segs)}
+    idx = [i for i in meas if meas[i][0]]
     if rep_time_s:
         lo, hi = HILLREP_TIME_BAND
+        # band on the REP PORTION duration (to the crest), not the whole
+        # segment — an up-and-back segment carries the jog-down too.
         idx = [i for i in idx
-               if lo * rep_time_s <= segs[i][-1][0] - segs[i][0][0]
-               <= hi * rep_time_s]
+               if lo * rep_time_s <= meas[i][1] <= hi * rep_time_s]
     starts = {}
     for i in idx:
         gps = [(la, lo_) for _, _, la, lo_ in segs[i]
@@ -527,6 +565,42 @@ def _hillrep_candidates(segs, rep_time_s):
         idx = [i for i in idx
                if i in starts and _hav(starts[i], med) <= HILLREP_COLOC_M]
     return idx
+
+
+def detect_hill_workout(rec):
+    """Self-anchored hill-workout detection for watch-only profiles (no hand
+    log). Signature: >= HILLREP_DETECT_MIN_REPS pause-delimited rep portions
+    (net climb >= HILLREP_MIN_GAIN_M, GPS path >= HILLREP_MIN_DIST_M, duration
+    60s..HILLREP_DETECT_MAX_DUR_S) whose starts sit within
+    HILLREP_DETECT_COLOC_M of their median start (reps run ONE hill — street-
+    crossing pauses on an ordinary hilly run scatter along the route) and
+    whose durations sit within HILLREP_DETECT_DUR_BAND of the cluster median.
+    Backtested over both runners' full histories (2026-07): finds exactly the
+    known hill-rep workouts, zero false positives in ~2,350 activities.
+
+    Returns the rep durations (s) or None."""
+    segs = _hillrep_segments(strip_paused(rec))
+    cands = []
+    for sg in segs:
+        if len(sg) < 2:
+            continue
+        ok, dur, dist, climb = _hillrep_measure(sg)
+        if not ok or dur > HILLREP_DETECT_MAX_DUR_S:
+            continue
+        start = next(((la, lo) for _, _, la, lo in sg if la is not None), None)
+        if start:
+            cands.append((dur, start))
+    if len(cands) < HILLREP_DETECT_MIN_REPS:
+        return None
+    med = (statistics.median(c[1][0] for c in cands),
+           statistics.median(c[1][1] for c in cands))
+    clus = [c for c in cands if _hav(c[1], med) <= HILLREP_DETECT_COLOC_M]
+    if len(clus) < HILLREP_DETECT_MIN_REPS:
+        return None
+    mdur = statistics.median(c[0] for c in clus)
+    lo, hi = HILLREP_DETECT_DUR_BAND
+    reps = [c[0] for c in clus if lo * mdur <= c[0] <= hi * mdur]
+    return reps if len(reps) >= HILLREP_DETECT_MIN_REPS else None
 
 
 def extract_hill_rep_day(recs, nreps, rep_time_min=None):
@@ -552,8 +626,8 @@ def extract_hill_rep_day(recs, nreps, rep_time_min=None):
         return [], f'hillrep-mismatch:{len(rep_pos)}!={nreps}'
     reps = []
     for k, i in enumerate(rep_pos):
-        sg = segs[i]
-        _, dur, dist, climb = _hillrep_measure(sg)
+        sg = segs[i][:_crest_split(segs[i])]   # rep portion; descent tail
+        _, dur, dist, climb = _hillrep_measure(segs[i])   # -> inter-rep jog
         t0, t1 = sg[0][0], sg[-1][0]
         if k + 1 < len(rep_pos):
             nxt_start = segs[rep_pos[k + 1]][0][0]
@@ -1214,6 +1288,10 @@ def _extract_day_rows(date, recs, logged, cf, hill, cutoff, label_ids,
         else:                                  # ('rep', nreps, rep_time_min)
             chosen, status = extract_hill_rep_day(rich, *hill[1:])
             kind = 'hillrep'
+            # Watch-only: the count anchor is itself detection-derived, not a
+            # hand log — keep the provenance visible in the status.
+            if watch_only and status == 'hillrep-exact':
+                status = 'hillrep-watch'
     else:
         chosen, status = extract_day(rich, cutoff(date), logged, cf)
         kind = None
@@ -1243,11 +1321,28 @@ def _day_plan(by_date, daily, watch_only, races_path):
         race_dates = set()
         if races_path and Path(races_path).exists():
             race_dates = set(pd.read_csv(races_path)['date'].astype(str))
+        # Hill days: run_type=hill_rep in the profile's daily.csv, put there
+        # by the detection-synthesized workout string (build_current_log ->
+        # detect_hill_workout). The parsed count/time anchor extraction just
+        # like a hand log would.
+        hand = None
+        if daily is not None:
+            hand = daily.copy()
+            hand['date'] = pd.to_datetime(hand['date']).dt.date.astype(str)
+            hand = hand.set_index('date')
         for date, acts in by_date.items():
             track_ids = [l for l, st in acts if st == M.SPORT_TRACK_RUN]
             if track_ids and date not in race_dates:
                 plan[date] = {'logged': None, 'cf': False, 'hill': None,
                               'ids': track_ids}
+            elif (hand is not None and date in hand.index
+                  and hand.loc[date, 'run_type'] == 'hill_rep'):
+                rt, nreps, _loop = _parse_hr(hand.loc[date])
+                if nreps:
+                    plan[date] = {'logged': None, 'cf': False,
+                                  'hill': ('rep', int(nreps),
+                                           float(rt) if rt else None),
+                                  'ids': [l for l, st in acts]}
         return plan
     hand = daily.copy()
     hand['date'] = pd.to_datetime(hand['date']).dt.date.astype(str)
@@ -1378,8 +1473,13 @@ def main():
     args = p.parse_args()
 
     daily = None
+    daily_path = DATA_DIR / 'daily.csv'
     if not args.watch_only:
-        daily = pd.read_csv(DATA_DIR / 'daily.csv')
+        daily = pd.read_csv(daily_path)
+    elif daily_path.exists():
+        # Watch-only profiles read daily too — solely for the hill_rep days
+        # their own synthesized workout strings put there (_day_plan).
+        daily = pd.read_csv(daily_path)
     df, skipped = build_workout_measured(
         daily, args.details_dir, DATA_DIR / 'bayes_cs_summary.csv',
         watch_only=args.watch_only, races_path=DATA_DIR / 'races.csv',

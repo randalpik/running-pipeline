@@ -17,6 +17,7 @@ imports and left blank. Output columns match snapshot.CURRENT_LOG_COLUMNS.
 """
 from __future__ import annotations
 
+import statistics
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -233,8 +234,14 @@ def _fmt_pace(moving_s: float, meters: float) -> str | None:
     return f"{spm // 60}:{spm % 60:02d}"
 
 
-def _workout_raw(runs: list[Activity]) -> str | None:
-    """Compose the workout string for one day's run activities (time-ordered)."""
+def _workout_raw(runs: list[Activity], recs: list[dict] | None = None) -> str | None:
+    """Compose the workout string for one day's run activities (time-ordered).
+
+    ``recs`` (the day's detail dicts, rich where cached) enables hill-workout
+    detection: a day whose stream shows co-located, similar-duration climb
+    reps (reps.detect_hill_workout) is coded ``M:SShr-Nx watch`` — the
+    standard hill-rep grammar, with the median measured rep time and detected
+    count — so run_type=hill_rep flows through the existing parser."""
     track_idx = [i for i, a in enumerate(runs)
                  if a.sport_type == M.SPORT_TRACK_RUN]
     if track_idx:
@@ -257,7 +264,17 @@ def _workout_raw(runs: list[Activity]) -> str | None:
             parts.append(f"{cd}j")
         return ", ".join(parts)
 
-    # no track run: recovery, or long if any single run's moving time > 80 min
+    # no track run: hill-rep day if any activity's stream shows the signature
+    for rec in recs or []:
+        if not rec.get("freq"):
+            continue
+        from src.coros.reps import detect_hill_workout   # lazy: avoids cycle
+        reps = detect_hill_workout(rec)
+        if reps:
+            med = round(statistics.median(reps))
+            return f"{med // 60}:{med % 60:02d}hr-{len(reps)}x watch"
+
+    # otherwise: recovery, or long if any single run's moving time > 80 min
     total_m = sum(a.distance_m for a in runs)
     total_s = sum(a.moving_s for a in runs)
     pace = _fmt_pace(total_s, total_m)
@@ -274,11 +291,17 @@ def build_current_log(details, *, geocode=True):
     Returns (DataFrame, meta) where meta carries diagnostics — notably the
     distinct weatherType values seen, for tuning the weather bin map.
     """
-    acts = [Activity(d) for d in details if (d.get("summary") or {}).get("sportType") is not None]
+    acts = []
     runs_by_day: dict = defaultdict(list)
-    for a in acts:
+    recs_by_day: dict = defaultdict(list)    # detail dicts, for hill detection
+    for d in details:
+        if (d.get("summary") or {}).get("sportType") is None:
+            continue
+        a = Activity(d)
+        acts.append(a)
         if a.sport_type in M.RUN_SPORTS:
             runs_by_day[a.local_date].append(a)
+            recs_by_day[a.local_date].append(d)
 
     # Batch reverse-geocode each day's representative (first) run start.
     rep_points = {}
@@ -310,7 +333,7 @@ def build_current_log(details, *, geocode=True):
             "minutes": round(minutes, 1),
             "temp_c": None if rep.is_indoor else _round_or_none(rep.temp_c, 1),
             "weather": weather,
-            "workout_raw": _workout_raw(runs),
+            "workout_raw": _workout_raw(runs, recs_by_day.get(day)),
             "partners": None,
             "conditions": None,
             "wind": None if rep.is_indoor else M.wind_bin(rep.wind_mph),

@@ -464,6 +464,12 @@ def main():
         print(f"WARNING: daily CSV not found at {args.daily}; "
               f"grid spans eligible races only.", file=sys.stderr)
     pad_lo, pad_hi = pad_range(span_lo, span_hi, 0.02)
+    # The 2% pad is proportional to history length: ~4 months on an 18-year
+    # profile but under a week on a first-season one, whose CS/frontier lines
+    # then die days after the fit ran. Floor the FORWARD margin at 60 days so
+    # every profile's lines stay drawable between fits (long histories already
+    # exceed it; the HSGP long-trend extrapolates cleanly into the margin).
+    pad_hi = max(pad_hi, span_hi + pd.Timedelta(days=60))
     first_d = pad_lo.date()
     last_d  = pad_hi.date()
     grid_dates = []
