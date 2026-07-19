@@ -326,6 +326,24 @@ def main(argv=None):
                 print(f"[{profile.id}] SKIPPED: {e}")
         return
 
+    # Sync every buildable Coros cache BEFORE any profile builds (mirrors CI's
+    # `--only coros --sync-only` pre-step): the Max drive build enriches from
+    # data/profiles/coros/details, which otherwise only refreshes AFTER his
+    # build (PROFILES order) — leaving local enrichment one sync behind. Soft-
+    # fails like CI: a Coros outage degrades to the stale cache, never aborts.
+    # build_coros_data's own sync then becomes a cheap incremental no-op.
+    if not args.skip_data:
+        for profile in profiles:
+            if profile.source != "coros" or not _is_available(profile):
+                continue
+            try:
+                sync_coros_cache(profile, rebuild=args.rebuild_coros)
+            except ProfileSkip as e:
+                print(f"[{profile.id}] pre-sync skipped: {e}")
+            except Exception as e:
+                print(f"[{profile.id}] WARNING: pre-sync failed ({e}) — "
+                      f"builds use the existing cache")
+
     # The switcher lists every profile that can currently be built, regardless
     # of which subset --only is rebuilding, so cross-profile navigation always
     # points at something that exists.

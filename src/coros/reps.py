@@ -63,7 +63,7 @@ import numpy as np
 import pandas as pd
 
 from src.coros import mappings as M
-from src.coros.build_current_log import Activity
+from src.coros.build_current_log import Activity, strip_paused
 from src.shared.paths import DATA_DIR
 from src.shared.hill_model import FT_PER_M
 from src.shared.workouts import _parse_hr, hc_loop_distance, parse_hc
@@ -399,13 +399,19 @@ def extract_hill_day(recs, nreps, loop_m):
 # ---------- hill repeats (pause-delimited, elevation-classified) ----------
 # A hill_rep day is up-and-back efforts on ONE hill, not loops of a circuit, so
 # there is no surveyed loop distance and the GPS anchor-crossing trick above
-# does not apply. Max records each rep as its own moving segment — run hard up,
-# stop the watch at the top — so the WATCH PAUSES delimit the reps exactly. We
-# split the stream on pauses and classify each moving segment by its net
-# barometric climb: a rep climbs (net up), the jog-down recovers (net down), the
-# trailing strides are too short. This gives the true rep TIME (~2 min, matching
-# the log) — an altitude-peak detector instead stops at the smoothed crest ~20 s
-# early and under-reads time.
+# does not apply. Max records each rep as its own moving segment with a watch
+# pause at BOTH ends — so the WATCH PAUSES delimit the reps exactly. Segments
+# split at pause EVENTS from the `pauses` array (pauses as short as a few
+# seconds delimit reps, so gap-length thresholds under-split; residual stream
+# gaps still split for legacy records). A segment is a rep candidate by its net
+# barometric climb (a rep climbs, the jog-down recovers, strides are too
+# short), then two log/data-anchored gates cut non-rep climbs: duration must
+# sit within HILLREP_TIME_BAND of the hand-logged rep time, and the rep starts
+# must co-locate on one hill (within HILLREP_COLOC_M of their median start —
+# warm-up/cooldown jogs elsewhere can out-climb HILLREP_MIN_GAIN_M on rolling
+# terrain). This gives the true rep TIME (~2 min, matching the log) — an
+# altitude-peak detector instead stops at the smoothed crest ~20 s early and
+# under-reads time.
 #
 # Horizontal DISTANCE comes from the GPS track (haversine over locked fixes),
 # not the cumulative-distance field. The field is coherent globally but has two
@@ -419,41 +425,57 @@ def extract_hill_day(recs, nreps, loop_m):
 # anchored to the hand log: a disagreeing count is flagged loud
 # (hillrep-mismatch), never silently aggregated.
 
-HILLREP_PAUSE_GAP_S = 10.0    # s, stream time-gap that marks a watch pause
+HILLREP_PAUSE_GAP_S = 10.0    # s, residual stream-gap split (legacy records)
 HILLREP_MIN_GAIN_M = 15.0     # m, min net climb for a segment to be a rep
 HILLREP_MIN_DIST_M = 200.0    # m, min GPS-path distance for a rep
 HILLREP_MIN_DUR_S = 60.0      # s, min duration for a rep (excludes strides)
+HILLREP_TIME_BAND = (0.6, 1.4)  # accepted dur as fraction of logged rep time
+HILLREP_COLOC_M = 120.0       # m, max rep-start spread around the median start
 
 
 def _hillrep_stream(rec):
-    """(t_epoch_s, alt_m, lat, lon) for one activity. Altitude forward-filled;
+    """(t_epoch_s, alt_m, lat, lon) for one activity. Altitude is the RAW baro
+    sample — None where the sensor hadn't reported yet (~3 s after each
+    pause-resume). It is deliberately NOT forward-filled: filling bleeds the
+    previous segment's closing altitude into the next rep's first samples,
+    and when the runner moves during the pause (2026-07-18: ~11 m descended
+    during the bottom rests) that stale start corrupts the rep's climb.
+    Samples before the activity's first altitude are dropped, as before.
     lat/lon are decimal degrees, or None where the GPS hadn't locked (raw 0).
     The cumulative-distance field is deliberately not used — distance is the
     haversine GPS path (see module comment)."""
-    out, last = [], None
+    out, seen_alt = [], False
     for f in rec.get('freq') or []:
         if len(f) < 6:
             continue
         if f[5] is not None:
-            last = f[5]
-        if last is None:
+            seen_alt = True
+        if not seen_alt:
             continue
         lat = f[3] / 1e7 if f[3] else None
         lon = f[4] / 1e7 if f[4] else None
-        out.append((f[0] / 100.0, float(last), lat, lon))
+        out.append((f[0] / 100.0,
+                    None if f[5] is None else float(f[5]), lat, lon))
     return out
 
 
 def _hillrep_segments(rec):
-    """Moving segments (pause-delimited) for one activity — a stream time-gap
-    over HILLREP_PAUSE_GAP_S starts a new segment. Each is a list of
-    (t_epoch_s, alt_m, lat, lon)."""
+    """Moving segments (pause-delimited) for one activity. A segment ends at
+    every `pauses` entry (pause EVENTS — even a few-seconds pause delimits a
+    rep, which a gap-length threshold misses) and at any residual stream
+    time-gap over HILLREP_PAUSE_GAP_S (legacy records whose pause list missed
+    a gap). Each is a list of (t_epoch_s, alt_m, lat, lon)."""
     pts = _hillrep_stream(rec)
     if not pts:
         return []
-    segs, cur = [], [pts[0]]
+    ends = sorted(p[1] / 100.0 for p in rec.get('pauses') or []
+                  if p[1] is not None)          # pause END times, epoch-s
+    segs, cur, ei = [], [pts[0]], 0
     for prev, p in zip(pts, pts[1:]):
-        if p[0] - prev[0] > HILLREP_PAUSE_GAP_S:
+        while ei < len(ends) and ends[ei] <= prev[0]:
+            ei += 1
+        crosses_pause = ei < len(ends) and ends[ei] <= p[0]
+        if crosses_pause or p[0] - prev[0] > HILLREP_PAUSE_GAP_S:
             segs.append(cur)
             cur = []
         cur.append(p)
@@ -463,12 +485,16 @@ def _hillrep_segments(rec):
 
 def _hillrep_measure(sg):
     """A moving segment's (is_rep, dur_s, dist_m, climb_m). Distance is the
-    haversine GPS path over locked fixes; climb is barometric. A rep climbs
-    net-up far/long enough; the jog-down (net-down) and strides (short) are
-    not."""
+    haversine GPS path over locked fixes; climb is barometric, over REAL
+    altitude samples only (leading post-resume samples carry alt None — see
+    _hillrep_stream). A rep climbs net-up far/long enough; the jog-down
+    (net-down) and strides (short) are not."""
     dur = sg[-1][0] - sg[0][0]
-    alts = [a for _, a, _, _ in sg]
-    net, climb = alts[-1] - alts[0], max(alts) - alts[0]
+    alts = [a for _, a, _, _ in sg if a is not None]
+    if alts:
+        net, climb = alts[-1] - alts[0], max(alts) - alts[0]
+    else:
+        net = climb = 0.0
     gps = [(la, lo) for _, _, la, lo in sg if la is not None and lo is not None]
     dist = sum(_hav(gps[i], gps[i + 1]) for i in range(len(gps) - 1))
     is_rep = (net >= HILLREP_MIN_GAIN_M and dist >= HILLREP_MIN_DIST_M
@@ -476,26 +502,54 @@ def _hillrep_measure(sg):
     return is_rep, dur, dist, climb
 
 
-def extract_hill_rep_day(recs, nreps):
+def _hillrep_candidates(segs, rep_time_s):
+    """Indices of rep-candidate segments: net-climb classified, then (when the
+    log supplies a rep time) duration-banded within HILLREP_TIME_BAND, then
+    co-located — every candidate's first locked GPS fix must sit within
+    HILLREP_COLOC_M of the candidates' median start (reps run ONE hill;
+    warm-up/cooldown climbs happen elsewhere). Co-location needs >= 3
+    GPS-locked candidates to define a meaningful median."""
+    idx = [i for i, s in enumerate(segs) if _hillrep_measure(s)[0]]
+    if rep_time_s:
+        lo, hi = HILLREP_TIME_BAND
+        idx = [i for i in idx
+               if lo * rep_time_s <= segs[i][-1][0] - segs[i][0][0]
+               <= hi * rep_time_s]
+    starts = {}
+    for i in idx:
+        gps = [(la, lo_) for _, _, la, lo_ in segs[i]
+               if la is not None and lo_ is not None]
+        if gps:
+            starts[i] = gps[0]
+    if len(starts) >= 3:
+        med = (statistics.median(g[0] for g in starts.values()),
+               statistics.median(g[1] for g in starts.values()))
+        idx = [i for i in idx
+               if i in starts and _hav(starts[i], med) <= HILLREP_COLOC_M]
+    return idx
+
+
+def extract_hill_rep_day(recs, nreps, rep_time_min=None):
     """Locate the day's hill-rep block and measure each rep.
 
     Returns (reps, status): 'hillrep-exact' -> one dict per rep with measured
     dist (L, m), time (t, s), gain_ft, grade_pct, HR, and rest; the rep block
-    is the activity with the most rep-classified segments. The count is anchored
-    to the hand log: 'hillrep-mismatch:<found>!=<nreps>' if they disagree (fail
-    loud), 'hillrep-no-block' if no activity yields any rep segment."""
+    is the activity with the most rep candidates (see _hillrep_candidates).
+    The count is anchored to the hand log: 'hillrep-mismatch:<found>!=<nreps>'
+    if they disagree (fail loud — never auto-select), 'hillrep-no-block' if no
+    activity yields any rep candidate."""
+    rep_time_s = rep_time_min * 60.0 if rep_time_min else None
     best = None
     for rec in recs:
         segs = _hillrep_segments(rec)
-        n_rep = sum(_hillrep_measure(s)[0] for s in segs)
-        if best is None or n_rep > best[1]:
-            best = (rec, n_rep, segs)
-    if best is None or best[1] == 0:
+        cand = _hillrep_candidates(segs, rep_time_s)
+        if best is None or len(cand) > len(best[1]):
+            best = (rec, cand, segs)
+    if best is None or not best[1]:
         return [], 'hillrep-no-block'
-    rec, n_rep, segs = best
-    if n_rep != nreps:
-        return [], f'hillrep-mismatch:{n_rep}!={nreps}'
-    rep_pos = [i for i, s in enumerate(segs) if _hillrep_measure(s)[0]]
+    rec, rep_pos, segs = best
+    if len(rep_pos) != nreps:
+        return [], f'hillrep-mismatch:{len(rep_pos)}!={nreps}'
     reps = []
     for k, i in enumerate(rep_pos):
         sg = segs[i]
@@ -1157,8 +1211,8 @@ def _extract_day_rows(date, recs, logged, cf, hill, cutoff, label_ids,
         if hill[0] == 'cont':
             chosen, status = extract_hill_day(rich, *hill[1:])
             kind = 'loop'
-        else:                                  # ('rep', nreps)
-            chosen, status = extract_hill_rep_day(rich, hill[1])
+        else:                                  # ('rep', nreps, rep_time_min)
+            chosen, status = extract_hill_rep_day(rich, *hill[1:])
             kind = 'hillrep'
     else:
         chosen, status = extract_day(rich, cutoff(date), logged, cf)
@@ -1221,10 +1275,12 @@ def _day_plan(by_date, daily, watch_only, races_path):
                               'hill': ('cont', int(nreps), float(loop_m)),
                               'ids': all_ids}
         elif run_type == 'hill_rep':
-            _rt, nreps, _loop = _parse_hr(h)
+            rt, nreps, _loop = _parse_hr(h)
             if nreps:
                 plan[date] = {'logged': None, 'cf': False,
-                              'hill': ('rep', int(nreps)), 'ids': all_ids}
+                              'hill': ('rep', int(nreps),
+                                       float(rt) if rt else None),
+                              'ids': all_ids}
     return plan
 
 
@@ -1248,7 +1304,8 @@ def build_workout_measured(daily, details_dir, cs_path, *, watch_only=False,
                 (r['labelId'], int(r['sport_type'])))
 
         def load_recs(meta):
-            return [json.loads((details_dir / f'{l}.json').read_text())
+            return [strip_paused(json.loads(
+                        (details_dir / f'{l}.json').read_text()))
                     for l in meta['ids']]
     else:
         # Fallback: parse the cache to build the per-day index in memory.
@@ -1267,7 +1324,7 @@ def build_workout_measured(daily, details_dir, cs_path, *, watch_only=False,
             rec_by_id[p.stem] = rec
 
         def load_recs(meta):
-            return [rec_by_id[l] for l in meta['ids']]
+            return [strip_paused(rec_by_id[l]) for l in meta['ids']]
 
     plan = _day_plan(by_date, daily, watch_only, races_path)
 

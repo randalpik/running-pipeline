@@ -25,7 +25,8 @@ import pandas as pd
 
 from src.coros import mappings as M
 from src.coros import watch_cache as wc
-from src.coros.build_current_log import Activity, build_current_log
+from src.coros.build_current_log import (Activity, build_current_log,
+                                         strip_paused)
 from src.coros.long_runs import measure_day
 from src.profiles import get_profile
 from src.shared.paths import DATA_DIR
@@ -69,7 +70,9 @@ def _build_rows(targets):
         run_items = [(lid, d, Activity(d)) for (lid, d) in items
                      if (d.get("summary") or {}).get("sportType") in M.RUN_SPORTS]
         # measure_day wants (rec_dict, Activity), time-ordered within the day.
-        acts = sorted(((d, a) for (lid, d, a) in run_items),
+        # strip_paused re-virtualizes pauses into stream gaps so the stall
+        # detector keeps skipping paused dwell on post-V3.1708.0 recordings.
+        acts = sorted(((strip_paused(d), a) for (lid, d, a) in run_items),
                       key=lambda t: t[1].start_utc)
         w = wrows.get(day)
         if not acts or w is None:

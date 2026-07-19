@@ -103,6 +103,39 @@ def rich_detail(d: dict):
     return rec
 
 
+def strip_paused(rec: dict) -> dict:
+    """Return a copy of a rich record with ``freq`` samples that fall inside
+    ``pauses`` windows removed (both are centisecond timestamps).
+
+    Coros firmware V3.1708.0 (2026-06-23, "View Activities In Progress")
+    records the per-second stream straight through watch pauses; before it,
+    pauses appeared as time gaps in the stream. Stripping in-pause samples
+    re-virtualizes pauses into gaps, so gap-based consumers (segment
+    splitting, moving-time sums, stall detection) behave identically on
+    pre- and post-firmware recordings. Old-format records lose at most the
+    1-2 stray boundary samples that sat inside a pause window. Slim records
+    and records without pauses pass through unchanged; the input is never
+    mutated (cache files stay raw).
+    """
+    freq, pauses = rec.get("freq"), rec.get("pauses")
+    if not freq or not pauses:
+        return rec
+    windows = sorted((p[0], p[1]) for p in pauses
+                     if p[0] is not None and p[1] is not None)
+    out, i = [], 0
+    for f in freq:
+        t = f[0]
+        if t is not None:
+            while i < len(windows) and t > windows[i][1]:
+                i += 1
+            if i < len(windows) and windows[i][0] <= t <= windows[i][1]:
+                continue
+        out.append(f)
+    new = dict(rec)
+    new["freq"] = out
+    return new
+
+
 class Activity:
     """One Coros activity with scaling applied to real units."""
 

@@ -37,7 +37,7 @@ import pandas as pd
 from src.shared.env import load_env_file
 from src.shared.paths import DATA_DIR
 from src.coros import mappings as M
-from src.coros.build_current_log import Activity, rich_detail
+from src.coros.build_current_log import Activity, rich_detail, strip_paused
 from src.coros.client import CorosClient
 from src.coros import elevation as E
 from src.coros import dem_elevation as DEM
@@ -333,7 +333,7 @@ def main():
             rec = json.loads(path.read_text())
             watch_m += Activity(rec).distance_m / 1609.344
             if rec.get('rich') == 2:
-                recs.append(rec)
+                recs.append(strip_paused(rec))
             elif args.fetch:
                 if client is None:
                     client = CorosClient(os.environ['COROS_EMAIL'],
@@ -343,8 +343,8 @@ def main():
                     rich = rich_detail(client.activity_detail(
                         lid, (rec.get('summary') or {}).get('sportType')))
                     if rich is not None:
-                        path.write_text(json.dumps(rich))
-                        recs.append(rich)
+                        path.write_text(json.dumps(rich))   # cache stays raw
+                        recs.append(strip_paused(rich))
                         fetched += 1
                     time.sleep(args.sleep)
                 except Exception as e:
