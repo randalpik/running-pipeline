@@ -430,9 +430,10 @@ def main():
 
     # ---------- spikeline tooltip payload ----------
     # Per-day arrays for the trend section (CS median + 50/95% intervals)
-    # plus a sorted race-session list. Smooth mode shows the trend section
-    # + nearest race within ±60d; snap mode shows the trend section + the
-    # snapped race's details (no date, no "Nearest race" header).
+    # plus a sorted session list (races + frontier workouts). Smooth mode
+    # shows the trend section + nearest session within ±60d; snap mode shows
+    # the trend section + the snapped session's details (no date, no
+    # "Nearest event" header).
     epoch = pd.Timestamp('1970-01-01')
 
     def _round_pace(v):
@@ -512,7 +513,7 @@ function buildTooltip(day, isSnap, pointHtml) {
   html += '<div class="tt-row"><span>Projected Critical Speed</span><b>' + paceMSS(P.cs_med[idx]) + '/mi</b></div>';
   html += '</div>';
 
-  // Section 2: race details. Smooth = nearest within window.
+  // Section 2: session details (race or frontier workout). Smooth = nearest within window.
   var run = null;
   var s = P.sessions;
   if (isSnap) {
@@ -545,7 +546,7 @@ function buildTooltip(day, isSnap, pointHtml) {
       var lbl = dd2 === 0 ? 'same day'
               : (dd2 > 0 ? '+' + dd2 + ' day' + (dd2 === 1 ? '' : 's')
                          :  dd2 + ' day' + (dd2 === -1 ? '' : 's'));
-      html += '<div class="tt-section-title">Nearest race [' + lbl + ']</div>';
+      html += '<div class="tt-section-title">Nearest event [' + lbl + ']</div>';
     }
     html += (isSnap && pointHtml ? pointHtml : run.html);
     html += '</div>';
