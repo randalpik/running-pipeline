@@ -28,14 +28,37 @@ _MOBILE_HEAD_JS = (_SCAFFOLD_DIR / 'mobile_head.js').read_text()
 _MOBILE_JS = (_SCAFFOLD_DIR / 'mobile.js').read_text()
 _TOUCH_SCROLL_JS = (_SCAFFOLD_DIR / 'touch_scroll.js').read_text()
 
+# The viewport meta belongs to the MAIN frame only, so it is written from JS
+# and only when this document is top-level.
+#
+# A subframe that honors `width=device-width` lays itself out at the DEVICE
+# width rather than at its own frame width. In the shell the frame is the
+# rotated stage (~892 CSS px on a 412px-wide phone), so honoring the meta
+# collapses the whole document — title bar, fixed sidebars and plot alike —
+# into the left ~412px of the frame. It also feeds back: the collapsed
+# document reports the device's viewport HEIGHT, which is what any
+# height-based media query then sees.
+#
+# Chromium is documented as ignoring the meta in subframes, but the
+# production symptom (multi-plot tabs rendering at half width, and only the
+# ones that become scrollable) matches this exactly, and a frame has no use
+# for the meta either way — so don't emit one.
+_VIEWPORT_META_JS = """
+<script>
+(function () {
+  if (window.parent !== window) return;   // framed: the shell owns the viewport
+  var m = document.createElement('meta');
+  m.name = 'viewport';
+  m.content = 'width=device-width, initial-scale=1';
+  document.head.appendChild(m);
+})();
+</script>
+"""
+
 # Shared <head> boilerplate for every page the pipeline emits — render_plot()
-# and dashboard.py's hand-rolled document import this. Single source so the
-# viewport meta can't be added to one and forgotten in the other. The viewport
-# meta is what makes phones render at device width (media queries and touch
-# targets depend on it); the shell provides the forced-landscape rotation that
-# makes device width workable, so this must never reach production without it.
+# and dashboard.py's hand-rolled document import this.
 _HEAD_META = (
-    '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+    f'{_VIEWPORT_META_JS}'
     '<link rel="icon" href="data:,">\n'
     '<meta name="darkreader-lock">\n'
 )

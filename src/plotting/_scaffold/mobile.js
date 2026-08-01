@@ -141,16 +141,40 @@
   var busy = false;
   var desktopSnapshot = null;   // authored values of every patched path
 
+  // Geometry breadcrumb for the on-device diagnostic (shell.js ?rpdiag=1).
+  // Cheap and always on: the layout bugs we have chased here only appear on
+  // real hardware, and without a trace there is nothing to look at.
+  function trace(evt) {
+    var gd = plot();
+    var fl = gd && gd._fullLayout;
+    var cs = gd && getComputedStyle(gd);
+    var t = (window.__rpTrace = window.__rpTrace || []);
+    t.push(evt +
+      ' win=' + window.innerWidth + 'x' + window.innerHeight +
+      ' icb=' + document.documentElement.clientWidth +
+      ' body=' + document.body.clientWidth +
+      ' gd=' + (gd ? gd.clientWidth : '-') +
+      ' css=' + (cs ? parseInt(cs.width, 10) : '-') +
+      ' fig=' + (fl ? Math.round(fl.width) + 'x' + Math.round(fl.height) : '-') +
+      ' mob=' + (isMobile() ? 1 : 0) +
+      ' scr=' + (document.body.classList.contains('rp-scroll') ? 1 : 0));
+    if (t.length > 30) t.shift();
+  }
+
   function render(layout) {
     var gd = plot();
     if (!gd || !window.Plotly) return Promise.resolve();
     var cfg = window.__RP_PLOT_CONFIG ||
               { responsive: true, displayModeBar: false };
+    trace('render:pre');
     return Plotly.newPlot(gd, gd.data, layout, cfg).then(function () {
+      trace('newPlot');
       syncScrollHeight();
+      trace('scrollSync');
       document.documentElement.classList.remove('rp-mobile-pending');
       window.dispatchEvent(new CustomEvent('rp-layout-mode',
                                            { detail: { mobile: applied } }));
+      setTimeout(function () { trace('settled'); }, 400);
     });
   }
 

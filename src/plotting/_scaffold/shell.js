@@ -281,4 +281,66 @@
   }
 
   activate(pickInitial(), { skipUrl: false });
+
+  // ---- On-device geometry readout: append ?rpdiag=1 to the site URL ----
+  // Several layout failures here reproduce only on real hardware, where
+  // there is no devtools. This prints both sides of the iframe boundary so
+  // a screenshot is enough to diagnose. Inert without the flag.
+  if (/[?&]rpdiag=1/.test(window.location.search)) {
+    var stage = document.getElementById('rp-stage');
+    var box = document.createElement('div');
+    box.style.cssText =
+      'position:absolute;left:0;top:0;z-index:9999;max-width:100%;' +
+      'background:rgba(0,0,0,0.88);color:#0f0;font:10px/1.35 monospace;' +
+      'padding:6px 8px;white-space:pre;pointer-events:none;' +
+      'border:1px solid #0a0;overflow:hidden';
+    (stage || document.body).appendChild(box);
+    setInterval(function () {
+      var vv = window.visualViewport;
+      var st = stage ? stage.getBoundingClientRect() : null;
+      var fr = document.querySelector('#frame-wrap iframe.active');
+      var frr = fr ? fr.getBoundingClientRect() : null;
+      var lines = [
+        'SHELL win=' + window.innerWidth + 'x' + window.innerHeight +
+          ' dpr=' + window.devicePixelRatio,
+        '  vv=' + (vv ? Math.round(vv.width) + 'x' + Math.round(vv.height) +
+          ' scale=' + vv.scale.toFixed(2) : 'n/a'),
+        '  stage box=' + (stage ? stage.offsetWidth + 'x' + stage.offsetHeight : '-') +
+          ' rect=' + (st ? Math.round(st.width) + 'x' + Math.round(st.height) : '-'),
+        '  iframe box=' + (fr ? fr.offsetWidth + 'x' + fr.offsetHeight : '-') +
+          ' rect=' + (frr ? Math.round(frr.width) + 'x' + Math.round(frr.height) : '-'),
+        '  mobileMQ=' + (MOBILE_MQ.matches ? 1 : 0) +
+          ' portrait=' + (PORTRAIT_MQ.matches ? 1 : 0),
+      ];
+      try {
+        var w = fr && fr.contentWindow, d = fr && fr.contentDocument;
+        if (w && d && d.documentElement) {
+          var ivv = w.visualViewport;
+          var gd = d.querySelector('.plotly-graph-div');
+          var tb = d.querySelector('.rp-title-bar');
+          lines.push('FRAME win=' + w.innerWidth + 'x' + w.innerHeight +
+            ' icb=' + d.documentElement.clientWidth +
+            ' body=' + d.body.clientWidth);
+          lines.push('  vv=' + (ivv ? Math.round(ivv.width) + ' scale=' +
+            ivv.scale.toFixed(2) : 'n/a') +
+            ' titleBar=' + (tb ? Math.round(tb.getBoundingClientRect().width) : '-'));
+          lines.push('  gd=' + (gd ? gd.clientWidth + 'x' + gd.clientHeight : '-') +
+            ' fig=' + (gd && gd._fullLayout
+              ? Math.round(gd._fullLayout.width) + 'x' +
+                Math.round(gd._fullLayout.height) : '-'));
+          lines.push('  rpMobile=' +
+            (d.documentElement.classList.contains('rp-mobile') ? 1 : 0) +
+            ' scroll=' + (d.body.classList.contains('rp-scroll') ? 1 : 0) +
+            ' latched=' + (w.__rpLayoutLatched ? 1 : 0));
+          var tr = w.__rpTrace || [];
+          lines = lines.concat(tr.slice(-7).map(function (l) { return ' ' + l; }));
+        } else {
+          lines.push('FRAME <not readable>');
+        }
+      } catch (e) {
+        lines.push('FRAME <cross-origin: ' + e.name + '>');
+      }
+      box.textContent = lines.join('\n');
+    }, 500);
+  }
 })();
