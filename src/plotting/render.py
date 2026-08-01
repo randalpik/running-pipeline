@@ -26,6 +26,7 @@ _TAP_HOVER_JS = (_SCAFFOLD_DIR / 'tap_hover.js').read_text()
 _AXIS_PAD_JS = (_SCAFFOLD_DIR / 'axis_pad.js').read_text()
 _MOBILE_HEAD_JS = (_SCAFFOLD_DIR / 'mobile_head.js').read_text()
 _MOBILE_JS = (_SCAFFOLD_DIR / 'mobile.js').read_text()
+_TOUCH_SCROLL_JS = (_SCAFFOLD_DIR / 'touch_scroll.js').read_text()
 
 # Shared <head> boilerplate for every page the pipeline emits — render_plot()
 # and dashboard.py's hand-rolled document import this. Single source so the
@@ -314,7 +315,10 @@ def render_plot(
         )
     # Last: the mobile layout engine re-renders the figure, so everything
     # that binds to the plot must already be listening for 'rp-layout-mode'.
-    body_pre_close_parts.append(f'<script>\n{_MOBILE_JS}\n</script>')
+    # touch_scroll.js precedes it — mobile.js attaches the page's pan
+    # handler through it at startup.
+    body_pre_close_parts.append(
+        f'<script>\n{_TOUCH_SCROLL_JS}\n{_MOBILE_JS}\n</script>')
 
     body_pre_close = '\n'.join(body_pre_close_parts)
 

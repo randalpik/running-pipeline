@@ -205,6 +205,29 @@
   onMQ(MOBILE_MQ, onModeChange);
   onMQ(PORTRAIT_MQ, onModeChange);
 
+  // Drawer scrolling. The tab list is taller than the rotated stage, and
+  // Chromium does not route touch pans into a scroll container under a
+  // rotated ancestor — verified: this same drawer scrolls natively when the
+  // stage is unrotated and is completely dead once the rotation is on. So
+  // when (and only when) we're rotated, drive the scroll ourselves.
+  //
+  // Gesture mapping: the stage is rotate(90deg) translateY(-100%) about
+  // 0 0, so stage-local (u, v) paints at screen (W - v, u). The user's
+  // "swipe up" is local -v, i.e. a screen +x drag, and scrolling down the
+  // list means scrollTop += (screen dx).
+  function rotated() { return MOBILE_MQ.matches && PORTRAIT_MQ.matches; }
+  if (window.rpTouchScroll && bar) {
+    window.rpTouchScroll.attach(bar, {
+      decide: function (dx, dy) {
+        if (!rotated()) return false;   // unrotated scrolls natively
+        if (bar.scrollHeight <= bar.clientHeight) return false;
+        return Math.abs(dx) > Math.abs(dy);   // local vertical
+      },
+      scrollerFor: function () { return bar; },
+      deltaFor: function (stepX) { return stepX; },
+    });
+  }
+
   function cycle(direction) {
     var visible = slugs.filter(visBySlug);
     var idx = visible.indexOf(activeSlug);

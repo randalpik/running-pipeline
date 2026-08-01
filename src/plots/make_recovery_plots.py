@@ -681,8 +681,9 @@ function buildTooltip(day, isSnap, pointHtml) {
             '.hovertext { display: none !important; }\n'
             # Mobile: the panel's desktop slot (inline top:48) collides with
             # the subtitle line, which runs the full width on a phone.
-            '@media (max-height: 520px) {'
-            ' #norm-filter { top: 64px !important; } }'
+            # html.rp-mobile is the single mobile signal (see
+            # _scaffold/mobile.js) — never a live viewport query.
+            'html.rp-mobile #norm-filter { top: 64px !important; }'
         ),
     )
     print(f'\nWrote {out_path}')

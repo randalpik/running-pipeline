@@ -43,7 +43,9 @@ INDEX_PATH = OUTPUT_DIR / "index.html"
 PORT       = 5500
 
 sys.path.insert(0, str(REPO_ROOT))
-from src.plots.build_shell import write_index as _build_shell_write_index
+import importlib
+
+from src.plots import build_shell as _build_shell
 
 # livereload globs are evaluated relative to the process cwd; chdir so the
 # watch patterns ("src/plots/*.py", "data/*.csv") resolve correctly regardless
@@ -65,14 +67,22 @@ def write_index():
     under output/profiles/<id>/. We list those (plus the default) in the
     profile switcher so the dropdown shows up and navigates in dev exactly as
     in prod — url_base (/profiles/<id>/) matches the on-disk layout.
+
+    build_shell is RELOADED on every call. It's imported once at startup, so
+    without this an edit to build_shell.py itself keeps running the version
+    from whenever the dev server booted — and since the scaffold files are
+    read lazily inside it, the result is the worst kind of stale: a freshly
+    regenerated index.html built by old code, silently overwriting whatever
+    a real build just wrote.
     """
+    importlib.reload(_build_shell)
     from src.profiles import PROFILES, default_profile
     dflt = default_profile()
     switcher = [(dflt.id, dflt.label, dflt.url_base)]
     for p in PROFILES:
         if not p.default and (p.output_dir / "index.html").exists():
             switcher.append((p.id, p.label, p.url_base))
-    _build_shell_write_index(OUTPUT_DIR, include_admin=False,
+    _build_shell.write_index(OUTPUT_DIR, include_admin=False,
                              profiles=switcher, current_id=dflt.id)
 
 

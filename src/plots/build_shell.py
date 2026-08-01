@@ -66,7 +66,10 @@ def _shell_css() -> str:
 
 
 def _shell_js() -> str:
-    return (_SCAFFOLD_DIR / 'shell.js').read_text()
+    # touch_scroll.js first — shell.js attaches the drawer's pan handler to it
+    # at startup (Chromium won't scroll anything inside the rotated stage).
+    return ((_SCAFFOLD_DIR / 'touch_scroll.js').read_text() + '\n'
+            + (_SCAFFOLD_DIR / 'shell.js').read_text())
 
 
 def _profile_switch_html(profiles, current_id) -> str:

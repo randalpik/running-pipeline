@@ -360,12 +360,11 @@ html.rp-mobile-pending .plotly-graph-div { visibility: hidden; }
 }
 .rp-search input:focus { border-color: #93f; }
 .rp-search input::placeholder { color: #888; }
-/* Mobile-short viewport (keep in sync with _scaffold/mobile.js): flush
-   with the top edge, clear of the title bar's subtitle line, which runs
-   the full width on a phone. */
-@media (max-height: 520px) {
-  .rp-search { top: 0; }
-}
+/* Mobile: flush with the top edge, clear of the title bar's subtitle line,
+   which runs the full width on a phone. Keyed on html.rp-mobile — the one
+   mobile signal (set by the shell, or latched at load standalone; see
+   _scaffold/mobile.js for why it must never be a live viewport query). */
+html.rp-mobile .rp-search { top: 0; }
 
 /* ----- Buttons -----
    .rp-btn-row: flex container.

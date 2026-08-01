@@ -33,18 +33,21 @@
   var cb = document.getElementById('tq-norm-cb');
   cb.addEventListener('change', function () { applyState(cb.checked); });
 
-  // Short (mobile) viewports: the pill's fixed slot overlaps the title bar.
-  // Fold it into the legend-anchored #tq-routes box while the media query
-  // matches — moving the node keeps the checkbox listener — and restore it to
-  // its original DOM slot on crossing back. Keep the query in sync with the
-  // mobile space breakpoint in _scaffold/base.css.
-  var SPACE_MQ = window.matchMedia('(max-height: 520px)');
+  // Mobile: the pill's fixed slot overlaps the title bar, so fold it into
+  // the legend-anchored #tq-routes box (moving the node keeps the checkbox
+  // listener) and restore it on the way back. Reads the one mobile signal —
+  // html.rp-mobile via rpMobile — never a live viewport query, which would
+  // reintroduce the relayout loop documented in _scaffold/mobile.js.
+  function isMobile() {
+    return window.rpMobile ? window.rpMobile.isMobile()
+      : document.documentElement.classList.contains('rp-mobile');
+  }
   var toggle = document.getElementById('tq-norm-toggle');
   var home = toggle && { parent: toggle.parentNode, next: toggle.nextSibling };
   function placeToggle() {
     if (!toggle) return;
     var routes = document.getElementById('tq-routes');
-    if (SPACE_MQ.matches && routes) {
+    if (isMobile() && routes) {
       toggle.classList.add('rp-inline');
       routes.appendChild(toggle);
     } else if (toggle.parentNode !== home.parent) {
@@ -52,7 +55,12 @@
       home.parent.insertBefore(toggle, home.next);
     }
   }
-  if (SPACE_MQ.addEventListener) SPACE_MQ.addEventListener('change', placeToggle);
-  else if (SPACE_MQ.addListener) SPACE_MQ.addListener(placeToggle);
+  // This file is injected before _scaffold/mobile.js, so rpMobile may not
+  // exist yet — wait briefly for it rather than missing mode changes.
+  var hookTries = 0;
+  (function hookMode() {
+    if (window.rpMobile) { window.rpMobile.onChange(placeToggle); return; }
+    if (++hookTries < 40) setTimeout(hookMode, 50);
+  })();
   placeToggle();
 })();

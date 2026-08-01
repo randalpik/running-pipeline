@@ -145,6 +145,47 @@ test.describe('mobile portrait shell', () => {
     expect(r.bottom).toBe(r.h);
   });
 
+  // The production bug: the tab list is taller than the rotated stage and
+  // Chromium does not route touch pans into a scroll container under a
+  // rotated ancestor (this same drawer scrolls natively when unrotated), so
+  // shell.js drives it through _scaffold/touch_scroll.js. Rotation maps the
+  // user's "swipe up" to a screen +x drag.
+  test('drawer scrolls by touch while rotated', async ({ page }) => {
+    await loadShell(page);
+    await page.evaluate(() => document.getElementById('rp-menu-btn')!.click());
+    await page.waitForTimeout(300);
+    const overflows = await page.evaluate(() => {
+      const b = document.getElementById('tabbar')!;
+      return b.scrollHeight > b.clientHeight;
+    });
+    test.skip(!overflows, 'tab list fits — nothing to scroll');
+
+    const cdp = await page.context().newCDPSession(page);
+    const swipe = async (x0: number, x1: number) => {
+      const n = 8;
+      const pt = (i: number) => ([{ x: x0 + (x1 - x0) * (i / n), y: 100, id: 1 }]);
+      await cdp.send('Input.dispatchTouchEvent' as any,
+        { type: 'touchStart', touchPoints: pt(0) } as any);
+      for (let i = 1; i <= n; i++) {
+        await cdp.send('Input.dispatchTouchEvent' as any,
+          { type: 'touchMove', touchPoints: pt(i) } as any);
+        await page.waitForTimeout(20);
+      }
+      await cdp.send('Input.dispatchTouchEvent' as any,
+        { type: 'touchEnd', touchPoints: [] } as any);
+      await page.waitForTimeout(700);
+    };
+    const top = () => page.evaluate(() =>
+      document.getElementById('tabbar')!.scrollTop);
+
+    await swipe(120, 360);          // user swipes up -> list scrolls down
+    const down = await top();
+    expect(down).toBeGreaterThan(80);
+    await swipe(360, 120);          // and back
+    expect(await top()).toBeLessThan(down);
+    await cdp.detach();
+  });
+
   test('drawer: hamburger opens, tab tap switches + closes, scrim closes',
       async ({ page }) => {
     await loadShell(page);

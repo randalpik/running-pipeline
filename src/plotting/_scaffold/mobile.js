@@ -25,12 +25,33 @@
 // layout.height, the document's scroll height from the CSS var; equal values
 // make them agree instead of fighting base.css's !important pin).
 //
-// Breakpoint MUST stay in sync with _scaffold/mobile_head.js and the
-// (max-height: 520px) blocks in _scaffold/base.css.
+// WHICH SIGNAL DECIDES "mobile" — the load-bearing detail here.
+//
+// It must be something this page's own layout cannot change, or the engine
+// feeds back on itself. Deriving it from the viewport (`(max-height:520px)`)
+// did exactly that in production: the shell sizes its rotated stage in
+// dvh/dvw units, so an Android URL-bar animation changes this iframe's
+// height -> flips the query -> swaps a ~720px layout -> changes whether the
+// page is scrollable -> Chromium shows/hides the browser controls to match
+// -> changes dvh again. Reproduced by jogging the viewport height: 15
+// layout flips, 440px <-> 1162px, no user input.
+//
+// So the single source of truth is `html.rp-mobile`, and EVERY mobile rule
+// in the CSS keys off the same class. Inside the shell it is pushed by the
+// rp-shell-mode message; the shell derives it from `(pointer: coarse) and
+// (max-width: 940px)` — device pointer type and screen width, which no plot
+// layout can perturb. Standalone pages latch the viewport query once at load
+// in _scaffold/mobile_head.js. A flip-rate guard below is the backstop.
 (function () {
   var ML = window.__PLOT_MOBILE_LAYOUT || null;
-  var MOBILE_MQ = window.matchMedia('(max-height: 520px)');
+  var HEIGHT_MQ = window.matchMedia('(max-height: 520px)');
+  var FRAMED = document.documentElement.classList.contains('rp-framed');
   var DEBOUNCE_MS = 150;
+  // Anti-flap backstop: if the mode ever changes more than this within the
+  // window, stop reacting and keep whatever is on screen. A wrong-but-stable
+  // layout beats a strobing one.
+  var MAX_FLIPS = 6, FLIP_WINDOW_MS = 4000;
+  var flips = 0, flipWindowStart = 0, latched = false;
 
   function plot() { return document.querySelector('.plotly-graph-div'); }
 
@@ -75,7 +96,10 @@
     return ML.patch || null;
   }
 
-  function isMobile() { return MOBILE_MQ.matches; }
+  function isMobile() {
+    if (latched) return applied;   // frozen: report what's on screen
+    return document.documentElement.classList.contains('rp-mobile');
+  }
 
   // Apply the active patch onto a caller-owned layout object (Misc Trends
   // patches its per-page deep copy before its own newPlot).
@@ -165,20 +189,57 @@
     return render(lay);
   }
 
+  // Returns false once the mode has changed implausibly often — something
+  // upstream is oscillating, so freeze rather than strobe the page.
+  function flipAllowed() {
+    var now = Date.now();
+    if (now - flipWindowStart > FLIP_WINDOW_MS) { flipWindowStart = now; flips = 0; }
+    if (++flips <= MAX_FLIPS) return true;
+    if (!latched) {
+      latched = true;
+      window.__rpLayoutLatched = true;
+      if (window.console && console.warn) {
+        console.warn('[rp-mobile] layout mode flipped ' + flips + 'x in ' +
+                     FLIP_WINDOW_MS + 'ms — freezing to stop a relayout loop');
+      }
+    }
+    return false;
+  }
+
   function sync() {
-    if (busy) return;
+    if (busy || latched) return;
     if (isMobile() === applied) return;
+    if (!flipAllowed()) return;
     busy = true;
     (isMobile() ? apply() : restore()).then(
-      function () { busy = false; sync(); },   // re-check: MQ may have flipped mid-render
-      function () { busy = false; }
+      function () { busy = false; sync(); },   // re-check: mode may have moved
+      function () { busy = false; sync(); }
     );
   }
 
   var debounceTimer = null;
-  function onMQChange() {
+  function onModeChange() {
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(sync, DEBOUNCE_MS);
+  }
+
+  // Framed: the shell re-broadcasts rp-shell-mode whenever its device-level
+  // breakpoint or the orientation changes; the receiver injected by
+  // render.py has already updated html.rp-mobile by the time this runs (it
+  // registers its listener first). Standalone: re-latch only on a real
+  // orientation change — never on the incidental viewport resizes that
+  // URL-bar animations produce.
+  if (FRAMED) {
+    window.addEventListener('message', function (e) {
+      if (e.data && e.data.type === 'rp-shell-mode') onModeChange();
+    });
+  } else {
+    window.addEventListener('orientationchange', function () {
+      setTimeout(function () {   // let the viewport settle before re-reading
+        document.documentElement.classList.toggle('rp-mobile', HEIGHT_MQ.matches);
+        onModeChange();
+      }, 250);
+    });
   }
 
   var bootTries = 0;
@@ -193,18 +254,57 @@
     else document.documentElement.classList.remove('rp-mobile-pending');
   }
 
+  // Touch scrolling for the tall mobile layouts. Neither the browser nor
+  // Plotly will scroll these pages on their own (both measured — see
+  // _scaffold/touch_scroll.js): Plotly claims drags over the plot area for
+  // its zoom box, and Chromium won't pan a scroller under the shell's
+  // rotated stage at all.
+  //
+  // Split by WHERE the drag starts, not by direction: a drag beginning on
+  // Plotly's draglayer (a panel interior) is left entirely alone, so
+  // drag-to-zoom keeps both axes there. Everywhere else on the page — the
+  // title bar, the axis-label margins, the legend rail, the gutters between
+  // panels — a vertical drag scrolls. That keeps Plotly's own event
+  // bookkeeping intact (stealing a gesture it already started leaves
+  // gd._dragging stuck) and still leaves a generous scroll surface.
+  function scrollable() {
+    return document.documentElement.scrollHeight - window.innerHeight > 4;
+  }
+  function onPlotlyDrag(el) {
+    return !!(el && el.closest && el.closest('.draglayer'));
+  }
+  function attachTouchScroll() {
+    if (!window.rpTouchScroll) return;
+    window.rpTouchScroll.attach(document, {
+      capture: true,   // beat the page's other touch handlers to the event
+      decide: function (dx, dy, target) {
+        if (Math.abs(dy) <= Math.abs(dx)) return false;
+        return scrollable() && !onPlotlyDrag(target);
+      },
+      scrollerFor: function () { return document.scrollingElement; },
+      deltaFor: function (stepX, stepY) { return -stepY; },
+    });
+  }
+
   window.rpMobile = {
     isMobile: isMobile,
     patchLayout: patchLayout,
     syncScrollHeight: syncScrollHeight,
     onChange: function (fn) {
-      if (MOBILE_MQ.addEventListener) MOBILE_MQ.addEventListener('change', fn);
-      else if (MOBILE_MQ.addListener) MOBILE_MQ.addListener(fn);
+      if (FRAMED) {
+        window.addEventListener('message', function (e) {
+          if (e.data && e.data.type === 'rp-shell-mode') fn();
+        });
+      } else if (HEIGHT_MQ.addEventListener) {
+        HEIGHT_MQ.addEventListener('change', fn);
+      } else if (HEIGHT_MQ.addListener) {
+        HEIGHT_MQ.addListener(fn);
+      }
     },
   };
 
   if (ML) {
-    window.rpMobile.onChange(onMQChange);
+    attachTouchScroll();
     boot();
   }
 })();

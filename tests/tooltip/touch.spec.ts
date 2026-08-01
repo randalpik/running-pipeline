@@ -34,6 +34,26 @@ async function ready(page: Page, file: string) {
   await page.waitForTimeout(600);   // mobile.js boot + newPlot settle
 }
 
+// A real touch drag. page.touchscreen has no drag primitive, and this is the
+// only way to exercise the touch_scroll / Plotly split the way a finger does.
+async function drag(page: Page, x0: number, y0: number, x1: number, y1: number) {
+  const cdp = await page.context().newCDPSession(page);
+  const n = 10;
+  const pt = (i: number) => ([{
+    x: x0 + (x1 - x0) * (i / n), y: y0 + (y1 - y0) * (i / n), id: 1 }]);
+  await cdp.send('Input.dispatchTouchEvent' as any,
+    { type: 'touchStart', touchPoints: pt(0) } as any);
+  for (let i = 1; i <= n; i++) {
+    await cdp.send('Input.dispatchTouchEvent' as any,
+      { type: 'touchMove', touchPoints: pt(i) } as any);
+    await page.waitForTimeout(20);
+  }
+  await cdp.send('Input.dispatchTouchEvent' as any,
+    { type: 'touchEnd', touchPoints: [] } as any);
+  await page.waitForTimeout(700);   // let any fling settle
+  await cdp.detach();
+}
+
 function ttState(page: Page) {
   return page.evaluate(() => {
     const tt = document.querySelector('.rp-tooltip') as HTMLElement;
@@ -225,6 +245,57 @@ test.describe('race distances mobile reshape', () => {
     await page.evaluate(() => window.scrollTo(0, 300));
     await page.waitForTimeout(250);
     expect((await ttState(page)).visible).toBe(false);
+  });
+
+  // The production bug: these pages were unreachable below the fold. Neither
+  // the browser nor Plotly scrolls them (Plotly claims plot-area drags for
+  // its zoom box; Chromium won't pan anything under the shell's rotated
+  // stage), so _scaffold/touch_scroll.js does it — for drags that start off
+  // Plotly's draglayer, leaving panel interiors to Plotly.
+  test('margin drag scrolls the page; panel drag stays Plotly zoom',
+      async ({ page }) => {
+    await ready(page, FILE);
+    const geom = await page.evaluate(() => {
+      const gd = document.querySelector('.plotly-graph-div') as any;
+      const r = gd.getBoundingClientRect();
+      const xa = gd._fullLayout.xaxis, ya = gd._fullLayout.yaxis;
+      return {
+        marginX: r.left + gd._fullLayout.margin.l / 2,   // left of the y axis
+        panelX: r.left + xa._offset + xa._length * 0.5,
+        yTop: r.top + ya._offset + ya._length * 0.25,
+        yBot: r.top + ya._offset + ya._length * 0.75,
+        yr: gd._fullLayout.yaxis.range.join('|'),
+      };
+    });
+
+    await drag(page, geom.marginX, geom.yBot, geom.marginX, geom.yTop);
+    const afterMargin = await page.evaluate(() => ({
+      y: Math.round(window.scrollY),
+      yr: (document.querySelector('.plotly-graph-div') as any)
+        ._fullLayout.yaxis.range.join('|'),
+      dragging: !!(document.querySelector('.plotly-graph-div') as any)._dragging,
+    }));
+    expect(afterMargin.y).toBeGreaterThan(100);      // scrolled
+    expect(afterMargin.yr).toBe(geom.yr);            // did not zoom
+    expect(afterMargin.dragging).toBe(false);        // plotly not wedged
+
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(250);
+    const before = await page.evaluate(() => ({
+      y: Math.round(window.scrollY),
+      yr: (document.querySelector('.plotly-graph-div') as any)
+        ._fullLayout.yaxis.range.join('|'),
+    }));
+    await drag(page, geom.panelX, geom.yBot, geom.panelX, geom.yTop);
+    const afterPanel = await page.evaluate(() => ({
+      y: Math.round(window.scrollY),
+      yr: (document.querySelector('.plotly-graph-div') as any)
+        ._fullLayout.yaxis.range.join('|'),
+      dragging: !!(document.querySelector('.plotly-graph-div') as any)._dragging,
+    }));
+    expect(afterPanel.yr).not.toBe(before.yr);       // zoomed
+    expect(afterPanel.y).toBe(before.y);             // did not scroll
+    expect(afterPanel.dragging).toBe(false);
   });
 });
 
