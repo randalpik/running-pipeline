@@ -114,7 +114,9 @@ from plotly.subplots import make_subplots
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import clip_to_daily_floor, axis_pad_entry
-from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
+from src.plotting import (render_plot, CursorTooltip, MobileLayout,
+                            apply_default_layout,
+                            reshape_patch, assert_reshape_compatible,
                             sec_to_mss, FG, route_label, marker_half_px,
                             CS_LINE, CS_LINE_WIDTH, TREND_LINE, TREND_WIDTH,
                             GRID, gaussian_rolling_trend,
@@ -492,6 +494,22 @@ def main():
     )
     fig.update_annotations(font=dict(color=FG, size=14))
 
+    # Mobile reshape: stack the two panels (2x1) on a scrollable page instead
+    # of squeezing them side by side. Traces untouched — same two axis pairs
+    # in the same fill order. Margins, legend, colorbar and the #norm-filter
+    # rail all stay at their desktop spots on the right — panels are narrower
+    # for it, by design, so mobile reads like desktop. The scratch fig omits
+    # shared_xaxes on purpose: a purely geometric patch, and the top panel's
+    # own tick labels read as a useful separator between panels.
+    M_ROW_H, M_ROW_GAP = 300, 64
+    mob_h = 2 * M_ROW_H + M_ROW_GAP + 40 + 28  # t/b margins as desktop
+    fig_m = make_subplots(rows=2, cols=1,
+                          subplot_titles=('Absolute pace',
+                                          'Residual vs 5K fitness'),
+                          vertical_spacing=M_ROW_GAP / (mob_h - 40 - 28))
+    assert_reshape_compatible(fig, fig_m)
+    mobile_rec = MobileLayout(patch=reshape_patch(fig_m, height_px=mob_h))
+
     # ---------- spikeline tooltip payload ----------
     # Per-day arrays the JS uses for the trend section, plus a sorted list
     # of sessions for nearest-run lookup. Both smooth and snap modes read
@@ -654,15 +672,17 @@ function buildTooltip(day, isSnap, pointHtml) {
         ),
         overlay_js_files=[_RECOVERY_JS],
         axis_pad=axis_pad_rec,
+        mobile_layout=mobile_rec,
         extra_head_css=(
             # Suppress Plotly's built-in hover label — recovery has
             # hoverlabel-configured traces that would otherwise double
             # up with the smart spikeline tooltip. NOT global in
             # base.css since world_map relies on native hover.
             '.hovertext { display: none !important; }\n'
-            '@media (max-width:760px){'
-            '#norm-filter{position:static!important;'
-            'margin:8px;width:auto!important;}}'
+            # Mobile: the panel's desktop slot (inline top:48) collides with
+            # the subtitle line, which runs the full width on a phone.
+            '@media (max-height: 520px) {'
+            ' #norm-filter { top: 64px !important; } }'
         ),
     )
     print(f'\nWrote {out_path}')

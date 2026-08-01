@@ -1,6 +1,7 @@
 """Shared utilities for plot scripts in src/plots/."""
-from .render import render_plot, CursorTooltip
-from .layout import apply_default_layout, right_margin_for_anchored_box
+from .render import render_plot, CursorTooltip, MobileLayout
+from .layout import (apply_default_layout, right_margin_for_anchored_box,
+                     reshape_patch, assert_reshape_compatible)
 from . import tokens
 from .tokens import (
     BG, FG, FG_SOFT, FG_DIM, FG_MUTE, GRID, GRID_FAINT, PANEL_BG, TOOLTIP_BG, BORDER,
@@ -25,8 +26,8 @@ from .markers import (
 from .smoothing import GAP_BREAK_DAYS, adaptive_gauss_smoother, gaussian_rolling_trend
 
 __all__ = [
-    'render_plot', 'CursorTooltip', 'apply_default_layout',
-    'right_margin_for_anchored_box',
+    'render_plot', 'CursorTooltip', 'MobileLayout', 'apply_default_layout',
+    'right_margin_for_anchored_box', 'reshape_patch', 'assert_reshape_compatible',
     'tokens', 'rgba',
     'BG', 'FG', 'FG_SOFT', 'FG_DIM', 'FG_MUTE', 'GRID', 'GRID_FAINT', 'PANEL_BG',
     'TOOLTIP_BG', 'BORDER',

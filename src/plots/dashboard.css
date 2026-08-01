@@ -12,6 +12,9 @@
   display: flex;
   flex-direction: column;
 }
+/* Mobile (shell-pushed class): table.dash cells are nowrap, so let the
+   whole body pan horizontally in the short landscape viewport. */
+html.rp-mobile .dash-body { overflow-x: auto; }
 .dash-main {
   flex: 0 0 auto;
   display: flex;

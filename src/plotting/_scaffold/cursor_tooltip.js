@@ -20,6 +20,9 @@
  */
 (function () {
   var SNAP_PX        = window.__TT_SNAP_PX || 30;
+  var TOUCH_SNAP_PX  = window.__TT_TOUCH_SNAP_PX || 44;  // fat-finger radius
+  var TOUCH_SLOP_PX  = 24;   // taps this close to a subplot still resolve
+  var TOUCH_GAP_PX   = 24;   // tooltip clearance above the touch point
   var ALWAYS_SNAP    = window.__TT_ALWAYS_SNAP === true;
   var SHOW_SPIKE     = window.__TT_SPIKE !== false;
   var SPIKE_FULL     = window.__TT_SPIKE_FULL_PLOT === true;
@@ -53,7 +56,9 @@
 
   var rafScheduled = false;
   var lastContent  = '';
-  var pending = { show: false, x: 0, y: 0, html: '', spikeX: 0 };
+  // `place`: 'cursor' offsets the box beside the pointer (mouse); 'touch'
+  // centers it above the touch point so a finger never covers it.
+  var pending = { show: false, x: 0, y: 0, html: '', spikeX: 0, place: 'cursor' };
   var ttW = 0, ttH = 0;
 
   // Max width of a list of client rects (line boxes).
@@ -181,10 +186,20 @@
       tt.style.height = ttH + 'px';
       lastContent = pending.html;
     }
-    var x = pending.x + 15;
-    var y = pending.y + 10;
-    if (x + ttW > window.innerWidth)  x = pending.x - ttW - 15;
-    if (y + ttH > window.innerHeight) y = window.innerHeight - ttH - 10;
+    var x, y;
+    if (pending.place === 'touch') {
+      // Above the touch point, centered; flip below when clipped at the top.
+      x = pending.x - ttW / 2;
+      y = pending.y - ttH - TOUCH_GAP_PX;
+      if (y < 0) y = pending.y + TOUCH_GAP_PX;
+      if (x + ttW > window.innerWidth) x = window.innerWidth - ttW - 4;
+      if (y + ttH > window.innerHeight) y = window.innerHeight - ttH - 4;
+    } else {
+      x = pending.x + 15;
+      y = pending.y + 10;
+      if (x + ttW > window.innerWidth)  x = pending.x - ttW - 15;
+      if (y + ttH > window.innerHeight) y = window.innerHeight - ttH - 10;
+    }
     if (x < 0) x = 0;
     if (y < 0) y = 0;
     tt.style.transform = 'translate(' + x + 'px,' + y + 'px)';
@@ -247,7 +262,7 @@
     return null;
   }
 
-  function findNearestSnapPoint(pdiv, mouseX, mouseY) {
+  function findNearestSnapPoint(pdiv, mouseX, mouseY, radiusPx) {
     var fl = pdiv._fullLayout;
     var rect = pdiv.getBoundingClientRect();
     var bestD2 = Infinity, best = null;
@@ -286,7 +301,7 @@
     }
     if (!best) return null;
     if (ALWAYS_SNAP) return best;
-    return Math.sqrt(bestD2) <= SNAP_PX ? best : null;
+    return Math.sqrt(bestD2) <= radiusPx ? best : null;
   }
 
   function inPlotBounds(pdiv, e) {
@@ -306,10 +321,14 @@
   // 'x2y2', ...]) when present; falls back to single-panel ('xy') so
   // single-panel plots get their plot-area bounds as the "subplot"
   // (used to clip the spike to the plot area instead of the viewport).
-  function findSubplotAt(pdiv, mx, my) {
+  // `slopPx` (touch only; 0 on mouse for byte-identical desktop behavior)
+  // lets a point in a gutter/margin resolve to the nearest subplot within
+  // that distance — a fat finger just outside the axes still gets a tooltip.
+  function findSubplotAt(pdiv, mx, my, slopPx) {
     var fl = pdiv._fullLayout;
     var rect = pdiv.getBoundingClientRect();
     var pairs = (fl._subplots && fl._subplots.cartesian) || ['xy'];
+    var best = null, bestD = Infinity;
     for (var i = 0; i < pairs.length; i++) {
       var sp = pairs[i];
       var match = sp.match(/^(x\d*)(y\d*)$/);
@@ -322,15 +341,21 @@
       var xr = xl + xa._length;
       var yt = rect.top  + ya._offset;
       var yb = yt + ya._length;
-      if (mx >= xl && mx <= xr && my >= yt && my <= yb) {
-        return {
-          xaxisId: match[1], yaxisId: match[2],
-          xa: xa, ya: ya,
-          left: xl, right: xr, top: yt, bottom: yb,
-        };
+      var found = {
+        xaxisId: match[1], yaxisId: match[2],
+        xa: xa, ya: ya,
+        left: xl, right: xr, top: yt, bottom: yb,
+      };
+      if (mx >= xl && mx <= xr && my >= yt && my <= yb) return found;
+      if (slopPx) {
+        // Distance from the point to the subplot rect (0 inside).
+        var dx = mx < xl ? xl - mx : (mx > xr ? mx - xr : 0);
+        var dy = my < yt ? yt - my : (my > yb ? my - yb : 0);
+        var d = Math.sqrt(dx * dx + dy * dy);
+        if (d <= slopPx && d < bestD) { bestD = d; best = found; }
       }
     }
-    return null;
+    return best;
   }
 
   // Plot-area bounds (top/bottom of the entire cartesian region, not a
@@ -384,6 +409,77 @@
     } catch (err) { return ''; }
   }
 
+  function hide() {
+    pending.show = false;
+    if (window.__RP_TT_STATE) window.__RP_TT_STATE.shown = false;
+    schedule();
+  }
+
+  // The whole two-mode decision as a pure function of a client point —
+  // shared verbatim by mousemove (isTouch=false, today's behavior) and the
+  // tap path (isTouch=true: bigger snap radius, gutter slop, above-finger
+  // placement).
+  function showAt(pdiv, clientX, clientY, isTouch) {
+    // A plot-specific zoom drag owns the cursor while this flag is set
+    // (e.g. Misc Trends' drag-to-zoom band) — hide tooltip + spike.
+    if (window.__rpZoomDragging) { hide(); return; }
+    var sp = findSubplotAt(pdiv, clientX, clientY, isTouch ? TOUCH_SLOP_PX : 0);
+    if (!sp) { hide(); return; }
+    var place = isTouch ? 'touch' : 'cursor';
+    var snap = findNearestSnapPoint(pdiv, clientX, clientY,
+                                    isTouch ? TOUCH_SNAP_PX : SNAP_PX);
+    if (snap) {
+      var t = pdiv.data[snap.traceIdx];
+      var xs = asArray(t.x);
+      var snapDay = (xs ? dayFromMs(xs[snap.pointIdx]) : null);
+      if (snapDay == null && range.firstDay !== -Infinity) snapDay = range.firstDay;
+      // The snap point belongs to its trace's subplot, which may
+      // differ from the cursor's subplot if the mouse hovered into a
+      // neighbour while still snapping — use the trace's subplot for
+      // spike-bound calculation so the line stays where the point is.
+      var snapSp = subplotForTrace(pdiv, t) || sp;
+      var ctx = { xaxisId: snapSp.xaxisId, yaxisId: snapSp.yaxisId };
+      var html = callBuilder(snapDay, true, snap.html, ctx);
+      if (!html) { hide(); return; }
+      var sb = SPIKE_FULL ? plotAreaBounds(pdiv) : snapSp;
+      pending.html        = html;
+      pending.x           = snap.screenX;
+      pending.y           = snap.screenY;
+      pending.place       = place;
+      pending.spikeX      = snap.screenX;
+      pending.spikeTop    = sb.top;
+      pending.spikeHeight = sb.bottom - sb.top;
+      pending.show        = true;
+      window.__RP_TT_STATE = { shown: true, isSnap: true, place: place };
+      schedule();
+      return;
+    }
+    if (ALWAYS_SNAP) { hide(); return; }
+    var day = dayFromCursorX(sp, clientX);
+    if (day == null) { hide(); return; }
+    var ctx2 = { xaxisId: sp.xaxisId, yaxisId: sp.yaxisId };
+    var html2 = callBuilder(day, false, null, ctx2);
+    if (!html2) { hide(); return; }
+    var sb2 = SPIKE_FULL ? plotAreaBounds(pdiv) : sp;
+    // Day-quantized spike: place the line at the (clamped) day the
+    // tooltip describes instead of the free cursor pixel.
+    var spikeX = clientX;
+    if (SPIKE_SNAP_DAY) {
+      var dayPx = sp.xa.c2p(day * 86400000);
+      if (dayPx != null && !isNaN(dayPx)) spikeX = sp.left + dayPx;
+    }
+    pending.html        = html2;
+    pending.x           = clientX;
+    pending.y           = clientY;
+    pending.place       = place;
+    pending.spikeX      = spikeX;
+    pending.spikeTop    = sb2.top;
+    pending.spikeHeight = sb2.bottom - sb2.top;
+    pending.show        = true;
+    window.__RP_TT_STATE = { shown: true, isSnap: false, place: place };
+    schedule();
+  }
+
   var bindTries = 0;
   function bind() {
     var pdiv = document.querySelector('.plotly-graph-div');
@@ -396,75 +492,38 @@
     }
 
     pdiv.addEventListener('mousemove', function (e) {
-      // A plot-specific zoom drag owns the cursor while this flag is set
-      // (e.g. Misc Trends' drag-to-zoom band) — hide tooltip + spike.
-      if (window.__rpZoomDragging) {
-        pending.show = false;
-        schedule();
-        return;
-      }
-      var sp = findSubplotAt(pdiv, e.clientX, e.clientY);
-      if (!sp) {
-        pending.show = false;
-        schedule();
-        return;
-      }
-      var snap = findNearestSnapPoint(pdiv, e.clientX, e.clientY);
-      if (snap) {
-        var t = pdiv.data[snap.traceIdx];
-        var xs = asArray(t.x);
-        var snapDay = (xs ? dayFromMs(xs[snap.pointIdx]) : null);
-        if (snapDay == null && range.firstDay !== -Infinity) snapDay = range.firstDay;
-        // The snap point belongs to its trace's subplot, which may
-        // differ from the cursor's subplot if the mouse hovered into a
-        // neighbour while still snapping — use the trace's subplot for
-        // spike-bound calculation so the line stays where the point is.
-        var snapSp = subplotForTrace(pdiv, t) || sp;
-        var ctx = { xaxisId: snapSp.xaxisId, yaxisId: snapSp.yaxisId };
-        var html = callBuilder(snapDay, true, snap.html, ctx);
-        if (!html) { pending.show = false; schedule(); return; }
-        var sb = SPIKE_FULL ? plotAreaBounds(pdiv) : snapSp;
-        pending.html        = html;
-        pending.x           = snap.screenX;
-        pending.y           = snap.screenY;
-        pending.spikeX      = snap.screenX;
-        pending.spikeTop    = sb.top;
-        pending.spikeHeight = sb.bottom - sb.top;
-        pending.show        = true;
-        schedule();
-        return;
-      }
-      if (ALWAYS_SNAP) {
-        pending.show = false;
-        schedule();
-        return;
-      }
-      var day = dayFromCursorX(sp, e.clientX);
-      if (day == null) { pending.show = false; schedule(); return; }
-      var ctx = { xaxisId: sp.xaxisId, yaxisId: sp.yaxisId };
-      var html = callBuilder(day, false, null, ctx);
-      if (!html) { pending.show = false; schedule(); return; }
-      var sb2 = SPIKE_FULL ? plotAreaBounds(pdiv) : sp;
-      // Day-quantized spike: place the line at the (clamped) day the
-      // tooltip describes instead of the free cursor pixel.
-      var spikeX = e.clientX;
-      if (SPIKE_SNAP_DAY) {
-        var dayPx = sp.xa.c2p(day * 86400000);
-        if (dayPx != null && !isNaN(dayPx)) spikeX = sp.left + dayPx;
-      }
-      pending.html        = html;
-      pending.x           = e.clientX;
-      pending.y           = e.clientY;
-      pending.spikeX      = spikeX;
-      pending.spikeTop    = sb2.top;
-      pending.spikeHeight = sb2.bottom - sb2.top;
-      pending.show        = true;
-      schedule();
+      // Ignore the emulated mouse events that trail a touch — the tap path
+      // already handled it (and a stray mousemove would move the tooltip
+      // out from under a deliberate tap).
+      if (window.rpTapHover && window.rpTapHover.mouseSuppressed()) return;
+      showAt(pdiv, e.clientX, e.clientY, false);
     });
 
     pdiv.addEventListener('mouseleave', function () {
-      pending.show = false;
-      schedule();
+      if (window.rpTapHover && window.rpTapHover.mouseSuppressed()) return;
+      hide();
+    });
+
+    // Tap acts as hover (see _scaffold/tap_hover.js: taps show, second tap
+    // same spot / tap outside / swipe hides, and Plotly's touch zoom-box is
+    // disabled on coarse-pointer devices).
+    if (window.rpTapHover) {
+      window.rpTapHover.bind(pdiv, {
+        show: function (x, y) { showAt(pdiv, x, y, true); },
+        hide: hide,
+      });
+    }
+
+    // The tooltip/spike are position:fixed and placed from
+    // getBoundingClientRect — both go stale the moment the page scrolls
+    // (mobile scroll-mode pages), so just dismiss.
+    window.addEventListener('scroll', hide, { passive: true });
+
+    // Mobile layout engine re-rendered the figure (Plotly.newPlot) — axis
+    // geometry changed wholesale.
+    window.addEventListener('rp-layout-mode', function () {
+      hide();
+      if (window.Plotly) window.Plotly.Plots.resize(pdiv);
     });
 
     if (window.Plotly) window.Plotly.Plots.resize(pdiv);

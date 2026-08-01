@@ -92,6 +92,20 @@
 #geo-legend .legend-subcity.singleton { padding-left: 22px; }
 #geo-legend .legend-subcity.grouped   { padding-left: 44px; }
 
+/* Mobile-short viewport (keep in sync with the breakpoint in
+   _scaffold/mobile.js): the toggle rides the title bar's right side like
+   Misc Trends' (its inline desktop position is top:56, hence !important);
+   the legend narrows and stretches to the full viewport height. The bars
+   get the freed width via the margin.r patch in make_geography_plot.py. */
+@media (max-height: 520px) {
+  #geo-toggle { top: 14px !important; }
+  #geo-legend {
+    top: 64px;
+    bottom: 12px;
+    width: 210px;
+  }
+}
+
 #geo-tooltip {
   position: fixed; top: 0; left: 0;
   background: rgba(26,26,26,0.96);

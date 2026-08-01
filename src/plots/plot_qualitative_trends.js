@@ -386,6 +386,9 @@
     // children of the plot div, so a div-bound listener would dead-zone
     // them); the plot-area bounds check does the real gating.
     document.addEventListener('mousedown', function (e) {
+      // Emulated mouse events after a touch must not arm a zoom drag —
+      // the tap already showed the tooltip (see _scaffold/tap_hover.js).
+      if (window.__rpTouchActive) return;
       if (e.button !== 0) return;
       var gd = pdiv();
       if (!gd || !gd._fullLayout) return;
@@ -399,6 +402,7 @@
     // move/up on window so a drag that leaves the plot (or the page)
     // still tracks and completes; endpoints are clamped to the plot area.
     window.addEventListener('mousemove', function (e) {
+      if (window.__rpTouchActive) return;
       if (dragStartX == null) return;
       var gd = pdiv();
       if (!gd || !gd._fullLayout) { cancelDrag(); return; }
@@ -442,6 +446,7 @@
     // makes the drag-to-zoom affordance visible. Class on <body> so the CSS
     // also covers the inset labels sitting over the plot.
     document.addEventListener('mousemove', function (e) {
+      if (window.__rpTouchActive) return;
       var gd = pdiv();
       if (!gd || !gd._fullLayout) return;
       var pa = plotArea(gd);
@@ -493,12 +498,22 @@
     cancelDrag();
     page = next;
     window.__rpActiveTab = page;
-    Plotly.newPlot(gd, f.data, f.layout, CONFIG).then(function () {
+    var lay = f.layout;
+    if (window.rpMobile && window.rpMobile.isMobile()) {
+      // FIGS layouts are the live objects later relayouts write into (see
+      // snapOrigImages) — patch a deep COPY so the desktop layout is never
+      // contaminated after a breakpoint crossing. patchLayout reads the
+      // per-page variant keyed by __rpActiveTab, set above.
+      lay = JSON.parse(JSON.stringify(f.layout));
+      window.rpMobile.patchLayout(lay);
+    }
+    Plotly.newPlot(gd, f.data, lay, CONFIG).then(function () {
       bindRedraw(gd);
       showInsetsForPage();
       positionInsets();
       snapOrigImages(gd);           // pristine bakes, before any zoom patch
       if (keepRange) applyZoomRange(gd, keepRange);
+      if (window.rpMobile) window.rpMobile.syncScrollHeight();
     });
   }
 
@@ -512,6 +527,16 @@
     });
     bindRedraw(gd);
     window.addEventListener('resize', positionInsets);
+    // Scroll mode (mobile): the .rp-inset labels are position:fixed and
+    // placed from getBoundingClientRect, so they must track page scroll.
+    window.addEventListener('scroll', positionInsets, { passive: true });
+    // The mobile layout engine's Plotly.newPlot clears gd.on bindings.
+    window.addEventListener('rp-layout-mode', function () {
+      var gd2 = pdiv();
+      bindRedraw(gd2);
+      showInsetsForPage();
+      positionInsets();
+    });
     showInsetsForPage();
     positionInsets();
     snapOrigImages(gd);

@@ -512,6 +512,26 @@ def main():
   padding: 8px 14px 6px !important;
   z-index: 1000 !important;
 }
+/* Inside the mobile shell the 44px hamburger floats at the viewport's
+   top-left — snug the inset up into that corner and pad its left so the
+   button reads as sitting INSIDE the inset box rather than colliding
+   with it. (Overrides base.css's html.rp-mobile padding-left, which this
+   block's !important padding above would otherwise defeat.) */
+html.rp-mobile .rp-title-bar {
+  top: 0 !important;
+  left: 0 !important;
+  min-height: 44px;
+  box-sizing: border-box;
+  border-top-left-radius: 0 !important;
+  border-top-width: 0 !important;
+  border-left-width: 0 !important;
+  padding: 8px 14px 6px 52px !important;
+}
+/* Mobile-short viewport: the scope toggle rides flush with the top edge,
+   matching the title inset, to save vertical space over the map. */
+@media (max-height: 520px) {
+  #scope-toggle { top: 0; }
+}
 """
 
     out_path = os.path.join(args.out_dir, 'world_map.html')

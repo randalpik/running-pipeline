@@ -1,0 +1,13 @@
+/* Training-quality overlay tweaks.
+   Short (mobile) viewports: the normalize pill's desktop slot (inline
+   right:60px / top:20px) overlaps the title bar. plot_training_quality.js
+   folds the pill into the #tq-routes box when that box exists; this rule is
+   the fallback when it doesn't (no route/state betas) — !important so it
+   beats the inline desktop position. Inert once the pill is .rp-inline
+   (position:static ignores top/right). */
+@media (max-height: 520px) {
+  #tq-norm-toggle {
+    top: calc(var(--rp-title-h) + 4px) !important;
+    right: 12px !important;
+  }
+}

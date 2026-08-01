@@ -34,7 +34,8 @@ from src.shared.hill_model import fit_hill_model
 from src.shared.cs_projection import load_cs_outputs
 from src.shared.performance_frontier import standard_demos, build_frontier
 from src.plotting import widgets
-from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
+from src.plotting import (render_plot, CursorTooltip, MobileLayout,
+                            apply_default_layout,
                             right_margin_for_anchored_box, route_paren,
                             sec_to_mss, fmt_min, CAT_COLORS, CAT_LABEL, GRID, CS_LINE,
                             FRONTIER_LINE,
@@ -52,6 +53,7 @@ ROUTES_BOX_WIDTH = 196
 
 _PLOTS_DIR = Path(__file__).resolve().parent
 _TQ_JS = _PLOTS_DIR / 'plot_training_quality.js'
+_TQ_CSS = _PLOTS_DIR / 'plot_training_quality.css'
 
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1029,6 +1031,12 @@ function buildTooltip(day, isSnap, pointHtml) {
         ),
         overlay_html=overlay_html,
         overlay_js_files=[_TQ_JS],
+        extra_head_css_files=[_TQ_CSS],
+        # Mobile: cap the legend at half the plot height (internal scrollbar)
+        # so the legend-anchored #tq-routes box below splits the short right
+        # rail with it roughly evenly.
+        mobile_layout=MobileLayout(patch={'legend.maxheight': 0.5},
+                                   scroll=False),
     )
     print(f'\nWrote {OUT_HTML}')
 

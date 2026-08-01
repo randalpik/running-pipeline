@@ -76,6 +76,14 @@
     });
   }
 
+  // The mobile layout engine's Plotly.newPlot clears gd.on bindings — the
+  // plotly_restyle listener here is what keeps per-panel PR diamonds live,
+  // so re-attach (and recompute against the current visibility state).
+  window.addEventListener('rp-layout-mode', function () {
+    attach();
+    recomputePanelPRs();
+  });
+
   function attach() {
     var plot = findPlot();
     if (!plot || !plot.data || !window.Plotly) { setTimeout(attach, 100); return; }

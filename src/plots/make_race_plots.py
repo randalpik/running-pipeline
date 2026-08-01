@@ -50,8 +50,10 @@ from src.shared.units import METERS_PER_MILE
 from src.shared.plot_window import data_span, axis_pad_entry
 from src.shared.cs_projection import (load_cs_outputs, project_races_to_5k_pace,
                                       pace5k_series_to_anchor)
-from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
+from src.plotting import (render_plot, CursorTooltip, MobileLayout,
+                            apply_default_layout,
                             right_margin_for_anchored_box,
+                            reshape_patch, assert_reshape_compatible,
                             sec_to_mss, sec_to_mss_full, sec_to_mss_prec,
                             time_decimals,
                             SURFACES, CS_LINE, CS_LINE_WIDTH, GRID,
@@ -716,6 +718,11 @@ function buildTooltip(day, isSnap, pointHtml) {
         overlay_html=filter_ui + search_ui,
         overlay_js_files=[_FILTER_JS],
         axis_pad=axis_pad_all,
+        # Mobile: cap the legend at half the plot height (Plotly gives it an
+        # internal scrollbar) so the legend-anchored #bin-filter box below
+        # splits the short right rail with it roughly evenly.
+        mobile_layout=MobileLayout(patch={'legend.maxheight': 0.5},
+                                   scroll=False),
     )
     print(f'Wrote {out1}')
 
@@ -983,6 +990,31 @@ function buildTooltip(day, isSnap, pointHtml) {
         margin=dict(t=40, l=70, r=200, b=28),
         legend=dict(yanchor='top', y=0.99, xanchor='left', x=1.02))
 
+    # Mobile reshape: the 2-row grid compressed into a phone viewport gives
+    # ~150px panels — instead, 2 columns of ~230px rows on a scrollable page
+    # (see MobileLayout / _scaffold/mobile.js). Traces are untouched: panels
+    # fill in the same row-major order, so cell i owns xaxis{i+1} in both
+    # shapes. The mobile grid is the TRANSPOSE of the desktop grid — same
+    # cell count, so the axis-key set (including any trailing empty cell's
+    # axes) matches exactly for every possible nbins. Margins and the legend
+    # stay at their desktop spots (right rail) — panels are narrower for it,
+    # by design, so mobile reads like desktop.
+    M_ROW_H, M_ROW_GAP = 230, 58
+    m_rows, m_cols = n_cols, n_rows
+    mob_h = m_rows * M_ROW_H + (m_rows - 1) * M_ROW_GAP + 40 + 28  # t/b margins
+    fig2_m = make_subplots(rows=m_rows, cols=m_cols,
+                           subplot_titles=[subplot_title(n) for n in present],
+                           horizontal_spacing=0.10,
+                           vertical_spacing=(M_ROW_GAP / (mob_h - 40 - 28)
+                                             if m_rows > 1 else 0.0))
+    assert_reshape_compatible(fig2, fig2_m)
+    # margin.r: the legend is ~100px wide; the desktop 200px rail leaves
+    # ~90px of dead space right of it on a phone (measured). 130 = legend
+    # + the 2% legend.x inset + edge padding.
+    mobile_by_dist = MobileLayout(patch=reshape_patch(
+        fig2_m, height_px=mob_h, title_font_px=12,
+        extra={'margin.r': 130}))
+
     out2 = os.path.join(args.out_dir, 'race_pace_by_distance.html')
 
     # Smooth + snap behaviour per panel. The scaffold passes the cursor's
@@ -1094,6 +1126,7 @@ function buildTooltip(day, isSnap, pointHtml, ctx) {
             last_day=panel_last_day,
         ),
         overlay_js_files=[_PANEL_PRS_JS],
+        mobile_layout=mobile_by_dist,
     )
     print(f'Wrote {out2}')
 

@@ -288,8 +288,14 @@ def main():
     # so `**` is treated as a literal directory name and the per-file inotify
     # watches for src/plotting/*.py are never created. A directory path with
     # rec=True (which pyinotify defaults to) avoids that bug.
+    # shell.css/shell.js are excluded: they only feed index.html, so they get
+    # a dedicated write_index watch below instead of a full rebuild.
+    _SHELL_FILES = {"shell.css", "shell.js"}
     server.watch("src/plotting", _silent(_named(
-        "plotting:*", lambda: enqueue(_REBUILD_ALL))))
+        "plotting:*", lambda: enqueue(_REBUILD_ALL))),
+        ignore=lambda p: os.path.basename(p) in _SHELL_FILES)
+    server.watch("src/plotting/_scaffold/shell.css", _silent(write_index))
+    server.watch("src/plotting/_scaffold/shell.js", _silent(write_index))
 
     # data/*.csv changes rerun all plots — except plot-derived CSVs that some
     # plot scripts emit into data/ (training_quality_track.csv,

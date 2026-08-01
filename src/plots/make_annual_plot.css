@@ -32,3 +32,15 @@
 #annual-legend .legend-item.hidden .legend-name {
   color: #666; text-decoration: line-through;
 }
+
+/* Mobile-short viewport (keep in sync with the breakpoint in
+   _scaffold/mobile.js): the toggle rides the title bar's right side like
+   Misc Trends' (its inline desktop position is top:56, hence !important),
+   and the legend rises under it and stretches to the bottom. */
+@media (max-height: 520px) {
+  #annual-toggle { top: 14px !important; }
+  #annual-legend {
+    top: 64px;
+    max-height: calc(100vh - 76px);
+  }
+}

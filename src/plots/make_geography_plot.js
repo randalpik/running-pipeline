@@ -148,57 +148,106 @@
     if (!gd || !gd._fullLayout) { setTimeout(bindHover, 100); return; }
     var tt = document.getElementById('geo-tooltip');
     var spike = document.getElementById('geo-spike');
+    var TOUCH_SLOP_PX = 24;   // taps just outside the bars still resolve
+    var TOUCH_GAP_PX = 24;    // tooltip clearance above the touch point
 
-    gd.addEventListener('mousemove', function (e) {
+    function hideTT() {
+      tt.style.display = 'none';
+      spike.style.display = 'none';
+    }
+
+    // Same two-mode point handler for mouse and tap. Bin-indexed
+    // always-snap by construction — every plot-area x maps to one bin.
+    function showAt(clientX, clientY, isTouch) {
       var fl = gd._fullLayout;
       if (!fl) return;
       var rect = gd.getBoundingClientRect();
       var bg = fl._size;
       var pl = rect.left + bg.l, pr = rect.left + bg.l + bg.w;
       var pt = rect.top + bg.t, pb = rect.top + bg.t + bg.h;
-      if (e.clientX < pl || e.clientX > pr ||
-          e.clientY < pt || e.clientY > pb) {
-        tt.style.display = 'none';
-        spike.style.display = 'none';
+      if (isTouch) {
+        // A fat finger at the first/last bar's edge lands just outside the
+        // plot area — clamp within the slop instead of hiding.
+        if (clientX >= pl - TOUCH_SLOP_PX && clientX <= pr + TOUCH_SLOP_PX) {
+          clientX = Math.min(Math.max(clientX, pl), pr);
+        }
+        if (clientY >= pt - TOUCH_SLOP_PX && clientY <= pb + TOUCH_SLOP_PX) {
+          clientY = Math.min(Math.max(clientY, pt), pb);
+        }
+      }
+      if (clientX < pl || clientX > pr ||
+          clientY < pt || clientY > pb) {
+        hideTT();
         return;
       }
-      var plotPx = e.clientX - pl;
+      var plotPx = clientX - pl;
       var binIdx = findBinFromPx(plotPx);
       if (binIdx < 0 || binIdx >= GEO[mode].hover_html.length) {
-        tt.style.display = 'none';
-        spike.style.display = 'none';
+        hideTT();
         return;
       }
       var html = GEO[mode].hover_html[binIdx];
       if (!html) {
-        tt.style.display = 'none';
-        spike.style.display = 'none';
+        hideTT();
         return;
       }
       tt.innerHTML = html;
       tt.style.display = 'block';
       var ttW = tt.offsetWidth, ttH = tt.offsetHeight;
-      var x = e.clientX + 14, y = e.clientY + 12;
-      if (x + ttW > window.innerWidth)  x = e.clientX - ttW - 14;
-      if (y + ttH > window.innerHeight) y = window.innerHeight - ttH - 10;
+      var x, y;
+      if (isTouch) {
+        // Above the touch point, centered, so the finger never covers it.
+        x = clientX - ttW / 2;
+        y = clientY - ttH - TOUCH_GAP_PX;
+        if (y < 0) y = clientY + TOUCH_GAP_PX;
+        if (x + ttW > window.innerWidth) x = window.innerWidth - ttW - 4;
+        if (x < 0) x = 0;
+        if (y + ttH > window.innerHeight) y = window.innerHeight - ttH - 4;
+      } else {
+        x = clientX + 14;
+        y = clientY + 12;
+        if (x + ttW > window.innerWidth)  x = clientX - ttW - 14;
+        if (y + ttH > window.innerHeight) y = window.innerHeight - ttH - 10;
+      }
       tt.style.transform = 'translate(' + x + 'px,' + y + 'px)';
 
       var pitch = bg.w / GEO[mode].bins.length;
       var binCenterPx = pl + (binIdx + 0.5) * pitch;
       spike.style.transform = 'translateX(' + binCenterPx + 'px)';
       spike.style.display = 'block';
+    }
+
+    gd.addEventListener('mousemove', function (e) {
+      if (window.rpTapHover && window.rpTapHover.mouseSuppressed()) return;
+      showAt(e.clientX, e.clientY, false);
     });
 
     gd.addEventListener('mouseleave', function () {
-      tt.style.display = 'none';
-      spike.style.display = 'none';
+      if (window.rpTapHover && window.rpTapHover.mouseSuppressed()) return;
+      hideTT();
     });
 
-    if (gd.on) {
-      gd.on('plotly_afterplot', function () {
-        requestAnimationFrame(snapBars);
+    if (window.rpTapHover) {
+      window.rpTapHover.bind(gd, {
+        show: function (x, y) { showAt(x, y, true); },
+        hide: hideTT,
       });
     }
+
+    function bindAfterplot() {
+      if (gd.on) {
+        gd.on('plotly_afterplot', function () {
+          requestAnimationFrame(snapBars);
+        });
+      }
+    }
+    bindAfterplot();
+    // The mobile layout engine's Plotly.newPlot (margin.r patch) clears
+    // gd.on bindings — re-bind and re-snap.
+    window.addEventListener('rp-layout-mode', function () {
+      bindAfterplot();
+      requestAnimationFrame(snapBars);
+    });
     requestAnimationFrame(snapBars);
     requestAnimationFrame(snapBars);
   }

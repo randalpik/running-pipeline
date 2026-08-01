@@ -2,6 +2,10 @@
    tab gets its own iframe, kept alive for the page's lifetime, so
    revisits are paint-only. */
 
+:root {
+  --rp-tabbar-h: 36px;
+}
+
 html, body {
   margin: 0; padding: 0; height: 100%;
   background: #1a1a1a; color: #eee;
@@ -9,10 +13,18 @@ html, body {
                "Helvetica Neue", Arial, sans-serif;
 }
 
+/* Rotation/drawer stage — wraps the tabbar, mobile chrome and iframe pool.
+   On desktop it generates NO box (display:contents), so #tabbar and
+   #frame-wrap lay out exactly as if the wrapper didn't exist. Caveat of
+   display:contents: a background or border set on #rp-stage would silently
+   not render — put chrome on children. */
+#rp-stage { display: contents; }
+#rp-menu-btn, #rp-menu-scrim { display: none; }
+
 #tabbar {
   display: flex; align-items: stretch;
   background: #111; border-bottom: 1px solid #333;
-  padding: 0 4px; height: 36px;
+  padding: 0 4px; height: var(--rp-tabbar-h);
   overflow-x: auto;
   user-select: none;
 }
@@ -68,7 +80,7 @@ body.has-admin #tabbar.show-admin .tab.admin-only { display: block; }
 
 #frame-wrap {
   position: absolute; left: 0; right: 0;
-  top: 36px; bottom: 0;
+  top: var(--rp-tabbar-h); bottom: 0;
 }
 /* Stacked iframe pool. Hide via visibility (not display:none); a
    Plotly figure laid out inside a zero-size container renders broken
@@ -101,3 +113,123 @@ body.has-admin #tabbar.show-admin .tab.admin-only { display: block; }
   animation: rp-spin 0.8s linear infinite;
 }
 @keyframes rp-spin { to { transform: rotate(360deg); } }
+
+/* ===================================================================
+   Mobile: hamburger drawer + forced-landscape rotation.
+   Breakpoint MUST stay in sync with MOBILE_MQ in shell.js. Device-level,
+   not width-only: a narrow desktop window must NOT get the hamburger,
+   and iPad-landscape (1024px) keeps the desktop tab bar.
+   =================================================================== */
+@media (pointer: coarse) and (max-width: 940px) {
+  html, body { overflow: hidden; overscroll-behavior: none; }
+
+  #rp-stage {
+    display: block; position: fixed; top: 0; left: 0;
+    width: 100vw;  height: 100vh;     /* fallback for pre-dvh engines */
+    width: 100dvw; height: 100dvh;    /* dvh, not vh: 100vh on iOS is the
+                                         LARGE viewport and tucks content
+                                         under the URL bar */
+  }
+  #frame-wrap { top: 0; }
+
+  /* The tab bar IS the drawer, restyled vertical — same DOM, so the
+     admin-only gate, per-button handlers and profile switcher all carry
+     over. Closed state uses transform+visibility, never display:none:
+     shell.js isVisible() reads each button's computed display, and a
+     display:none subtree would also silently drop flex blockification. */
+  #tabbar {
+    position: absolute; top: 0; left: 0;
+    flex-direction: column; align-items: stretch;
+    width: min(64vw, 230px); height: auto; max-height: 100%;
+    padding: 0 0 8px;
+    overflow-x: hidden; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    border-bottom: 1px solid #333; border-right: 1px solid #333;
+    box-shadow: 2px 0 18px rgba(0, 0, 0, 0.5);
+    z-index: 60;
+    transform: translateX(-105%); visibility: hidden;
+    transition: transform 0.18s ease-out, visibility 0.18s;
+  }
+  body.rp-menu-open #tabbar { transform: none; visibility: visible; }
+
+  /* Brand sits beside the hamburger (which overlays the drawer's top-left
+     corner and doubles as the close button). */
+  #tabbar .brand {
+    padding: 0 14px 0 52px; min-height: 44px; margin: 0 0 4px;
+    border-right: 0; border-bottom: 1px solid #2a2a2a;
+  }
+  #tabbar .tab {
+    text-align: left; font-size: 15px; padding: 0 16px;
+    min-height: 44px; margin: 0;
+    border-bottom: 0; border-left: 3px solid transparent;
+  }
+  #tabbar .tab.active {
+    border-bottom-color: transparent;
+    border-left-color: #93f;
+  }
+  #tabbar .profile-switch {
+    margin: 6px 0 0; padding: 8px 14px 0;
+    border-left: 0; border-top: 1px solid #2a2a2a;
+  }
+  #tabbar .profile-switch select {
+    width: 100%; font-size: 15px; padding: 6px 8px;
+  }
+
+  /* z-order inside the stage: iframes 0/1, spinner 2 (inside the
+     z-index:auto #frame-wrap), scrim 55, drawer 60, hamburger 70. In
+     mobile the stage is fixed (and transformed in portrait), making it
+     the stacking context for all of them, so these compare directly.
+     The 44px button must stay <= the plot pages' mobile --rp-title-h
+     and <= the 52px title-bar left pad (see _scaffold/base.css). */
+  #rp-menu-btn {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 4px;
+    position: absolute; top: 0; left: 0;
+    width: 44px; height: 44px;
+    padding: 0; border: 0; background: transparent;
+    z-index: 70; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #rp-menu-btn span {
+    display: block; width: 18px; height: 2px;
+    background: #ccc; border-radius: 1px;
+    transition: transform 0.18s, opacity 0.18s;
+  }
+  body.rp-menu-open #rp-menu-btn span:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+  body.rp-menu-open #rp-menu-btn span:nth-child(2) { opacity: 0; }
+  body.rp-menu-open #rp-menu-btn span:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+
+  /* Tap-outside close. A tap over the graph lands in the iframe document
+     and never reaches this one, so a shell-level pointerdown listener
+     cannot implement tap-outside — the scrim IS the mechanism. */
+  #rp-menu-scrim {
+    display: block; position: absolute; inset: 0;
+    background: rgba(0, 0, 0, 0.5); z-index: 55;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.18s;
+  }
+  body.rp-menu-open #rp-menu-scrim { opacity: 1; pointer-events: auto; }
+}
+
+/* Portrait phone: rotate the whole stage so each iframe's own layout
+   viewport is axis-aligned LANDSCAPE. Everything inside the iframe —
+   Plotly's layout, position:fixed overlays (they resolve against the
+   iframe's own viewport, not this document's transform), clientX/clientY
+   vs getBoundingClientRect, window.innerWidth/innerHeight — is computed
+   in the iframe's untransformed space, so no plot code changes.
+   Derivation (transform-origin 0 0; box = 100dvh wide x 100dvw tall):
+   rotate(90deg) maps (x,y) -> (-y,x); translateY(-100%) first shifts the
+   box up by its height so the rotation lands it exactly on
+   [0,100dvw] x [0,100dvh]. rotate(90deg) = the user turns the phone
+   counter-clockwise (notch left). To flip the direction use
+   `rotate(-90deg) translateX(-100%)`.
+   Not screen.orientation.lock(): it requires fullscreen and is
+   unimplemented in iOS Safari — CSS rotation is the only cross-platform
+   option. */
+@media (pointer: coarse) and (max-width: 940px) and (orientation: portrait) {
+  #rp-stage {
+    width: 100vh;  height: 100vw;
+    width: 100dvh; height: 100dvw;
+    transform-origin: 0 0;
+    transform: rotate(90deg) translateY(-100%);
+  }
+}

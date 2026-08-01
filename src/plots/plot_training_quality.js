@@ -32,4 +32,27 @@
   }
   var cb = document.getElementById('tq-norm-cb');
   cb.addEventListener('change', function () { applyState(cb.checked); });
+
+  // Short (mobile) viewports: the pill's fixed slot overlaps the title bar.
+  // Fold it into the legend-anchored #tq-routes box while the media query
+  // matches — moving the node keeps the checkbox listener — and restore it to
+  // its original DOM slot on crossing back. Keep the query in sync with the
+  // mobile space breakpoint in _scaffold/base.css.
+  var SPACE_MQ = window.matchMedia('(max-height: 520px)');
+  var toggle = document.getElementById('tq-norm-toggle');
+  var home = toggle && { parent: toggle.parentNode, next: toggle.nextSibling };
+  function placeToggle() {
+    if (!toggle) return;
+    var routes = document.getElementById('tq-routes');
+    if (SPACE_MQ.matches && routes) {
+      toggle.classList.add('rp-inline');
+      routes.appendChild(toggle);
+    } else if (toggle.parentNode !== home.parent) {
+      toggle.classList.remove('rp-inline');
+      home.parent.insertBefore(toggle, home.next);
+    }
+  }
+  if (SPACE_MQ.addEventListener) SPACE_MQ.addEventListener('change', placeToggle);
+  else if (SPACE_MQ.addListener) SPACE_MQ.addListener(placeToggle);
+  placeToggle();
 })();

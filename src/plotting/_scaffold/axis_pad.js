@@ -51,6 +51,12 @@
       if (t) clearTimeout(t);
       t = setTimeout(apply, 120);   // after cursor_tooltip's Plots.resize
     });
+    // Mobile layout engine re-rendered the figure — panel pixel widths
+    // changed, so the half-marker pad must be recomputed.
+    window.addEventListener('rp-layout-mode', function () {
+      if (t) clearTimeout(t);
+      t = setTimeout(apply, 120);
+    });
   }
 
   if (document.readyState === 'loading') {

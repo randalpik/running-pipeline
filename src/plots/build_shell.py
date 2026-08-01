@@ -42,6 +42,7 @@ TABS = [
 def _empty_shell() -> str:
     return (
         '<!doctype html>\n<html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>Max's Running Data</title>"
         '<link rel="icon" href="data:,">'
         '<style>body{background:#1a1a1a;color:#eee;'
@@ -54,8 +55,18 @@ def _empty_shell() -> str:
 
 
 _SCAFFOLD_DIR = REPO_ROOT / 'src' / 'plotting' / '_scaffold'
-_SHELL_CSS = (_SCAFFOLD_DIR / 'shell.css').read_text()
-_SHELL_JS = (_SCAFFOLD_DIR / 'shell.js').read_text()
+
+
+# Read lazily, not at import time: scripts/dev.py imports write_index once at
+# startup and re-invokes it from its file watcher — a module-level read would
+# pin whatever shell.css/js said when the dev server booted, silently ignoring
+# every later edit until a restart.
+def _shell_css() -> str:
+    return (_SCAFFOLD_DIR / 'shell.css').read_text()
+
+
+def _shell_js() -> str:
+    return (_SCAFFOLD_DIR / 'shell.js').read_text()
 
 
 def _profile_switch_html(profiles, current_id) -> str:
@@ -111,24 +122,31 @@ def render_shell(tabs, include_admin: bool = False,
     return f'''<!doctype html>
 <html><head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="darkreader-lock">
 <title>Max's Running Data</title>
 <link rel="icon" href="data:,">
 <meta name="rp-default-slug" content="{default_slug}">
 <style>
-{_SHELL_CSS}
+{_shell_css()}
 </style>
 </head>
 <body{body_class}>
-  <div id="tabbar">
-    <div class="brand">Max's Running Data</div>
+  <div id="rp-stage">
+    <div id="tabbar">
+      <div class="brand">Max's Running Data</div>
 {buttons}{profile_switch}
-  </div>
-  <div id="frame-wrap">
-    <div id="spinner"></div>
+    </div>
+    <button id="rp-menu-btn" type="button" aria-label="Menu"
+            aria-expanded="false" aria-controls="tabbar"
+    ><span></span><span></span><span></span></button>
+    <div id="rp-menu-scrim"></div>
+    <div id="frame-wrap">
+      <div id="spinner"></div>
+    </div>
   </div>
 <script>
-{_SHELL_JS}
+{_shell_js()}
 </script>
 </body></html>
 '''

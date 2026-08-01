@@ -49,7 +49,8 @@ from src.shared.performance_frontier import (standard_demos,
 from src.plotting.formatters import (sec_to_mss, sec_to_mss_full,
                                      sec_to_mss_prec, time_decimals)
 from src.plotting.markers import PR_EXCLUDED_SURFACES
-from src.plotting.render import _TAB_KEY_FORWARDER_JS
+from src.plotting.render import (_HEAD_META, _SHELL_MODE_RECEIVER_JS,
+                                 _TAB_KEY_FORWARDER_JS)
 
 # Authoritative distance list (matches make_race_plots.FILTER_BINS).
 FILTER_BINS = [
@@ -748,13 +749,14 @@ def render_html(stats, prs, race_preds, workout_preds, last_updated_str, last_up
 {_DASHBOARD_JS}
 </script>
 {_TAB_KEY_FORWARDER_JS}
+{_SHELL_MODE_RECEIVER_JS}
 """
 
     return f"""<!doctype html>
 <html><head>
 <meta charset="utf-8">
 <title>Dashboard — running pipeline</title>
-<meta name="rp-slug" content="dashboard">
+{_HEAD_META}<meta name="rp-slug" content="dashboard">
 <style>
 {head_css}
 </style>

@@ -44,7 +44,8 @@ from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.plot_window import clip_to_daily_floor
 from src.shared.country_codes import country_abbrev
 from src.shared.effective_mileage import effective_daily_miles
-from src.plotting import (render_plot, apply_default_layout, GRID)
+from src.plotting import (render_plot, apply_default_layout, GRID,
+                          MobileLayout)
 from src.plotting import widgets
 
 _PLOTS_DIR = Path(__file__).resolve().parent
@@ -637,6 +638,10 @@ def write_html(fig, path, legend_html, payload, *, title=None, subtitle=None):
         overlay_html=overlay_html,
         overlay_js_files=[_GEO_JS],
         extra_head_css_files=[_GEO_CSS],
+        # Mobile: the legend narrows to 210px (make_geography_plot.css), so
+        # hand the freed rail width to the bars. No scroll — the page still
+        # fills the viewport; margin.r is the only thing that changes.
+        mobile_layout=MobileLayout(patch={'margin.r': 250}, scroll=False),
     )
 
 

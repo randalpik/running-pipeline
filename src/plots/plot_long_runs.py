@@ -41,7 +41,8 @@ from src.shared.recovery_model import transferable_contributions
 from src.shared.long_run_model import (fit_long_run_model, load_quality_dates,
                                        MIN_COV_N)
 from src.plotting import widgets
-from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
+from src.plotting import (render_plot, CursorTooltip, MobileLayout,
+                            apply_default_layout,
                             right_margin_for_anchored_box, route_paren,
                             sec_to_mss, GRID, CAT_COLORS,
                             FRONTIER_LINE, TAG_COLORS,
@@ -505,6 +506,11 @@ function buildTooltip(day, isSnap, pointHtml) {
         overlay_html=overlay_html,
         overlay_js_files=[_LR_JS],
         axis_pad=axis_pad_lr,
+        # Mobile: cap the legend at half the plot height (internal scrollbar)
+        # so the legend-anchored #lr-gradient box below splits the short
+        # right rail with it roughly evenly.
+        mobile_layout=MobileLayout(patch={'legend.maxheight': 0.5},
+                                   scroll=False),
     )
     print(f'Wrote {OUT_HTML}  ({len(lr)} long runs, '
           f'miles {miles.min():.1f}–{miles.max():.1f})')

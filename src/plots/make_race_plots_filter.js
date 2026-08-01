@@ -205,6 +205,14 @@
     updateCount();
   }
 
+  // The mobile layout engine's Plotly.newPlot (legend.maxheight patch)
+  // clears gd.on bindings — re-attach the legend/restyle listeners and
+  // recompute against the current filter state.
+  window.addEventListener('rp-layout-mode', function () {
+    attachLegendInterceptor();
+    setTimeout(function () { recomputePRs(); updateCount(); }, 0);
+  });
+
   document.querySelectorAll('#bin-filter input[type=checkbox]').forEach(function (cb) {
     cb.addEventListener('change', update);
   });

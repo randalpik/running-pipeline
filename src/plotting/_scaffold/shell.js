@@ -17,6 +17,30 @@
   var bar = document.getElementById('tabbar');
   var wrap = document.getElementById('frame-wrap');
   var spinner = document.getElementById('spinner');
+  var menuBtn = document.getElementById('rp-menu-btn');
+  var scrim = document.getElementById('rp-menu-scrim');
+
+  // Mobile breakpoint — MUST mirror the media query in shell.css. Plot pages
+  // can't derive this themselves (their viewport is already rotated to
+  // landscape), so the shell pushes it into every iframe as an
+  // 'rp-shell-mode' message; the receiver in each plot page (see
+  // src/plotting/render.py) mirrors it as html.rp-mobile.
+  var MOBILE_MQ = window.matchMedia('(pointer: coarse) and (max-width: 940px)');
+  var PORTRAIT_MQ = window.matchMedia('(orientation: portrait)');
+  function postMode(win) {
+    if (!win) return;
+    try { win.postMessage({ type: 'rp-shell-mode', mobile: MOBILE_MQ.matches }, '*'); }
+    catch (e) {}
+  }
+  function broadcastMode() {
+    pool.forEach(function (e) { postMode(e.iframe.contentWindow); });
+  }
+
+  function setMenu(open) {
+    document.body.classList.toggle('rp-menu-open', !!open);
+    if (menuBtn) menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  function closeMenu() { setMenu(false); }
   var buttons = bar.querySelectorAll('button.tab');
   var slugs = Array.prototype.map.call(buttons, function (b) {
     return b.dataset.slug;
@@ -95,6 +119,9 @@
     entry = { slug: slug, iframe: iframe, ready: false };
     pool.set(slug, entry);
     iframe.addEventListener('load', function () {
+      // Earliest correct moment to push the shell mode — the receiver
+      // script doesn't exist inside the iframe before load.
+      postMode(entry.iframe.contentWindow);
       // Non-plot pages (admin) have no .plotly-graph-div — mark ready
       // immediately so the spinner clears without waiting on the timeout.
       var doc;
@@ -117,6 +144,7 @@
     opts = opts || {};
     var btn = btnFor(slug);
     if (!btn || !isVisible(btn)) return;
+    closeMenu();  // covers tab taps, cycle() and the admin re-activate
     Array.prototype.forEach.call(buttons, function (b) {
       b.classList.toggle('active', b.dataset.slug === slug);
     });
@@ -149,6 +177,33 @@
       if (profileSelect.value) window.location.assign(profileSelect.value);
     });
   }
+
+  // Hamburger drawer (mobile only — the button is display:none on desktop,
+  // so all of this is inert there).
+  if (menuBtn) {
+    menuBtn.addEventListener('click', function () {
+      setMenu(!document.body.classList.contains('rp-menu-open'));
+    });
+  }
+  if (scrim) scrim.addEventListener('click', closeMenu);
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeMenu();
+  });
+
+  // Crossing the mobile breakpoint or flipping orientation: the drawer's
+  // geometry assumptions changed (close it) and the iframes need the new
+  // html.rp-mobile state. Rotation itself is pure CSS; Plotly relayout is
+  // automatic (responsive:true uses a ResizeObserver on the graph div).
+  function onModeChange() {
+    closeMenu();
+    broadcastMode();
+  }
+  function onMQ(mq, fn) {
+    if (mq.addEventListener) mq.addEventListener('change', fn);
+    else if (mq.addListener) mq.addListener(fn);  // legacy Safari
+  }
+  onMQ(MOBILE_MQ, onModeChange);
+  onMQ(PORTRAIT_MQ, onModeChange);
 
   function cycle(direction) {
     var visible = slugs.filter(visBySlug);

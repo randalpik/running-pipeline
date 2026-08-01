@@ -46,6 +46,36 @@ input[type="checkbox"]:checked {
 }
 .rp-title-bar .rp-title-sub i { color: #9cf; font-style: italic; }
 
+/* Inside the shell on a mobile device (html.rp-mobile is pushed by the shell
+   via the rp-shell-mode message — see src/plotting/render.py): clear the
+   shell's 44px hamburger button, which floats above this iframe at the
+   stage's local top-left. The shell can't read this document's custom
+   properties, so this is a convention: keep the pad >= button width + 8
+   (see #rp-menu-btn in _scaffold/shell.css). */
+html.rp-mobile .rp-title-bar {
+  padding-left: 52px;
+}
+
+/* Standalone plot page (not inside the shell) opened portrait on a phone:
+   these pages don't self-rotate — a transformed ancestor would break every
+   fixed overlay and 100vh/innerWidth computation in this document — so show
+   a hint instead. html.rp-framed is set synchronously inside the shell, so
+   this never flashes there. */
+@media (pointer: coarse) and (orientation: portrait) {
+  html:not(.rp-framed) body::after {
+    content: 'Rotate your phone for this chart ↻';
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    padding: 10px 14px;
+    background: rgba(26, 26, 26, 0.92);
+    border-top: 1px solid #444;
+    color: #ccc;
+    font-size: 13px;
+    text-align: center;
+    z-index: 9997;  /* under .rp-spike (9998) and .rp-tooltip (9999) */
+  }
+}
+
 /* Plot fills the iframe below the title bar. */
 .plotly-graph-div, #plot-container, .js-plotly-plot {
   position: absolute !important;
@@ -56,6 +86,46 @@ input[type="checkbox"]:checked {
   width: auto !important;
   height: auto !important;
 }
+
+/* Touch devices: kill double-tap page zoom (taps show tooltips instead —
+   see _scaffold/tap_hover.js). Everything else is left to the platform:
+   plotly.js natively claims touch drags over the plot area for its zoom
+   box (its touchstart handler is non-passive), so the page scrolls from
+   the margins and the graph zooms from the graph. */
+@media (pointer: coarse) {
+  html { touch-action: manipulation; }
+}
+
+/* ----- Scroll mode: opt-in, toggled by _scaffold/mobile.js -----
+   Pages whose mobile layout is taller than the viewport (Race Distances,
+   Recovery, Misc Trends) scroll vertically. --rp-plot-h is kept equal to
+   the figure's layout.height by mobile.js. */
+html.rp-scroll, body.rp-scroll {
+  height: auto !important;
+  min-height: 100%;
+}
+body.rp-scroll {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+body.rp-scroll .plotly-graph-div,
+body.rp-scroll #plot-container,
+body.rp-scroll .js-plotly-plot {
+  position: relative !important;
+  top: 0 !important;
+  bottom: auto !important;
+  left: 0 !important;
+  right: auto !important;
+  width: 100% !important;
+  height: var(--rp-plot-h, 100vh) !important;
+  margin-top: var(--rp-title-h);
+}
+/* The title bar is injected after the plot div, so it can't sit first in
+   flow — keep it pinned while the page scrolls under it. */
+body.rp-scroll .rp-title-bar { position: fixed; }
+/* Desktop-grid first paint is hidden until mobile.js re-renders (class set
+   by _scaffold/mobile_head.js before Plotly's inline newPlot runs). */
+html.rp-mobile-pending .plotly-graph-div { visibility: hidden; }
 
 /* ===== Cursor-following tooltip =====
    Two layers so text never reflows during the resize animation:
@@ -180,6 +250,18 @@ input[type="checkbox"]:checked {
   padding: 8px 10px;
   font-size: 11px;
 }
+/* Inline modifier: neutralizes the fixed-chrome so a sidebar (or pill) can be
+   folded into another box's flow — e.g. training-quality moves its normalize
+   pill inside #tq-routes on short viewports. */
+.rp-sidebar.rp-inline {
+  position: static;
+  width: auto !important;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 6px 0 0;
+}
 .rp-sidebar-title {
   font-weight: 500;
   margin-bottom: 8px;
@@ -278,6 +360,12 @@ input[type="checkbox"]:checked {
 }
 .rp-search input:focus { border-color: #93f; }
 .rp-search input::placeholder { color: #888; }
+/* Mobile-short viewport (keep in sync with _scaffold/mobile.js): flush
+   with the top edge, clear of the title bar's subtitle line, which runs
+   the full width on a phone. */
+@media (max-height: 520px) {
+  .rp-search { top: 0; }
+}
 
 /* ----- Buttons -----
    .rp-btn-row: flex container.

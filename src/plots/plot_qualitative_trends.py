@@ -58,7 +58,8 @@ from src.shared.effective_mileage import effective_daily_miles
 from src.coros.solar import solar_anchors_local
 from src.parsers.snapshot import (find_snapshot, read_snapshot,
                                   coord_overrides_from_sections)
-from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
+from src.plotting import (render_plot, CursorTooltip, MobileLayout,
+                            apply_default_layout,
                             FG, FG_DIM, GRID, widgets,
                             WEATHER_CF_COLORS, CONDITIONS_CF_COLORS,
                             auto_date_x_axis_kwargs)
@@ -1124,6 +1125,23 @@ def main():
     insets = _inset_html(panels)
 
     primary = figs.get('weather') or next(iter(figs.values()))
+
+    # Mobile: same k×1 stack, just taller — each panel gets a fixed ~240px
+    # band on a scrollable page instead of squeezing k panels into one
+    # screen. Domains are plot-area fractions, so height is the ONLY
+    # geometry that changes; keyed per page because the page swap
+    # (switchTo) re-applies the patch for the incoming figure via
+    # rpMobile.patchLayout. Margins t=20/b=28 mirror apply_default_layout.
+    MOBILE_PANEL_H = 240
+    mobile_trends = MobileLayout(
+        variants={
+            pg: {'height':
+                 len([p for p in panels if p['page'] == pg]) * MOBILE_PANEL_H
+                 + 20 + 28}
+            for pg in figs
+        },
+        variant_global='__rpActiveTab')
+
     out_path = os.path.join(args.out_dir, 'qualitative_trends.html')
     render_plot(
         primary, out_path,
@@ -1150,6 +1168,7 @@ def main():
         # Plotly.relayout of the master x-range — works under staticPlot,
         # which only disables user input) are all custom.
         plotly_config={'staticPlot': True},
+        mobile_layout=mobile_trends,
     )
     print(f'wrote {out_path}')
     print(f'  panels={len(panels)} '
