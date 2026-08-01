@@ -387,10 +387,15 @@ html.rp-mobile-pending .plotly-graph-div { visibility: hidden; }
 }
 .rp-search input:focus { border-color: #93f; }
 .rp-search input::placeholder { color: #888; }
-/* Mobile: flush with the top edge, clear of the title bar's subtitle line,
-   which runs the full width on a phone. Keyed on html.rp-mobile — the one
-   mobile signal (set by the shell, or latched at load standalone; see
+/* Mobile: every top-right control rides flush with the top edge, clear of
+   the title bar's subtitle line, which runs the full width on a phone.
+   Covers the toggle bars (Misc Trends, Annual, Locations, World Map scope)
+   and the races search box. Plots that move their bar down on desktop
+   override this with !important in their sibling CSS — those overrides
+   also target 0 on mobile. Keyed on html.rp-mobile: the one mobile signal
+   (set by the shell, or latched at load standalone; see
    _scaffold/mobile.js for why it must never be a live viewport query). */
+html.rp-mobile .rp-toggle-bar,
 html.rp-mobile .rp-search { top: 0; }
 
 /* ----- Buttons -----

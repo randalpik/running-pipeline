@@ -127,13 +127,6 @@
     var on = isMobile() && !!activePatch() && (!ML || ML.scroll !== false);
     var h = on ? (gd.layout && gd.layout.height) : null;
     setScroll(on && !!h, h);
-    // Forward-compat hook: lets the shell own the scroll later (grow the
-    // iframe instead) with zero plot-side change.
-    if (window.parent !== window) {
-      try {
-        window.parent.postMessage({ type: 'rp-plot-height', px: h || null }, '*');
-      } catch (e) {}
-    }
   }
 
   // ---- engine (only pages that ship a MobileLayout re-render) ----

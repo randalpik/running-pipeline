@@ -97,9 +97,9 @@
    Misc Trends' (its inline desktop position is top:56, hence !important);
    the legend narrows and stretches to the full viewport height. The bars
    get the freed width via the margin.r patch in make_geography_plot.py. */
-html.rp-mobile #geo-toggle { top: 14px !important; }
+html.rp-mobile #geo-toggle { top: 0 !important; }
 html.rp-mobile #geo-legend {
-  top: 64px;
+  top: 50px;
   bottom: 12px;
   width: 210px;
 }

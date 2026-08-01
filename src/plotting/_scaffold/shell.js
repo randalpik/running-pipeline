@@ -70,8 +70,13 @@
 
   function srcFor(slug, btn) {
     var href = btn && btn.dataset && btn.dataset.href;
-    if (href) return href;
-    return slug + '.html';
+    var src = href || (slug + '.html');
+    // Hand the plot page our mode on the URL so it knows at <head> time.
+    // The rp-shell-mode message below can only land after the iframe loads,
+    // which is too late for the reshaped pages — they would render desktop
+    // first and visibly reflow. See _scaffold/mobile_head.js.
+    if (MOBILE_MQ.matches) src += (src.indexOf('?') < 0 ? '?' : '&') + 'rpm=1';
+    return src;
   }
 
   function setSpinner(show) {

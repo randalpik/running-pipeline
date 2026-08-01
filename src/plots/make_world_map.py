@@ -527,10 +527,6 @@ html.rp-mobile .rp-title-bar {
   border-left-width: 0 !important;
   padding: 8px 14px 6px 52px !important;
 }
-/* Mobile: the scope toggle rides flush with the top edge, matching the
-   title inset, to save vertical space over the map. Keyed on the single
-   mobile signal (see _scaffold/mobile.js). */
-html.rp-mobile #scope-toggle { top: 0; }
 """
 
     out_path = os.path.join(args.out_dir, 'world_map.html')

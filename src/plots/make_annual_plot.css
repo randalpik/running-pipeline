@@ -37,8 +37,8 @@
    _scaffold/mobile.js): the toggle rides the title bar's right side like
    Misc Trends' (its inline desktop position is top:56, hence !important),
    and the legend rises under it and stretches to the bottom. */
-html.rp-mobile #annual-toggle { top: 14px !important; }
+html.rp-mobile #annual-toggle { top: 0 !important; }
 html.rp-mobile #annual-legend {
-  top: 64px;
-  max-height: calc(100vh - 76px);
+  top: 50px;
+  max-height: calc(100vh - 62px);
 }

@@ -30,6 +30,9 @@
   display: none;
 }
 .rp-zoom-reset .rp-btn-row { margin-bottom: 0; }
+/* Mobile: sits beside the page toggle, which base.css pulls flush to the
+   top edge — keep the two aligned (the sibling JS only sets `left`). */
+html.rp-mobile .rp-zoom-reset { top: 0; }
 
 /* Horizontal-select affordance for drag-to-zoom: the sibling JS puts
    rp-zoom-hot on <body> while the pointer is inside the cartesian plot
