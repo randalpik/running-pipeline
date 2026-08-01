@@ -528,8 +528,10 @@
     bindRedraw(gd);
     window.addEventListener('resize', positionInsets);
     // Scroll mode (mobile): the .rp-inset labels are position:fixed and
-    // placed from getBoundingClientRect, so they must track page scroll.
-    window.addEventListener('scroll', positionInsets, { passive: true });
+    // placed from getBoundingClientRect, so they must track scrolling.
+    // Capture phase — the scroller is <body> and scroll doesn't bubble.
+    window.addEventListener('scroll', positionInsets,
+                            { capture: true, passive: true });
     // The mobile layout engine's Plotly.newPlot clears gd.on bindings.
     window.addEventListener('rp-layout-mode', function () {
       var gd2 = pdiv();

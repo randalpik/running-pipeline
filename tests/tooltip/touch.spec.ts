@@ -212,7 +212,13 @@ test.describe('race distances mobile reshape', () => {
         scroll: document.body.classList.contains('rp-scroll'),
         pending: document.documentElement.classList.contains('rp-mobile-pending'),
         clientH: gd.clientHeight, cssH,
-        scrollable: document.documentElement.scrollHeight > window.innerHeight,
+        // body is the scroller; the DOCUMENT must stay unscrollable (see
+        // the scroll-mode block in _scaffold/base.css — a scrollable
+        // subframe under the shell's rotated stage gets its viewport
+        // re-derived from the rotated rect, width/height swapped).
+        scrollable: document.body.scrollHeight > document.body.clientHeight,
+        docScrollable: document.documentElement.scrollHeight >
+                       document.documentElement.clientHeight + 4,
         // Transposed grid: xaxis3 (cell 3) shares column 1's x-domain; in the
         // desktop 2x4 grid it's row1col3 with a distinct domain.
         sameCol: Math.abs(gd.layout.xaxis3.domain[0] - gd.layout.xaxis.domain[0]) < 1e-9,
@@ -227,6 +233,7 @@ test.describe('race distances mobile reshape', () => {
     expect(r.pending).toBe(false);
     expect(r.clientH).toBe(parseInt(r.cssH, 10));
     expect(r.scrollable).toBe(true);
+    expect(r.docScrollable).toBe(false);
     expect(r.sameCol).toBe(true);
     expect(r.legendOrient).not.toBe('h');
     expect(r.axes.length).toBeGreaterThan(0);
@@ -242,7 +249,7 @@ test.describe('race distances mobile reshape', () => {
     await page.touchscreen.tap(spot.x, spot.y);
     await page.waitForTimeout(250);
     expect((await ttState(page)).visible).toBe(true);
-    await page.evaluate(() => window.scrollTo(0, 300));
+    await page.evaluate(() => { document.body.scrollTop = 300; });
     await page.waitForTimeout(250);
     expect((await ttState(page)).visible).toBe(false);
   });
@@ -270,7 +277,7 @@ test.describe('race distances mobile reshape', () => {
 
     await drag(page, geom.marginX, geom.yBot, geom.marginX, geom.yTop);
     const afterMargin = await page.evaluate(() => ({
-      y: Math.round(window.scrollY),
+      y: Math.round(document.body.scrollTop),
       yr: (document.querySelector('.plotly-graph-div') as any)
         ._fullLayout.yaxis.range.join('|'),
       dragging: !!(document.querySelector('.plotly-graph-div') as any)._dragging,
@@ -279,16 +286,16 @@ test.describe('race distances mobile reshape', () => {
     expect(afterMargin.yr).toBe(geom.yr);            // did not zoom
     expect(afterMargin.dragging).toBe(false);        // plotly not wedged
 
-    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.evaluate(() => { document.body.scrollTop = 0; });
     await page.waitForTimeout(250);
     const before = await page.evaluate(() => ({
-      y: Math.round(window.scrollY),
+      y: Math.round(document.body.scrollTop),
       yr: (document.querySelector('.plotly-graph-div') as any)
         ._fullLayout.yaxis.range.join('|'),
     }));
     await drag(page, geom.panelX, geom.yBot, geom.panelX, geom.yTop);
     const afterPanel = await page.evaluate(() => ({
-      y: Math.round(window.scrollY),
+      y: Math.round(document.body.scrollTop),
       yr: (document.querySelector('.plotly-graph-div') as any)
         ._fullLayout.yaxis.range.join('|'),
       dragging: !!(document.querySelector('.plotly-graph-div') as any)._dragging,

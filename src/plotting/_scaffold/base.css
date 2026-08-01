@@ -10,6 +10,15 @@ html, body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
                "Helvetica Neue", Arial, sans-serif;
 }
+/* The DOCUMENT never scrolls on a plot page — the plot fills the frame, and
+   the tall mobile layouts scroll <body> instead (see the scroll-mode block
+   below for why that distinction is load-bearing: a scrollable subframe
+   under the shell's rotated stage gets its viewport re-derived from the
+   rotated rect, with width and height swapped). Unconditional so that no
+   transient — a figure rendered before scroll mode is applied, or a tall
+   figure still on screen while restoring the desktop layout — can make the
+   document momentarily scrollable. */
+html { overflow: hidden; }
 input[type="checkbox"]:checked {
   accent-color: #93f !important;
 }
@@ -98,14 +107,32 @@ html.rp-mobile .rp-title-bar {
 
 /* ----- Scroll mode: opt-in, toggled by _scaffold/mobile.js -----
    Pages whose mobile layout is taller than the viewport (Race Distances,
-   Recovery, Misc Trends) scroll vertically. --rp-plot-h is kept equal to
-   the figure's layout.height by mobile.js. */
-html.rp-scroll, body.rp-scroll {
-  height: auto !important;
-  min-height: 100%;
+   Recovery, Misc Trends) scroll vertically.
+
+   THE DOCUMENT ITSELF MUST NEVER BECOME SCROLLABLE. Inside the shell this
+   page is an iframe under a rotated ancestor, and Chromium re-derives a
+   scrollable subframe's layout viewport from the iframe's TRANSFORMED
+   on-screen rect rather than its border box — so the viewport comes back
+   with width and height swapped. Measured on device: iframe box 724x411,
+   frame viewport 411x724, flipping one frame after scroll mode turned on.
+   Everything that resolves against the viewport (the title bar, fixed
+   sidebars, the plot's own 100% width) then collapses into the left ~half
+   of the frame.
+
+   So: `html` keeps a fixed height and hides overflow — which propagates to
+   the viewport and keeps the frame unscrollable — while `body` becomes the
+   scroll container. Because html's overflow is not `visible`, body's
+   overflow no longer propagates up to the viewport; it applies to body.
+   The plot div stays in body's flow, so getBoundingClientRect() still
+   tracks the scroll and every cursor/hit-test computation is unaffected. */
+html.rp-scroll {
+  height: 100% !important;
+  overflow: hidden !important;
 }
 body.rp-scroll {
-  overflow-y: auto;
+  height: 100% !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
   -webkit-overflow-scrolling: touch;
 }
 body.rp-scroll .plotly-graph-div,

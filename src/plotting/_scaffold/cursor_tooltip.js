@@ -516,8 +516,9 @@
 
     // The tooltip/spike are position:fixed and placed from
     // getBoundingClientRect — both go stale the moment the page scrolls
-    // (mobile scroll-mode pages), so just dismiss.
-    window.addEventListener('scroll', hide, { passive: true });
+    // (mobile scroll-mode pages), so just dismiss. Capture phase: in scroll
+    // mode the scroller is <body>, and scroll events don't bubble.
+    window.addEventListener('scroll', hide, { capture: true, passive: true });
 
     // Mobile layout engine re-rendered the figure (Plotly.newPlot) — axis
     // geometry changed wholesale.

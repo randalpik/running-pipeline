@@ -117,7 +117,7 @@
       document.documentElement.style.setProperty('--rp-plot-h', heightPx + 'px');
     } else {
       document.documentElement.style.removeProperty('--rp-plot-h');
-      window.scrollTo(0, 0);
+      document.body.scrollTop = 0;   // body is the scroller, not the document
     }
   }
 
@@ -157,7 +157,13 @@
       ' css=' + (cs ? parseInt(cs.width, 10) : '-') +
       ' fig=' + (fl ? Math.round(fl.width) + 'x' + Math.round(fl.height) : '-') +
       ' mob=' + (isMobile() ? 1 : 0) +
-      ' scr=' + (document.body.classList.contains('rp-scroll') ? 1 : 0));
+      ' scr=' + (document.body.classList.contains('rp-scroll') ? 1 : 0) +
+      // docOvf must stay 0: a scrollable DOCUMENT is what makes Chromium
+      // re-derive this frame's viewport from the rotated rect.
+      ' docOvf=' + (document.documentElement.scrollHeight -
+                    document.documentElement.clientHeight > 4 ? 1 : 0) +
+      ' bodyOvf=' + (document.body.scrollHeight -
+                     document.body.clientHeight > 4 ? 1 : 0));
     if (t.length > 30) t.shift();
   }
 
@@ -198,6 +204,14 @@
     var lay = JSON.parse(JSON.stringify(gd.layout));
     Object.keys(patch).forEach(function (k) { setPath(lay, k, patch[k]); });
     applied = true;
+    // Enter scroll mode BEFORE rendering, so the tall figure is never laid
+    // out in a document that isn't ready to contain it. Rendering first
+    // leaves one frame where the document itself overflows, which is
+    // exactly the state that makes Chromium re-derive a rotated subframe's
+    // viewport (measured: docOvf=1 between newPlot and scrollSync).
+    if (patch.height && (!ML || ML.scroll !== false)) {
+      setScroll(true, patch.height);
+    }
     return render(lay);
   }
 
@@ -291,8 +305,11 @@
   // panels — a vertical drag scrolls. That keeps Plotly's own event
   // bookkeeping intact (stealing a gesture it already started leaves
   // gd._dragging stuck) and still leaves a generous scroll surface.
+  // body is the scroll container in scroll mode (see base.css: the document
+  // must stay unscrollable or the frame's viewport gets re-derived from the
+  // rotated rect).
   function scrollable() {
-    return document.documentElement.scrollHeight - window.innerHeight > 4;
+    return document.body.scrollHeight - document.body.clientHeight > 4;
   }
   function onPlotlyDrag(el) {
     return !!(el && el.closest && el.closest('.draglayer'));
@@ -305,7 +322,7 @@
         if (Math.abs(dy) <= Math.abs(dx)) return false;
         return scrollable() && !onPlotlyDrag(target);
       },
-      scrollerFor: function () { return document.scrollingElement; },
+      scrollerFor: function () { return document.body; },
       deltaFor: function (stepX, stepY) { return -stepY; },
     });
   }
