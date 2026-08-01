@@ -423,13 +423,18 @@ def compute_race_predictions(daily_summary, beta_long, d_thresh,
         p5k_sweeps = (daily_summary['p5k_implied_min'].to_numpy(float),
                       p5k_from_asym(daily_summary, 'cs_pace_lo95'),
                       p5k_from_asym(daily_summary, 'cs_pace_hi95'))
+    # The cross channel only needs today's value, and frontier_at_anchor is
+    # pointwise per date — convert just the last grid row, not the series.
+    ds_last = daily_summary.iloc[[-1]]
+    fm_last, fl_last, fh_last = (f.iloc[[-1]]
+                                 for f in (front_med, front_lo, front_hi))
     out = []
     for name, d in FILTER_BINS:
-        t_med = frontier_at_anchor(front_med, daily_summary, d, beta_long,
+        t_med = frontier_at_anchor(fm_last, ds_last, d, beta_long,
                                    d_thresh)[-1]
-        t_fast = frontier_at_anchor(front_lo, daily_summary, d, beta_long,
+        t_fast = frontier_at_anchor(fl_last, ds_last, d, beta_long,
                                     d_thresh)[-1]
-        t_slow = frontier_at_anchor(front_hi, daily_summary, d, beta_long,
+        t_slow = frontier_at_anchor(fh_last, ds_last, d, beta_long,
                                     d_thresh)[-1]
         if p5k_sweeps is not None:
             sub = races[races['bin'].isin(PRED_BIN_FAMILIES.get(name, (name,)))]

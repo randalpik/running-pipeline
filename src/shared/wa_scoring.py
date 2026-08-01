@@ -32,6 +32,7 @@ Races and workouts get no pause penalty.
 """
 from __future__ import annotations
 import math
+from functools import lru_cache
 
 # event_distance_m -> (a, b, c), points = a*T^2 + b*T + c, T seconds (2025 men's).
 # The intermediate road tabs (15/20/25/30k) were REMOVED: they don't lie on a
@@ -137,7 +138,15 @@ def wa_points(dist_m, time_s):
     if time_s <= 0 or dist_m <= 0:
         return float('nan')
     if dist_m >= ANCHOR_M:                       # aerobic: smooth monotone curve
-        lo, hi = TABLE_END_P, 1400.0             # (exact at the anchors, so no special case)
+        if dist_m in COEF:
+            # Exact anchor: the aero curve passes through the event tab, so
+            # the bisection would just invert _time_at — evaluate the event
+            # quadratic directly (identical to machine precision, ~1000x
+            # cheaper). Same monotone-branch convention as the sub-5K tabs:
+            # callers route off-table times through _table_end_time first.
+            a, b, c = COEF[dist_m]
+            return a * time_s * time_s + b * time_s + c
+        lo, hi = TABLE_END_P, 1400.0
         for _ in range(60):
             mid = (lo + hi) / 2
             lo, hi = (mid, hi) if _aero_isotime(dist_m, mid) > time_s else (lo, mid)
@@ -183,6 +192,7 @@ def _time_at_dist(dist_m, P):
                     + w * math.log(_time_at(hi_d, P)))
 
 
+@lru_cache(maxsize=None)
 def _table_end_time(dist_m):
     """Time (s) at dist_m scoring TABLE_END_P — the slow end of the published
     table at that distance. Times beyond it are off-table. Also catches the
