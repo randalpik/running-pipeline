@@ -307,15 +307,38 @@
   function onPlotlyDrag(el) {
     return !!(el && el.closest && el.closest('.draglayer'));
   }
+  // Nearest scrollable ancestor that can still move in the drag's direction.
+  // Without this the document-level handler swallowed every gesture and
+  // scrolled the page, so an overflowing sidebar (recovery's #norm-filter,
+  // the anchored boxes on Races/Training/Long Runs, the annual legend) could
+  // never be scrolled — the browser won't do it for us under the shell's
+  // rotated stage either.
+  function innerScroller(el, dy) {
+    var wantDown = dy < 0;   // finger moves up => content scrolls down
+    while (el && el.nodeType === 1 && el !== document.body) {
+      var oy = getComputedStyle(el).overflowY;
+      if ((oy === 'auto' || oy === 'scroll') &&
+          el.scrollHeight - el.clientHeight > 4) {
+        var max = el.scrollHeight - el.clientHeight;
+        if (wantDown ? el.scrollTop < max - 1 : el.scrollTop > 1) return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+  function pickScroller(target, dy) {
+    return innerScroller(target, dy) || (scrollable() ? document.body : null);
+  }
   function attachTouchScroll() {
     if (!window.rpTouchScroll) return;
     window.rpTouchScroll.attach(document, {
       capture: true,   // beat the page's other touch handlers to the event
       decide: function (dx, dy, target) {
         if (Math.abs(dy) <= Math.abs(dx)) return false;
-        return scrollable() && !onPlotlyDrag(target);
+        if (onPlotlyDrag(target)) return false;
+        return !!pickScroller(target, dy);
       },
-      scrollerFor: function () { return document.body; },
+      scrollerFor: function (target, dx, dy) { return pickScroller(target, dy); },
       deltaFor: function (stepX, stepY) { return -stepY; },
     });
   }
@@ -337,8 +360,11 @@
     },
   };
 
-  if (ML) {
-    attachTouchScroll();
-    boot();
-  }
+  // Touch scrolling is attached on EVERY plot page, not just the reshaped
+  // ones: any page can have an overflowing sidebar, and Chromium won't pan
+  // it under the rotated stage. Costs nothing where nothing scrolls —
+  // decide() simply declines and Plotly keeps the gesture.
+  attachTouchScroll();
+
+  if (ML) boot();
 })();

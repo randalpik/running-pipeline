@@ -306,6 +306,44 @@ test.describe('race distances mobile reshape', () => {
   });
 });
 
+// An overflowing sidebar has to scroll on its own. The document-level touch
+// handler used to claim every non-draglayer vertical drag and scroll the
+// page, so a box like recovery's #norm-filter could never be reached — and
+// the browser won't pan it either, under the shell's rotated stage.
+test.describe('sidebar touch scrolling', () => {
+  for (const [file, boxId] of [
+    ['recovery_pace.html', 'norm-filter'],
+    ['training_quality.html', 'tq-routes'],
+    ['race_pace_all.html', 'bin-filter'],
+  ] as const) {
+    const FILE = page_(file);
+    test(`${boxId} scrolls itself, not the page`, async ({ page }) => {
+      test.skip(!fs.existsSync(FILE), `${file} not built`);
+      await ready(page, FILE);
+      const box = await page.evaluate((id) => {
+        const el = document.getElementById(id);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { overflows: el.scrollHeight - el.clientHeight > 4,
+                 top: r.top, bottom: r.bottom, cx: r.left + r.width / 2 };
+      }, boxId);
+      test.skip(!box, `#${boxId} not rendered on this profile`);
+      test.skip(!box!.overflows, `#${boxId} fits — nothing to scroll`);
+
+      const before = await page.evaluate((id) => ({
+        box: document.getElementById(id)!.scrollTop,
+        body: document.body.scrollTop }), boxId);
+      await drag(page, box!.cx, box!.bottom - 12, box!.cx, box!.top + 12);
+      const after = await page.evaluate((id) => ({
+        box: document.getElementById(id)!.scrollTop,
+        body: document.body.scrollTop }), boxId);
+
+      expect(after.box).toBeGreaterThan(before.box);
+      expect(after.body).toBe(before.body);
+    });
+  }
+});
+
 test.describe('recovery mobile reshape', () => {
   const FILE = page_('recovery_pace.html');
   test.skip(!fs.existsSync(FILE), 'recovery_pace.html not built');

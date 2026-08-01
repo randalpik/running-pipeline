@@ -23,7 +23,7 @@
  *
  *   rpTouchScroll.attach(target, {
  *     decide(dx, dy, startTarget) -> claim this gesture?  (delta from origin)
- *     scrollerFor(ev)  -> the element to scroll (null = don't claim)
+ *     scrollerFor(startTarget, dx, dy) -> element to scroll (null = drop it)
  *     deltaFor(sx, sy) -> scrollTop delta for this step's (dx, dy)
  *     capture          -> listen in the capture phase (needed to beat
  *                         Plotly's own handlers to the event)
@@ -87,7 +87,7 @@
         var dx = t.clientX - st.x0, dy = t.clientY - st.y0;
         if (Math.abs(dx) < SLOP_PX && Math.abs(dy) < SLOP_PX) return;
         if (!opts.decide(dx, dy, st.target)) { st.dead = true; return; }
-        st.el = opts.scrollerFor(e);
+        st.el = opts.scrollerFor(st.target, dx, dy);
         if (!st.el) { st.dead = true; return; }
         st.claimed = true;
         st.x = t.clientX; st.y = t.clientY;   // measure steps from here

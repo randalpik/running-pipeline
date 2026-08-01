@@ -1,30 +1,91 @@
 // Geography plot interactions:
-//   - bar pixel snap (uniform per-mode pixel gap)
+//   - bar pixel snap (uniform slot-width-derived pixel gap)
 //   - year/month mode toggle
 //   - custom legend (visibility + group expand)
 //   - bar-aligned tooltip + spikeline on mousemove
 //
 // Uses window.__PLOT_GEO for all per-mode data (bins, hover_html,
-// tickvals, ticktext, gap_px). Mode state is local to this IIFE.
+// tickvals, ticktext). Mode state is local to this IIFE.
 (function () {
   var GEO = window.__PLOT_GEO;
   var mode = 'year';
 
   function pdiv() { return document.querySelector('.plotly-graph-div'); }
 
-  // ===== Bar pixel snap (uniform per-mode pixel gap) =====
+  // ===== Bin geometry, read from the LIVE axis =====
+  // All in plot-area pixels — the space bar-path `d` coordinates and
+  // _size.l offsets share. Two traps this exists to avoid:
+  //
+  //  1. plotWidth / binCount only equals the bin pitch when the WHOLE range
+  //     is on screen. Zooming broke everything derived from it: bars were
+  //     re-snapped onto the unzoomed grid (huge gaps, mangled bars) and the
+  //     tooltip resolved the wrong bin.
+  //  2. The axis TYPE differs per mode — yearly is a category axis
+  //     ('2016' etc.), but monthly x-values ('2016-01') make Plotly infer a
+  //     DATE axis. c2p() takes an index on one and epoch-ms on the other,
+  //     so bin centres have to be resolved per type.
+  var geomCache = null;
+  function binGeom(xa) {
+    var bins = GEO[mode].bins;
+    var key = mode + '|' + xa.type + '|' + xa.range.join(',') + '|' + xa._length;
+    if (geomCache && geomCache.key === key) return geomCache.g;
+    var n = bins.length;
+    var centers = new Array(n);
+    for (var i = 0; i < n; i++) {
+      centers[i] = (xa.type === 'category') ? xa.c2p(i) : xa.d2p(bins[i]);
+    }
+    var pitch = n > 1 ? (centers[n - 1] - centers[0]) / (n - 1) : (xa._length || 1);
+    // Integer slot boundaries, computed ONCE and shared by the two bars that
+    // meet at each one. Rounding a shared edge independently from either side
+    // (cx+pitch/2 vs cx−pitch/2) disagrees whenever it lands on a .5 tie —
+    // e.g. bin 33 at centre 261.4, pitch 7.8, edge exactly 257.5 — which made
+    // the gap alternate 0/1px across the monthly view.
+    var edges = new Array(n + 1);
+    for (var j = 0; j < n; j++) edges[j] = Math.round(centers[j] - pitch / 2);
+    edges[n] = Math.round(centers[n - 1] + pitch / 2);
+    var g = { centers: centers, pitch: pitch, edges: edges };
+    geomCache = { key: key, g: g };
+    return g;
+  }
+  function binCenters(xa) { return binGeom(xa).centers; }
+  function binAtPx(xa, plotPx) {
+    var c = binCenters(xa);
+    var best = -1, bestD = Infinity;
+    for (var i = 0; i < c.length; i++) {
+      var d = Math.abs(c[i] - plotPx);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+  }
+
+  // Gap between neighbouring bars, chosen from that slot width rather than
+  // per mode: a hairline keeps ~7px monthly bars from merging, while wide
+  // bars (the yearly view, or anything zoomed in) can afford real air. One
+  // rule for both modes and every zoom level, so the spacing always looks
+  // deliberate instead of jumping when you switch views.
+  var GAP_STEPS = [[30, 1], [100, 2]];   // [slot width below…, gap]
+  var GAP_WIDE = 4;                      // …and at or above the last step
+  function gapForPitch(pitch) {
+    for (var i = 0; i < GAP_STEPS.length; i++) {
+      if (pitch < GAP_STEPS[i][0]) return GAP_STEPS[i][1];
+    }
+    return GAP_WIDE;
+  }
+
+  // ===== Bar pixel snap =====
   var BAR_PATH_RE = /^M([-\d.]+),([-\d.]+)V([-\d.]+)H([-\d.]+)V([-\d.]+)Z$/;
 
   function snapBars() {
     var gd = pdiv();
     if (!gd || !gd._fullLayout) return;
     var fl = gd._fullLayout;
-    var bg = fl._size;
-    var plotW = bg.w;
+    var xa = fl.xaxis;
+    var plotW = fl._size.w;
     var nBins = GEO[mode].bins.length;
-    if (nBins === 0 || plotW <= 0) return;
-    var pitch = plotW / nBins;
-    var gap = GEO[mode].gap_px;
+    if (nBins === 0 || plotW <= 0 || !xa || !xa.c2p) return;
+    var geom = binGeom(xa);
+    var gap = gapForPitch(geom.pitch);
+    if (gap > geom.pitch - 1) gap = Math.max(0, Math.floor(geom.pitch - 1));
 
     var paths = gd.querySelectorAll('.barlayer .point path');
     paths.forEach(function (path) {
@@ -37,12 +98,15 @@
       var y2 = parseFloat(m[3]);
       var x2 = parseFloat(m[4]);
       if (Math.abs(y1 - y2) < 0.5) return;
-      var center = (x1 + x2) / 2;
-      var binIdx = Math.round(center / pitch - 0.5);
-      if (binIdx < 0) binIdx = 0;
-      if (binIdx >= nBins) binIdx = nBins - 1;
-      var newLeft = Math.round(binIdx * pitch);
-      var newRight = Math.round((binIdx + 1) * pitch) - gap;
+      // Plotly binds each bar's bin to the path; fall back to hit-testing
+      // its centre. Either way the slot comes from the axis, so this holds
+      // at any zoom without a separate zoomed/unzoomed code path.
+      var datum = path.__data__;
+      var idx = (datum && typeof datum.p === 'number' && datum.p === (datum.p | 0))
+        ? datum.p : binAtPx(xa, (x1 + x2) / 2);
+      if (idx < 0 || idx >= nBins) return;
+      var newLeft = geom.edges[idx];
+      var newRight = geom.edges[idx + 1] - gap;
       if (newRight <= newLeft) newRight = newLeft + 1;
       var newD = 'M' + newLeft + ',' + y1 + 'V' + y2 + 'H' + newRight + 'V' + y1 + 'Z';
       path.setAttribute('d', newD);
@@ -63,6 +127,16 @@
     Plotly.restyle(gd, { x: x, y: y });
     var modeData = GEO[mode];
     Plotly.relayout(gd, {
+      // Pin the axis CATEGORICAL on every mode switch. Monthly x-values
+      // ('2016-01') otherwise make Plotly re-type the axis to `date`, and a
+      // date axis spaces bars by real month length (28-31 days) while giving
+      // them all one width — leaving 0-3 days of slack that varies month to
+      // month. Invisible at full range, but zooming magnified it into
+      // visibly ragged gaps (measured 1-7px), which is the very problem the
+      // pixel snapping below was invented to hide. As categories the slots
+      // are uniform by construction at any zoom, and the array ticks (whose
+      // values ARE the category names) line up exactly with the bars.
+      'xaxis.type': 'category',
       'xaxis.tickvals': modeData.tickvals,
       'xaxis.ticktext': modeData.ticktext,
     });
@@ -135,12 +209,9 @@
     var nBins = GEO[mode].bins.length;
     if (nBins === 0) return -1;
     var gd = pdiv();
-    var plotW = gd._fullLayout._size.w;
-    var pitch = plotW / nBins;
-    var idx = Math.floor(plotPx / pitch);
-    if (idx < 0) idx = 0;
-    if (idx >= nBins) idx = nBins - 1;
-    return idx;
+    var xa = gd && gd._fullLayout && gd._fullLayout.xaxis;
+    if (!xa || !xa.c2p) return -1;
+    return binAtPx(xa, plotPx);   // zoom- and axis-type-aware (see above)
   }
 
   function bindHover() {
@@ -211,8 +282,8 @@
       }
       tt.style.transform = 'translate(' + x + 'px,' + y + 'px)';
 
-      var pitch = bg.w / GEO[mode].bins.length;
-      var binCenterPx = pl + (binIdx + 0.5) * pitch;
+      // Bar centre from the live axis, so the spike tracks the zoom.
+      var binCenterPx = pl + binCenters(fl.xaxis)[binIdx];
       spike.style.transform = 'translateX(' + binCenterPx + 'px)';
       spike.style.display = 'block';
     }

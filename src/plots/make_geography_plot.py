@@ -25,9 +25,12 @@ single city). Currently affects HI, JP, MI in Max's data.
 
 Bar pixel uniformity
 --------------------
-type='category' axis + post-render JS that snaps every bar's SVG path to
-integer pixels with a fixed pixel gap between bins (5px yearly, 1px
-monthly).
+type='category' axis in BOTH modes (monthly values like '2016-01' otherwise
+make Plotly re-type the axis to `date`, which spaces bars by real month
+length and left ragged gaps once zoomed) + post-render JS that snaps every
+bar's SVG path to integer pixels. The gap between bins is derived from the
+rendered slot width rather than fixed per mode, so it stays consistent
+across modes and zoom levels — see gapForPitch in make_geography_plot.js.
 """
 import argparse
 import colorsys
@@ -105,9 +108,9 @@ GLOBAL_OTHER_LABEL = 'Other'   # was 'Other (travel)'
 GLOBAL_OTHER_KEY   = '__GLOBAL_OTHER__'
 GLOBAL_OTHER_COLOR = '#888888'
 
-# Mode-specific bar gap in pixels (set in JS).
-GAP_PX_YEAR  = 5
-GAP_PX_MONTH = 1
+# NB: the bar gap is no longer a per-mode constant — make_geography_plot.js
+# derives it from the rendered slot width (see gapForPitch), so it stays
+# consistent across both modes and every zoom level.
 
 
 def hsl_to_hex(h_deg, s, l):
@@ -700,14 +703,12 @@ def main():
             'tickvals': y_bins,
             'ticktext': y_bins,
             'hover_html': [yearly_hover[b] for b in y_bins],
-            'gap_px': GAP_PX_YEAR,
         },
         'month': {
             'bins': m_bins,
             'tickvals': m_tickvals,
             'ticktext': m_ticktext,
             'hover_html': [monthly_hover[b] for b in m_bins],
-            'gap_px': GAP_PX_MONTH,
         },
     }
 
@@ -732,8 +733,13 @@ def main():
             ticklen=8,
             tickcolor='rgba(0,0,0,0)',
         ),
+        # Horizontal-only zoom: with the y-axis pinned, a drag anywhere in
+        # the plot draws a full-height x-band, which is the only useful zoom
+        # here (120+ monthly bars are unreadable at full range on a phone).
+        # The bar snapping and the custom tooltip both read the live x-axis,
+        # so they follow the zoom; double-click / double-tap resets.
         yaxis=dict(title='Miles', gridcolor=GRID,
-                   zerolinecolor=GRID),
+                   zerolinecolor=GRID, fixedrange=True),
     )
 
     out_path = os.path.join(args.out_dir, 'mileage_by_geography.html')
@@ -748,7 +754,6 @@ def main():
     print(f'  total: {total_miles:,.0f} mi · {n_cities} cities')
     print(f'  bins: {len(y_bins)} yearly, {len(m_bins)} monthly '
           f'({m_bins[0]} → {m_bins[-1]})')
-    print(f'  gap_px: {GAP_PX_YEAR} yearly, {GAP_PX_MONTH} monthly')
     print(f'  legend (top → bottom):')
     last_group = None
     for label in ordered_labels:
