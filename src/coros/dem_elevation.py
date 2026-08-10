@@ -8,10 +8,21 @@ each course must look right qualitatively, not just average out over thousands
 of points — we throw away the barometric vertical and resample elevation from a
 DEM along the trusted GPS path.
 
-Source: OpenTopoData public API — USGS NED 10 m for CONUS, SRTM 30 m fallback
-elsewhere (Berlin). Free, no key, deterministic. Point elevations are cached in
+Source: OpenTopoData public API — USGS **NED 10 m only** (US, including Hawaii
+and Alaska). Free, no key, deterministic. Point elevations are cached in
 ``data/dem_cache.json`` keyed by rounded lat/lon so repeated courses (Boston
 ×6, Bolder Boulder, Run for the Pies …) and re-runs cost no network.
+
+Anywhere NED does not reach, the run keeps its BAROMETRIC elevation — there is
+deliberately no coarser DEM fallback. Aug 2026, measured on identical GPS tracks
+(scratch/rundle_comparison.html): against baro, ned10m sits +5.4 ft/mi on a
+forested trail while srtm30m sits +40, aster30m +81, and NRCan CDEM swings
++16 on one route and −30 on another. The coarse sources each fail differently in
+different terrain, and their fine structure correlates better with EACH OTHER
+than with the barometer, so there is no calibration to borrow. Baro's own error
+is a mild UNDER-read plus occasional spikes (spike-capped in elevation.py),
+which errs toward under-correcting — the conservative direction for a pace
+correction. So: 10 m lidar where it exists, barometer everywhere else.
 
 Gain/loss/net are computed with the SAME gridding+smoothing as the barometric
 path (``elevation._gridded_altitude``, ``gain_loss_ft``) so the two sources are
@@ -36,7 +47,9 @@ import urllib.request
 
 import numpy as np
 
-from src.coros.elevation import gain_loss_ft, _gridded_altitude
+from src.coros.elevation import (gain_loss_ft, _gridded_altitude,
+                                 grade_from_sums, hill_segments,
+                                 segment_sums, weighted_grades)
 from src.shared.hill_model import FT_PER_M
 from src.shared.paths import REPO_ROOT
 
@@ -50,10 +63,9 @@ SLEEP_S = 1.0            # public-API courtesy rate limit (1 req/s)
 # reverse_coords.csv, also shared at root; already in the CI cache as this path.)
 CACHE_PATH = REPO_ROOT / 'data' / 'dem_cache.json'
 _NED = 'https://api.opentopodata.org/v1/ned10m'
-_SRTM = 'https://api.opentopodata.org/v1/srtm30m'
 
-# Cache/query grid. 4 decimals ≈ 10 m, matching the DEM's own 10 m (NED) / 30 m
-# (SRTM) resolution, so snapping the lookup to the grid is lossless (it's below
+# Cache/query grid. 4 decimals ≈ 10 m, matching the DEM's own 10 m (NED)
+# resolution, so snapping the lookup to the grid is lossless (it's below
 # what the data resolves, and gain/loss is computed from a profile smoothed over
 # SMOOTH_M=120 m anyway). It also makes REPEATED routes reuse cached points: a
 # finer ~1 m key (5 decimals) never collided across runs — GPS jitter (~3-10 m)
@@ -165,13 +177,18 @@ def track_points(rec):
 def race_activity(recs, off_m):
     """The single activity whose distance is closest to the official race
     distance — the race itself, excluding any warmup/cooldown activities (their
-    vertical would inflate the race's gain/loss). ``recs`` are rich records."""
+    vertical would inflate the race's gain/loss). ``recs`` are rich records.
+
+    The endpoint is the MAX cumulative distance, not the last sample's: the
+    final 1-2 stream samples reset the distance field to 0 while lat/lon stay
+    valid (the same end-of-activity quirk reps.py sidesteps), so ``pts[-1][0]``
+    can read 0 and hand the race to its own warmup (North Shore 2026-05-31)."""
     best, best_err = None, None
     for rec in recs:
         pts = track_points(rec)
         if len(pts) < 5:
             continue
-        err = abs(pts[-1][0] - off_m)
+        err = abs(max(p[0] for p in pts) - off_m)
         if best_err is None or err < best_err:
             best, best_err = pts, err
     return best
@@ -188,6 +205,72 @@ def _resample(pts):
         return d, lat, lon
     grid = np.arange(d[0], d[-1], SAMPLE_M)
     return grid, np.interp(grid, d, lat), np.interp(grid, d, lon)
+
+
+PROFILE_MIN_HIT = 0.25   # cache coverage to build an along-track profile.
+                         # Repeated training corridors sit near 99% at 10 m;
+                         # single-visit courses (races) were fetched at
+                         # SAMPLE_M=30 m, so ~1/3 of 10 m cells exist — plenty
+                         # for the fusion drift median and the hill veto, both
+                         # of which need net relief over >=100 m spans, not
+                         # step-level shape.
+PROFILE_MAX_GAP_M = 90.0
+
+
+def activity_dem_profile(rec, cache, min_hit=PROFILE_MIN_HIT,
+                         max_gap_m=PROFILE_MAX_GAP_M):
+    """(dist_m, alt_m) — the DEM elevation profile along one activity's GPS
+    track at 10 m spacing, from the point cache only (no network), on the RAW
+    watch distance axis (the same axis as ``elevation.alt_points``). None when
+    the track fails ``track_ok`` or the cache is too thin.
+
+    This is the DEM side of the baro+DEM fusion (elevation.fuse_altitude) and
+    the reference the hill veto checks claims against."""
+    if not track_ok(rec):
+        return None
+    pts = track_points(rec)
+    if len(pts) < 60:
+        return None
+    d = np.array([p[0] for p in pts], float)
+    la = np.array([p[1] for p in pts], float)
+    lo = np.array([p[2] for p in pts], float)
+    keep = np.concatenate(([True], np.diff(d) > 0))
+    d, la, lo = d[keep], la[keep], lo[keep]
+    grid = np.arange(d[0], d[-1], 10.0)
+    if len(grid) < 30:
+        return None
+    gla = np.interp(grid, d, la)
+    glo = np.interp(grid, d, lo)
+    vals = [cache.get(_key(a, b)) for a, b in zip(gla, glo)]
+    have = np.array([v is not None for v in vals])
+    if have.mean() < min_hit or have.sum() < 20:
+        return None
+    xi = grid[have]
+    if len(xi) > 1 and np.diff(xi).max() > max_gap_m:
+        return None
+    yi = np.array([float(v) for v, h in zip(vals, have) if h])
+    return grid, np.interp(grid, xi, yi)
+
+
+ALIGN_SHIFT_M = 80.0
+
+
+def aligned_net(grid, alt, d0, d1, sign, shift_m=ALIGN_SHIFT_M):
+    """Best same-direction DEM net (ft) over [d0, d1] shifted +/-shift_m.
+
+    The baro and GPS distance axes register imperfectly (stride correction vs
+    GPS), so checking DEM over the hill's exact span reads a hill both sources
+    see as "DEM flat" whenever the offset is a few dozen metres — that
+    misregistration accounted for 70% of naive veto hits. NaN when the span
+    never fits inside the profile."""
+    best = -1e18
+    for s in np.arange(-shift_m, shift_m + 1e-9, 10.0):
+        a, b = d0 + s, d1 + s
+        if a < grid[0] or b > grid[-1]:
+            continue
+        net = float(np.interp(b, grid, alt) - np.interp(a, grid, alt))
+        best = max(best, net / 0.3048 * (1 if sign > 0 else -1))
+    return best if best > -1e18 else float('nan')
 
 
 def _load_cache():
@@ -234,8 +317,10 @@ def _query(latlons, dataset):
 
 
 def dem_elevations(lat, lon, cache, sleep_s=SLEEP_S, verbose=False):
-    """Elevation (m) at each (lat, lon) via NED10m (CONUS) with SRTM30m fallback
-    for misses. Cached per on-grid cell (``_key``); the query point is the cell
+    """Elevation (m) at each (lat, lon) via NED10m only — no coarse fallback, so
+    a point NED does not cover returns None and its run keeps the barometric
+    profile (see the module docstring). Cached per on-grid cell (``_key``); the
+    query point is the cell
     itself, so the cached value and the queried point are consistent and
     repeated routes reuse cached cells. Mutates ``cache``. Returns one elevation
     (or None) per input point."""
@@ -243,7 +328,7 @@ def dem_elevations(lat, lon, cache, sleep_s=SLEEP_S, verbose=False):
     # Unique not-yet-cached cells: a 30 m-resampled track can put several points
     # in one ~10 m cell, and repeated routes share cells — query each only once.
     pend0 = list(dict.fromkeys(k for k in keys if k not in cache))
-    for ds in (_NED, _SRTM):
+    for ds in (_NED,):
         pend = [k for k in pend0 if k not in cache]
         if not pend:
             break
@@ -284,6 +369,7 @@ def measure_run_elevation(recs, cache, verbose=False):
         return None
     g_tot = l_tot = net_tot = 0.0
     alts, npts = [], 0
+    up_sums = dn_sums = (0.0, 0.0)
     for rec in recs:
         pts = track_points(rec)
         if len(pts) < 5:
@@ -304,13 +390,30 @@ def measure_run_elevation(recs, cache, verbose=False):
         net_tot += float((galt[-1] - galt[0]) / FT_PER_M)
         alts.append(galt / FT_PER_M)
         npts += int(valid.sum())
+        u, v = segment_sums(hill_segments(d, alt))
+        up_sums = (up_sums[0] + u[0], up_sums[1] + u[1])
+        dn_sums = (dn_sums[0] + v[0], dn_sums[1] + v[1])
     if not alts:
         return None
     allalt = np.concatenate(alts)
+    g_up = grade_from_sums(up_sums)
+    g_down = grade_from_sums(dn_sums)
     return {'dem_gain_ft': round(g_tot, 1), 'dem_loss_ft': round(l_tot, 1),
             'dem_net_ft': round(net_tot, 1),
             'dem_mean_elev_ft': round(float(allalt.mean()), 1),
-            'dem_n_pts': int(npts)}
+            'dem_n_pts': int(npts),
+            'dem_g_gain_pct': round(g_up, 2),
+            'dem_g_loss_pct': round(g_down, 2)}
+
+
+def race_dem_covered(dem_n_pts, off_m, floor=0.9):
+    """Whether a race DEM row's point count is plausible for the official
+    distance — ``dem_n_pts`` should be ~``off_m / SAMPLE_M``. A large shortfall
+    means the measurement covered the wrong segment (e.g. the pre-fix picker
+    measuring a warmup), and the row must not price the race's grade."""
+    if dem_n_pts is None or not np.isfinite(dem_n_pts) or not off_m:
+        return False
+    return float(dem_n_pts) >= floor * (float(off_m) / SAMPLE_M)
 
 
 def measure_race_elevation(recs, off_m, cache, verbose=False):
@@ -339,6 +442,8 @@ def measure_race_elevation(recs, off_m, cache, verbose=False):
     grid, galt = _gridded_altitude(d, alt)
     net_ft = float((galt[-1] - galt[0]) / FT_PER_M)
     mean_ft = float(galt.mean() / FT_PER_M)
+    g_up, g_down = weighted_grades(d, alt)
     return {'dem_gain_ft': round(g, 1), 'dem_loss_ft': round(l, 1),
             'dem_net_ft': round(net_ft, 1), 'dem_mean_elev_ft': round(mean_ft, 1),
-            'dem_n_pts': int(valid.sum())}
+            'dem_n_pts': int(valid.sum()),
+            'dem_g_gain_pct': round(g_up, 2), 'dem_g_loss_pct': round(g_down, 2)}

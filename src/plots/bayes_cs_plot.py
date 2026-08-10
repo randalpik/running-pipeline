@@ -42,6 +42,7 @@ from src.shared.units import METERS_PER_MILE
 from src.shared.plot_window import data_span, first_race_date, axis_pad_entry
 from src.shared.cs_projection import load_cs_outputs, project_races_to_5k_pace
 from src.shared.performance_frontier import standard_demos, build_frontier_band
+from src.shared.recovery_model import race_physical_correction
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             sec_to_mss, sec_to_mss_prec, time_decimals,
                             SURFACES, rgba, GRID,
@@ -162,6 +163,12 @@ def main():
         elig_plot, summary_plot, beta_long_med, d_thresh_long,
         apply_xc_correction=False, apply_physical_correction=False)
     elig_proj['pace_norm_min_unc'] = elig_unc['pace_norm_min'].to_numpy()
+    # Tooltip elevation channels: the fused gross totals behind each race's
+    # grade correction (NaN where no measured race row).
+    _phys = race_physical_correction(elig_proj)
+    for c in ('elev_gain_ft', 'elev_loss_ft', 'grade_dt_sec',
+              'climb_dt_sec', 'descent_dt_sec'):
+        elig_proj[f'tt_{c}'] = _phys[c].to_numpy()
     elig_plot = elig_proj[elig_proj['pace_norm_min'].notna()].copy()
     print(f'Hyperbolic projection (5K-equiv): {len(elig_plot)} race diamonds')
 
@@ -274,6 +281,21 @@ def main():
                          f"<span class='tt-mute'>"
                          f"({sec_to_mss(t_corr / dist_mi)}/mi)</span></div>")
 
+        # Measured vertical behind the course correction, shown when the grade
+        # term moved the time notably (>= 3 s). Just the gain and loss — the
+        # correction itself is the next line, and a 30 ft half marathon here is
+        # how the North Shore warmup mis-pick would have been caught on day one.
+        elev_line = ''
+        g_dt = row.get('tt_grade_dt_sec')
+        if (g_dt is not None and not pd.isna(g_dt) and abs(float(g_dt)) >= 3.0
+                and not pd.isna(row.get('tt_elev_gain_ft'))):
+            from src.plotting.hover import signed_mss
+            elev_line = (
+                f"<div>Elevation: <b>+{float(row['tt_elev_gain_ft']):.0f} ft "
+                f"({signed_mss(float(row['tt_climb_dt_sec']))}) / "
+                f"−{float(row['tt_elev_loss_ft']):.0f} ft "
+                f"({signed_mss(float(row['tt_descent_dt_sec']))})</b></div>")
+
         # 5K-equiv (the diamond's y). Suppressed for every 5K: the projection
         # is exact identity at 5000m, so the line would only echo the actual
         # time (uncorrected 5K) or the course-correction line (corrected 5K).
@@ -288,7 +310,7 @@ def main():
                 f"<div>{int(dist)}m in "
                 f"<b>{sec_to_mss_prec(t_orig, td)}</b> "
                 f"<span class='tt-mute'>({pace_raw}/mi)</span></div>"
-                f"{corr_line}{equiv_line}")
+                f"{elev_line}{corr_line}{equiv_line}")
 
     # "Before correction" reference: for races a correction moved materially
     # (>1 s/mi at 5K-equiv), show an open diamond at the UNCORRECTED 5K-equiv

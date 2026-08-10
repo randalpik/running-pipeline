@@ -106,9 +106,10 @@ LR_COVARIATES = ['temp_centered'] + [f'fat_{c}' for c in QUALITY_CATS]
 # upstream as a TIME correction in workouts.project_long_runs — so raw_resid
 # already carries the flat-equivalent grade correction by the time it reaches
 # this fit. Pricing grade on the run's own pace (before the β un-bias and the
-# hyperbola), with measured per-mile gain/loss and a terrain/effort-aware
-# descent refund, is strictly better than a single pinned slope on a
-# balanced-route constant centered at the era median.
+# hyperbola), from each run's measured hill segments through the two-channel
+# model (climb cost + steepness-dependent descent benefit), is strictly better
+# than a single pinned slope on a balanced-route constant centered at the era
+# median.
 #
 # LR_PHYS_FITTED is the extension point for FITTED physical terms (footing,
 # altitude). Empty by default: altitude was a fitted term until June 2026,

@@ -90,6 +90,25 @@ const FIXTURES: Fixture[] = [
       + '</div>',
   },
   {
+    name: 'fitness — race with elevation audit line (Aug 2026)',
+    html: '<div class="tt-date">2026-05-31 (Sun)</div>'
+      + '<div class="tt-section">'
+      + '<div><b>North Shore Classic</b> <span class="tt-mute">(Road)</span></div>'
+      + '<div>21098m in <b>1:09:52</b> <span class="tt-mute">(5:20/mi)</span></div>'
+      + '<div>Elevation: <b>+538 ft (+1:07) / −542 ft (−0:25)</b></div>'
+      + '<div>Course correction: <b>1:09:10</b> <span class="tt-mute">(5:17/mi)</span></div>'
+      + '<div>5K equivalent: <b>14:48</b> <span class="tt-mute">(4:46/mi)</span></div>'
+      + '</div>',
+  },
+  {
+    name: 'recovery — elevation kv line wraps, not clips',
+    html: '<div class="tt-date">2024-03-27</div>'
+      + '<div class="tt-section">'
+      + '<b>Pace:</b> 5:43/mi  (8.6 mi) <span style="color:#888">[watch-measured]</span><br>'
+      + '<b>Elevation:</b> +392 ft (+1:58) / −391 ft (−1:02)<br>'
+      + '<b>Temp:</b> 12°C<br><i>Sammamish River Trail</i></div>',
+  },
+  {
     name: 'pathological — single unbreakable token',
     html: '<b>Workout</b><br>'
       + 'Supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercali',

@@ -39,8 +39,6 @@ from src.shared.paths import DATA_DIR
 from src.shared.units import METERS_PER_MILE
 from src.shared.hill_model import minetti_net_factor, minetti_cost, FT_PER_M
 from src.shared.cs_projection import cp3_dprime, cp3_implied_cs, cp3_time
-from src.shared.elevation_cost import (elevation_cost, paved_refund,
-                                       REFUND_RECOVERY)
 from src.shared.recovery_model import (ADMITTED_PARTNERS, MISLOGGED_ROUTES,
                                        per_run_elevation, per_run_altitude,
                                        physical_route_betas, altitude_regressor,
@@ -711,8 +709,10 @@ def long_run_fit_rows():
     for the pooled physical-route fit (recovery_model.physical_route_betas).
     No CS projection — just the honest run-pace residual inputs that put long
     runs on the same scale as recovery rows. Returns a frame with ``date``,
-    ``pace_for_fit`` (corrected where available), ``elev_gain_pm`` /
-    ``elev_loss_pm``, ``terrain_type``, ``altitude``, ``temp_c``,
+    ``pace_for_fit`` (corrected where available), the per-run grade columns
+    (gross ``elev_gain_pm``/``elev_loss_pm`` + hill grades
+    ``elev_g_up``/``elev_g_dn``), ``terrain_type``, ``altitude``,
+    ``temp_c``,
     ``time_of_day``, ``miles``; empty frame if no long runs."""
     d = pd.read_csv(DAILY_PATH, parse_dates=['date'])
     lr = _long_run_gated(d)
@@ -731,8 +731,8 @@ def long_run_fit_rows():
     if lr.empty:
         return lr
     ev = per_run_elevation(lr)
-    lr['elev_gain_pm'] = ev['elev_gain_pm']
-    lr['elev_loss_pm'] = ev['elev_loss_pm']
+    for c in ('elev_gain_pm', 'elev_g_up', 'elev_loss_pm', 'elev_g_dn'):
+        lr[c] = ev[c]
     return lr
 
 
@@ -800,17 +800,15 @@ def project_long_runs(cs, epoch):
     old route-constant median-centered slope (0.17·elev_per_mile) that lived
     on the residual scale in long_run_model. The cost is the FULL net grade
     cost (not deviation-from-median), so a net-uphill run projects faster and
-    a net-downhill (Boston-type) run projects slower — intentionally shifting
-    absolute 5K-equivalent levels and the demonstrated-capability frontier.
-    The descent refund is effort-aware on paved terrain (paved_refund): long
-    runs sit near race effort, so descents refund less than at recovery. The
-    effort uses the run's uncorrected pace to pick the refund that corrects
-    it — a benign one-pass, second-order input on the paved descent arm only
-    (NOT iterated). Mixed/trail use the terrain-default recovery refund (rough
-    footing caps the descent at all efforts). Validity/fallback ride
-    per_run_elevation: a run with no measured grade (no watch, or the
-    watch-failure guard) falls back to the route constant, then 0 — degrading
-    to the prior behavior with no correction, never a crash (GHA has no
+    a net-downhill run projects slower — intentionally shifting absolute
+    5K-equivalent levels and the demonstrated-capability frontier. The grade
+    term is the fractional engine's single grade-resolved refund curve at
+    every terrain and effort (the effort-aware paved refund was retired Aug
+    2026 — no effort schedule survived the data; the fractional form already
+    scales the cost with pace). Validity/fallback ride per_run_elevation: a
+    run with no measured grade (no watch, or the watch-failure guard) falls
+    back to the route constant + terrain-default grade, then 0 — degrading to
+    the prior behavior with no correction, never a crash (GHA has no
     details cache).
     """
     d = pd.read_csv(DAILY_PATH, parse_dates=['date'])
@@ -838,43 +836,46 @@ def project_long_runs(cs, epoch):
     # gain/loss through the shared engine and remove it from the run's TIME,
     # yielding the flat-equivalent the projection treats as the race.
     ev = per_run_elevation(lr)
-    lr['elev_gain_pm'] = ev['elev_gain_pm']
-    lr['elev_loss_pm'] = ev['elev_loss_pm']
+    for c in ('elev_gain_pm', 'elev_g_up', 'elev_loss_pm', 'elev_g_dn',
+              'disp_gain_pm', 'disp_loss_pm'):
+        lr[c] = ev[c]
     terr = (lr.get('terrain_type', pd.Series(np.nan, index=lr.index))
             .astype(str).str.strip().str.lower())
     terr = terr.where(terr.isin(('paved', 'mixed', 'trail')), 'paved')
-    # Effort = CS-implied pace at the run's own distance / run pace (1.0 =
-    # racing this distance). Uncorrected pace by design — a second-order input
-    # to the paved descent refund, one pass, not iterated.
-    t5k_cs = lr['p5k_cs_min'] * 60.0 * 5000.0 / METERS_PER_MILE
-    vmax = workout_vmax(lr['cs_t'].to_numpy(float))
-    cs_mps = cp3_implied_cs(5000.0, t5k_cs.to_numpy(), lr['dp3_t'], vmax)
-    t_pred = cp3_time(lr['d_m'].to_numpy(float), cs_mps, lr['dp3_t'], vmax)
-    lr['effort'] = t_pred / lr['t_run']
-    # Refund: effort-aware on paved; terrain-default recovery refund on
-    # mixed/trail. Fully numeric (no NaN) so the engine prices every row.
-    refund = terr.map(REFUND_RECOVERY).astype(float).to_numpy(copy=True)
-    paved = (terr == 'paved').to_numpy()
-    refund[paved] = [paved_refund(e) for e in lr['effort'].to_numpy()[paved]]
-    cost = elevation_cost(lr['elev_gain_pm'].fillna(0.0).to_numpy(),
-                          lr['elev_loss_pm'].fillna(0.0).to_numpy(),
-                          terr.to_numpy(), refund=refund)
+    # Grade: the two-channel engine on the run's own pace (t_run/d_m); fit
+    # (physical_route_betas) and application use the identical pricing.
+    pace_s_mi = lr['t_run'].to_numpy(float) / (
+        lr['d_m'].to_numpy(float) / METERS_PER_MILE)
+    from src.shared.elevation_cost import (climb_cost, descent_benefit,
+                                           hill_cost)
+    cost = hill_cost(lr['elev_gain_pm'].fillna(0.0),
+                     lr['elev_g_up'].fillna(0.0),
+                     lr['elev_loss_pm'].fillna(0.0),
+                     lr['elev_g_dn'].fillna(0.0), pace_s_mi)
+    # Channel split for tooltips (display-only).
+    lr['climb_s_mi'] = (np.asarray(climb_cost(lr['elev_g_up'].fillna(0.0)))
+                        * lr['elev_gain_pm'].fillna(0.0).to_numpy(float)
+                        * pace_s_mi)
+    lr['desc_s_mi'] = -(np.asarray(descent_benefit(lr['elev_g_dn'].fillna(0.0)))
+                        * lr['elev_loss_pm'].fillna(0.0).to_numpy(float)
+                        * pace_s_mi)
     # Footing + altitude: pinned from the pooled recovery+long physical fit
     # (physical_route_betas, the single source of truth shared with the
     # recovery model), credited the same way as grade — removed from the run's
     # time to get the flat / sea-level-equivalent the projection treats as the
-    # race. Off-road footing is the FLAT-surface penalty on top of the grade
-    # engine's mixed refund-asymmetry (separate channels, no double-count,
-    # exactly as in the recovery decomposition); altitude normalizes Boulder
-    # runs to sea level so the frontier measures fitness, not where Max ran.
+    # race. trail_frac footing is the FLAT-surface penalty on top of the
+    # terrain-blind grade engine (separate channels, no double-count, exactly
+    # as in the recovery decomposition); altitude normalizes Boulder runs to
+    # sea level so the frontier measures fitness, not where Max ran.
     pb = physical_route_betas()
-    is_offroad = terr.isin(('mixed', 'trail')).astype(float).to_numpy()
+    trail_frac = terr.map({'paved': 0.0, 'mixed': 0.5,
+                           'trail': 1.0}).fillna(0.0).to_numpy()
     # Altitude through the science-pinned threshold regressor (0 below 3000 ft,
     # linear above) — same transform the betas were fit on, so fit/application
     # stay consistent.
     alt_eff = altitude_regressor(per_run_altitude(lr))
     lr['grade_cost_s_per_mi'] = cost
-    lr['footing_cost_s_per_mi'] = pb['is_offroad'] * is_offroad
+    lr['footing_cost_s_per_mi'] = pb['trail_frac'] * trail_frac
     lr['alt_cost_s_per_mi'] = pb['alt_kft'] * alt_eff
     phys_credit = (cost + lr['footing_cost_s_per_mi'].to_numpy()
                    + lr['alt_cost_s_per_mi'].to_numpy())

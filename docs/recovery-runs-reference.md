@@ -128,20 +128,22 @@ freely; the physical channels are pinned.
 
 - **Off-road footing** (`is_offroad`, the mixed+trail binary — bucket every
   run by its LOCATION `terrain_type`, never by surface): the flat-surface
-  penalty for running on non-paved ground, ≈ **+4.78 sec/mi**. Pinned, not
+  penalty for running on non-paved ground (trail_frac coding: mixed = half
+  the full-trail value; live ≈ +16 at full trail as of Aug 2026). Pinned, not
   fitted in this model.
-- **Altitude** (hypoxia): ≈ **+2.28 sec/mi per 1000 ft above a ~3000 ft
+- **Altitude** (hypoxia): ≈ **+2 sec/mi per 1000 ft above a ~3000 ft
   threshold** (VO2max is ~flat below the threshold, then declines roughly
   linearly — the shape is science-pinned, only the slope is data-fit).
   Below ~3000 ft the term is exactly 0. Pinned, not fitted here. (Threshold-
   curve derivation lives with the engine — → see `route-normalization-reference.md`.)
 - **Grade-aware `elev_cost`** (pinned): scales with each route's *per-run
-  measured* gain/loss, so a hilly-mixed route costs far more than a flat one.
-  Imported from the per-mile elevation data (where gain and loss separate),
-  not chosen — gain/loss are collinear within loops at run-level. The
-  `elevation_cost` formula, the terrain×effort descent refund, and the
-  altitude threshold-curve derivation are not duplicated here →
-  see `route-normalization-reference.md` (elevation engine).
+  measured* hill segments, so a hilly-mixed route costs far more than a flat
+  one. Constants come from the per-mile calibration (where climb and descent
+  separate), not chosen — the two verticals are collinear within loops at
+  run-level. The two-channel `elevation_cost` formula, the hill segmentation,
+  the fused baro+DEM substrate, and the altitude threshold-curve derivation
+  are not duplicated here → see `route-normalization-reference.md`
+  (elevation engine).
 
 **`physical_route_betas()` is the single source of truth** for the footing
 and altitude constants. It pools recovery + in-slice long runs on a shared
@@ -566,8 +568,8 @@ fat_race_short       +8.7       exp(−t/5) decay from short race
 tod_is_pm            −4.7       sec/mi for afternoon/late vs early/morning
 
 Physical route channels (pinned, not fitted here — from physical_route_betas):
-  is_offroad          +4.78     sec/mi flat-surface footing (mixed+trail)
-  altitude            +2.28     sec/mi per 1000 ft above the ~3000 ft threshold
+  trail_frac          ~+16      sec/mi flat-surface footing at full trail share (mixed = half)
+  altitude            ~+2       sec/mi per 1000 ft above the ~3000 ft threshold
   elev_cost           (per-run) grade-aware, scales with measured gain/loss
 
 R² on detrended:    0.298

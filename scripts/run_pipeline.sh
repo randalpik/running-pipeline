@@ -122,6 +122,12 @@ fi
 if [[ -f data/watch_activities.csv ]]; then
   loud_step "elevation"              python scripts/backfill_elevation.py "${watch_regen[@]}"
 fi
+# Live calibration of the fractional grade engine (k_up / refund curve) from
+# the freshly-written mile splits; consumers read data/elevation_calibration.csv
+# via elevation_cost.engine_params(). Thin corpora write defaults (no-op safe).
+if [[ -f data/elevation_splits.csv ]]; then
+  quiet_step "calibrate_climb"       python scripts/calibrate_climb.py
+fi
 # Per-day altitude + local-time envelopes for the Misc. Trends plot, from the
 # rich detail cache (no network). Same lifecycle as elevation_measured.csv:
 # built wherever the details cache is present, gitignored, and the plot renders

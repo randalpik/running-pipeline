@@ -104,39 +104,159 @@ This era structure is also why **footing and altitude are era-correlated**
 must be isolated by a backfit rather than a sequential era-detrend (which
 would absorb them).
 
-## The physical elevation engine (SHIPPED, June 2026)
+## The physical elevation engine (Aug 2026: two-channel hill model)
 
 Per-route empirical dummies and the hand-set `elev_per_mile × constant`
 route cost were replaced by a physical, era-free engine driven by the
-per-second watch altitude/GPS stream. One engine feeds all three layers — recovery, long-run, race
-— through a single set of constants, so a route's intrinsic cost is computed
-the same way everywhere.
+per-second watch altitude/GPS stream. One engine feeds all three layers —
+recovery, long-run, race — through a single set of constants, so a route's
+intrinsic cost is computed the same way everywhere.
 
 ### The cost model — `src/shared/elevation_cost.py`
 
-Per-mile grade cost (s/mi) from per-mile gain/loss (ft/mi) on a terrain:
+Hill cost is a **fraction of pace**, priced from each run's validated hill
+segments — two independent channels, no refund ratio:
 
 ```
-cost = c_up · gain  −  refund · c_up · loss
+cost_fraction = c(g_up)·hill_gain_pm − b(g_dn)·hill_loss_pm
+c(g) = c0 + c1·g            climb cost per ft/mi of HILL vertical
+b(g) = b0 + b1·g            descent benefit per ft/mi (b1 < 0)
+cost_s_per_mi = cost_fraction · pace / (1 + cost_fraction)
 ```
 
-- **`c_up`** (`CLIMB_COST`): paved 0.19, mixed/trail 0.26 s/mi per ft/mi
-  climbed (rough terrain costs more to climb).
-- **`refund`** = the fraction of the climb cost returned on the descent —
-  **terrain × EFFORT dependent**, the key hard-won finding. Paved descents
-  refund nearly fully at easy effort (`REFUND_RECOVERY` paved 1.0 — you bank
-  them) and less as you approach race pace (`REFUND_PAVED_BY_EFFORT` /
-  `paved_refund(effort)` falls to ~0.85 at race effort — near v_max you can't
-  speed up to cash the descent). Mixed/trail refund only ~0.34 at **all**
-  efforts (rough footing caps the descent). So **paved rolling is cheap even
-  racing (~0.3%); the textbook 1–2% rolling cost holds only for mixed/trail.**
-- **Effort** = frontier pace at the run's *own* distance / run pace (cap ≤ 1;
-  a marathon at marathon pace is at its ceiling ~1.0). Races sit at ~1.0;
-  recovery and long runs both center ~0.85 (their effort ranges coincide, so
-  the transfer between them is constant-effort, no scaling).
-- The cost is **pinned, not fitted**: gain and loss are collinear within loops
-  at run level, so the climb/refund constants are imported from the per-mile
-  data (where gain and loss separate), not estimated from run-level residuals.
+Inputs are pure course geometry: vertical inside hill segments (ft/mi) and the
+vertical-weighted mean grade of each direction's segments (the weighting under
+which a linear model is exact). Sub-threshold undulation is the flat baseline,
+priced at zero. Nothing about execution enters, so a correction cannot be moved
+by running differently.
+
+- **Why two channels, not a refund ratio.** The ratio form forces one
+  parameter to carry two physically separate slopes; every unconstrained fit
+  pushed it unphysical (>1 — rolling courses reading net-fast) whenever the
+  data wanted a small climb cost against a large descent benefit. Independent
+  channels also drop the consistent-effort assumption — which is what kept
+  hill workouts on a separate Minetti model.
+- **Climb cost is near grade-invariant** (c1 small, Minetti-consistent). The
+  steepness effect is a **descent** phenomenon: b(g) declines hard with grade
+  and **crosses zero near 9% — the braking regime — measured inside the data**
+  (hill-grade p99 ~9.6% once mixed/trail miles joined the calibration), not
+  extrapolated. Beyond `GRADE_DOMAIN_PCT` (12%) grades are clamped.
+- **Climb cost is pace-PROPORTIONAL**, not a fixed s/mi. Minetti 2002 derives
+  1.026e-3 per ft/mi as the textbook anchor (C′(0)/C(0)/5280); the fitted c(g)
+  sits below it with position-matched sustained-climb natural experiments in
+  between.
+- **One constant set for all terrains and efforts.** Terrain is day-constant,
+  so the mile-grain day FE absorbs footing during calibration; terrain
+  survives only as the flat `trail_frac` footing fitted separately. The old
+  effort schedule stays retired.
+- `pace/(1+frac)` applies the fraction to the FLAT-equivalent pace, so a run
+  slowed by its own hills cannot inflate its own correction.
+- **Magnitude is EXCESS gross vertical**: gross fused gain/loss minus the
+  measured flat-ground floor (`floor_g`/`floor_l` ≈ 15 ft/mi — TV noise +
+  micro-undulation). The day-demeaned calibration absorbs the floor and never
+  priced it; charging it anyway gave every run a phantom ~2 s/mi (Berlin read
+  +52 s). Steepness enters as `g_eff = Σ_hills(vert·grade)/E_gain` — the
+  statistic under which the run-level closed form exactly equals the
+  calibration's window sums (hill-less vertical at grade 0; a hills-only mean
+  grade over-charges the interaction on flat feet — it inflated Boston ~2×).
+- **Live**: `scripts/calibrate_climb.py` refits c0/c1/b0/b1 + the floor each
+  build (`data/elevation_calibration.csv`), with sign / natural-experiment
+  validation warnings; committed defaults cover thin corpora.
+
+Calibration spec — **continuous sliding-window regression**: one observation
+per 30 m of every eligible run, window length **1.5 mi**. No window placement
+exists (fixed mile bins moved coefficients 20-35% under a half-mile boundary
+shift); the scale is bounded both ways by the Aug 2026 sweep — ≥ ~1.25 mi so a
+window contains a hill plus its smeared pace response (below that the
+steepness slopes attenuate into the base rates), ≤ ~2 mi before identification
+thins (few windows per run; short runs leave the corpus; NOT gain/loss
+collinearity, measured flat at −0.51 across scales). Priced rates at
+corpus-typical grades are scale-invariant within ~2% from 0.25-2.0 mi.
+Controls: day demeaning (FE); **quintile drift dummies** (flat pace is not
+linear through a run: −3.4% at the second decile, +3.0% at the fifth; climbs
+sit late in Max's runs and descents early, so under-absorbed drift lands on
+the two channels with opposite signs); 4σ MAD prune at window grain only;
+recovery + long, paved + mixed + trail.
+
+### Hill segmentation — `src/coros/elevation.py`
+
+A hill is a contiguous same-sign stretch of the grade curve (Aug 2026 rebuild;
+every choice below was validated against before/after profile panels and the
+mile-grain fit):
+
+- **No elevation smoothing.** The device stream is already filtered (flat
+  ground holds a line to 0.74 ft RMS/100 m). The old 80 m rolling mean rounded
+  short pitches under the hill floor and deflated grades ~2× (a real 13.3%
+  descent read 3.9%) — it inflated the fitted descent slope ~80%.
+- **Grade sign from a centred 40 m lag** (`SEG_LAG_M`): the stream is ~1 ft
+  quantized, so one quantum over a 10 m step reads 3% (phantom pitch); over
+  40 m it reads 0.75%, under threshold.
+- **>45° steps zeroed** (barometric resets — a level shift; the totals'
+  `SPIKE_GRADE_CAP` clip would leave a 32.8 ft residue that clears the floor
+  as a phantom hill).
+- **±2% threshold** (`SEG_MIN_GRADE`) — pitched vs flat; this line doubles as
+  the steepness selection. **≥12 ft vertical** (`SEG_MIN_VERT_FT`, the
+  momentum floor). Same-sign pitches merge across flat gaps ≤60 m
+  (`SEG_GAP_M`) with absorbed flat capped at 25% of the hill's extent
+  (`SEG_FLAT_FRAC`) — the old iterative gap-closing was unbounded (bridged up
+  to 2,920 m of flat, halving real grades).
+- **Grade = vertical / PITCHED distance** — absorbed flat never dilutes it.
+  Ceiling 100% (45°), not the old 20% clip, which censored ordinary steep
+  hills (20% ≈ 11°, treadmill range).
+
+### The fused substrate — `elevation.fuse_altitude` + `dem_elevation.activity_dem_profile`
+
+Everything (segments, grades, gain/loss totals, mile splits) is measured on a
+**complementary-filter fusion** of the two altitude sources:
+
+```
+drift(d) = rolling_median( baro(d) − DEM(d), 1.5 km )
+fused(d) = baro(d) − drift(d)
+```
+
+Baro is right at high frequency (structures, pitches; wrong slowly via ambient
+pressure) and DEM is right at low frequency (net trend, loop closure; wrong
+locally — bare-earth lidar strips bridges/decks/post-lidar construction, and
+GPS wander reads the contour beside the path). The 1.5 km median cannot be
+moved by a 100-400 m structure, so structures pass through intact while
+pressure drift is removed. Proof battery (the first two never consult DEM):
+out-and-back self-mismatch 6.6→3.0 ft median; cross-visit SD at repeated spots
+12.8→8.9 ft; known structures preserved within ~2 ft of baro (vs ~0 under
+DEM-trust); loop |net| 9.8→4.1 ft. **This retires the old two-scale rule**
+(DEM totals / baro shape) and the totals rescale: one substrate, and structure
+climbs now land in totals too. No-DEM days (Canada, `track_ok` failures, thin
+cache) keep pure baro + spike guards.
+
+### The persistence-aware hill veto — backfill `apply_hill_veto`
+
+DEM **refutes, never confirms**. A hill is vetoed only when BOTH:
+
+1. DEM shows near-flat ground under it after ±80 m alignment
+   (`dem_elevation.aligned_net` — axis misregistration accounted for 70% of
+   naive veto hits): same-direction net < 25% of the claim AND < 12 ft;
+2. the disagreement is a **one-off**: veto candidates cluster by location
+   (55 m cells, 8-neighbour union-find so GPS drift can't fragment one
+   structure into several "locations"); recurrence on ≥2 dates = structure
+   bare-earth lidar cannot see (arch bridges, boardwalks, post-lidar
+   construction — all confirmed cases) → baro trusted, never vetoed.
+
+Demanding DEM *confirmation* instead was tested and rejected: fit R² fell
+monotonically with vertical removed and the coefficients went unphysical — a
+large share of "DEM-missing" hills are real. Final scope ~0.4% of hill
+vertical: one-off pressure blips (median ~14 ft), including phantom hills
+inside races (Run for the Pies 2021, Craft Classic 2024 mile 12.9). The veto
+runs over the full `data/elevation_hills.csv` every build, so a structure's
+first visit is retroactively un-vetoed when its second visit lands.
+
+### The hills artifact — `data/elevation_hills.csv`
+
+One row per hill: `date, act, d0, d1, vert_ft, grade_pct, kind, lat, lon,
+dem_net_ft, vetoed`. The backfill's post-pass rebuilds the per-run
+(`elevation_measured.csv`: `seg_up_ft/seg_dn_ft/g_up_pct/g_dn_pct`) and
+per-mile (`elevation_splits.csv`: `seg_up_ft/seg_dn_ft/g_up/g_down`) segment
+quantities from the surviving hills, so fit and application always see one
+statistic. Race rows are measured on the race activity alone and carry
+race-scoped values.
 
 ### Altitude (hypoxia) — threshold + linear curve
 
@@ -151,7 +271,7 @@ runs at 8–9k ft), so it can identify a scale but not a shape.
   2569 m max; the clinical heuristic is ~8–11% VO₂max per 1000 m *above*
   3000 ft; Péronnet et al. 1991 for the distance-dependence of the running-
   performance loss).
-- Slope (fitted on the pooled corpus, below): ≈ **+2.28 s/mi per 1000 ft above
+- Slope (fitted on the pooled corpus, below; live value ≈ +2.0 as of Aug 2026): ≈ **+2 s/mi per 1000 ft above
   the 3000 ft threshold** → Boulder ≈ +5.5 s/mi (the bulk of the data, which
   anchors the fit and is ~unchanged from the old model), **Magnolia ≈ +12.3
   (+37%)**, everything < 3000 ft → **exactly 0**.
@@ -165,10 +285,12 @@ runs at 8–9k ft), so it can identify a scale but not a shape.
 ### The pinned betas — `recovery_model.physical_route_betas()`
 
 THE single source of truth for the two **fitted** physical constants:
-off-road **footing** (`is_offroad` = mixed+trail binary, the flat-surface
-penalty ≈ **+4.78 s/mi**) and the **altitude slope** (above). One constant per
-channel applies in the recovery model, the long-run 5K conversion, and the
-race correction.
+**footing** (`trail_frac` — continuous 0 paved / ½ mixed / 1 trail, so trail
+carries ~2× the mixed penalty with one parameter; the flat-surface cost at
+full trail share, ≈ +16 s/mi as of Aug 2026, i.e. ≈ +8 on mixed) and the
+**altitude slope** (above). One constant per channel applies in the recovery
+model, the long-run 5K conversion, and the race correction. (Live values
+evolve with each refit — read them from the fit, not this doc.)
 
 - Pools recovery + in-slice long runs on a shared `pace − cs_pace` scale with
   an `is_long` level dummy and the recovery **era-backfit** (era smoother ↔
@@ -208,11 +330,26 @@ gain/loss, Minetti factor, + per race-row `dem_*` columns), `altitude_daily.csv`
 elevation.py` does the gridding/smoothing (10 m grid, 120 m window, matching
 the device's own `elevGain` within 1–3% on hilly runs).
 
+**DEM policy: 10 m lidar only (Aug 2026).** `ned10m` (the whole US including
+Hawaii) is the only DEM in the chain; anywhere it does not reach, the run keeps
+its **barometric** profile and there is deliberately no coarser fallback.
+Measured on identical GPS tracks (`scratch/rundle_comparison.html`): against
+baro, ned10m sits +5 ft/mi on a forested trail while srtm30m sits +40, aster30m
++81, and NRCan CDEM swings +16 on one route and −30 on another. The coarse
+sources each fail differently in different terrain, and their fine structure
+correlates better with EACH OTHER than with the barometer, so there is no
+calibration to borrow. Gross gain is a total-variation statistic, so any
+per-sample noise adds to it and never subtracts — SRTM's surcharge measured a
+flat +30.4 ft/mi on two Banff routes whose real relief differed 5×. Baro's own
+error is a mild under-read plus occasional spikes (capped at 45° per step in
+`elevation.py`), which errs toward under-correcting: the conservative direction.
+
 **Races use a DEM, not the barometric stream.** The watch's per-race *net* is
 noise (the same Bolder Boulder course read −19 ft/mi net one year and +5 the
 next) while its horizontal GPS track is reliable and reproducible. So
 `src/coros/dem_elevation.py` resamples elevation from a DEM (OpenTopoData USGS
-NED 10 m, SRTM 30 m fallback; point cache `data/dem_cache.json`) along the
+NED 10 m only — see the DEM policy above; point cache
+`data/dem_cache.json`) along the
 cached GPS track, written into the race rows of `elevation_measured.csv` as
 `dem_gain_ft`/`dem_loss_ft`/`dem_net_ft`/`dem_mean_elev_ft`. The DEM net
 subsumes the earlier loop heuristic (a loop reads net ≈ 0 naturally). Recovery

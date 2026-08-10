@@ -226,9 +226,16 @@ def table(
     ) + '</tr>'
     body_rows = []
     for row in rows:
-        cells = ''.join(
-            f'<td{_cell_class(a)}>{c}</td>' for c, a in zip(row, align_cols)
-        )
+        if len(row) == 1:
+            # Single-cell row spans every column — for entries whose value is
+            # an expression rendered inside the cell (e.g. a rate formula on
+            # its own right-aligned line) rather than a separate column.
+            cells = f'<td colspan="{len(headers)}">{row[0]}</td>'
+        else:
+            cells = ''.join(
+                f'<td{_cell_class(a)}>{c}</td>'
+                for c, a in zip(row, align_cols)
+            )
         body_rows.append(f'<tr>{cells}</tr>')
     return (
         '<table class="rp-table">\n'

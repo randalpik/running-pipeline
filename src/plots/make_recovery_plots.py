@@ -252,6 +252,28 @@ def main():
                 tag = ' <span style="color:#888">[corrected route]</span>'
         parts = [tt_kv('Pace', f"{sec_to_mss(disp_pace)}/mi{disp_dist}{tag}")]
 
+        # Measured vertical, shown when the grade contribution moves this
+        # run's adjusted pace notably (>= 1 s/mi).
+        ce = row.get('contrib_elevation')
+        if pd.notna(ce) and abs(float(ce)) >= 1.0:
+            mi = float(row['corr_miles']) if pd.notna(row.get('corr_miles')) \
+                else float(row['miles'])
+            gain = float(row.get('disp_gain_pm')
+                         or row.get('elev_gain_pm') or 0) * mi
+            loss = float(row.get('disp_loss_pm')
+                         or row.get('elev_loss_pm') or 0) * mi
+            if gain or loss:
+                from src.plotting.hover import signed_mss
+                cs, ds = row.get('climb_s_mi'), row.get('desc_s_mi')
+                if pd.notna(cs) and pd.notna(ds):
+                    parts.append(tt_kv(
+                        'Elevation',
+                        f'+{gain:.0f} ft ({signed_mss(float(cs) * mi)}) / '
+                        f'−{loss:.0f} ft ({signed_mss(float(ds) * mi)})'))
+                else:
+                    parts.append(tt_kv('Elevation',
+                                       f'+{gain:.0f}/−{loss:.0f} ft'))
+
         if pd.notna(row.get('temp_c')):
             parts.append(tt_kv('Temp', f"{row['temp_c']:.0f}°C"))
         if pd.notna(row.get('wind_mph')):
@@ -791,17 +813,29 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
             f': β = {betas["temp_centered"]:+.2f} s/mi per °C above '
             f'{int(TEMP_HEAT_ONSET_C)}'))
     if av.get('elevation', True):
-        from src.shared.elevation_cost import CLIMB_COST
+        from src.shared.elevation_cost import engine_params
+        ep = engine_params()
+
+        def _rate(base, slope):
+            sign = '+' if slope >= 0 else '−'
+            return (f'{base * 100:.4f} {sign} {abs(slope) * 100:.4f} '
+                    f'per 1% grade')
+
+        def _slope(v):
+            return f'{"+" if v >= 0 else "−"}{abs(v) * 100:.4f} per 1% grade'
+
+        # One inline block, like every other coefficient row here — base
+        # value with the grade slope in parentheses, same shape both sides.
         detail_rows.append(widgets.detail_row(
             'Elevation',
-            f': β = {CLIMB_COST["paved"]:.2f} s/mi per ft/mi net gain'))
+            f': β = {ep["c0"] * 100:.4f}% of pace per ft/mi gained '
+            f'({_slope(ep["c1"])}), {ep["b0"] * 100:.4f}% per ft/mi lost '
+            f'({_slope(ep["b1"])})'))
     if av.get('terrain', True):
-        from src.shared.elevation_cost import CLIMB_COST, REFUND_RECOVERY
         detail_rows.append(widgets.detail_row(
-            'Off-road',
-            f': β = {betas.get("is_offroad", 0):+.1f} s/mi, '
-            f'descent refunds {REFUND_RECOVERY["mixed"]:.0%} of ascent effort, vs '
-            f'{REFUND_RECOVERY["paved"]:.0%} on pavement (applies only with Elevation also on)'))
+            'Terrain',
+            f': β = {betas.get("trail_frac", 0):+.1f} s/mi on unpaved '
+            f'terrain'))
     if av.get('altitude', True):
         detail_rows.append(widgets.detail_row(
             'Altitude',

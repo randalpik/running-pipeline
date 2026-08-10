@@ -97,7 +97,42 @@ def long_run_lines(r, pause_adjusted: bool = False, show_logged: bool = True) ->
             if abs(padj_mi - shown_mi) > 0.1:
                 padj = tt_kv('Pause-adjusted distance', f"{padj_mi:.1f} mi")
 
-    return [ln for ln in (main, padj, alt) if ln]
+    return [ln for ln in (main, padj, alt, elevation_line(r)) if ln]
+
+
+def signed_mss(sec) -> str:
+    """±m:ss for a signed seconds value (display convention for the
+    decomposed elevation adjustments)."""
+    s = int(round(abs(float(sec))))
+    return f"{'−' if sec < 0 else '+'}{s // 60}:{s % 60:02d}"
+
+
+def elevation_line(r, gate_s_per_mi: float = 1.0) -> str:
+    """Elevation detail line for a run row: the measured GROSS gain and loss,
+    each with its decomposed time adjustment — ``+538 ft (+0:42) / −542 ft
+    (−0:26)`` — shown only when the grade correction is notable
+    (|grade_cost_s_per_mi| >= ``gate_s_per_mi``) so flat runs stay clean.
+    Empty string when the row has no grade columns."""
+    gc = r.get('grade_cost_s_per_mi')
+    if gc is None or pd.isna(gc) or abs(float(gc)) < gate_s_per_mi:
+        return ''
+    if pd.notna(r.get('d_m')):
+        mi = float(r['d_m']) / METERS_PER_MILE
+    elif pd.notna(r.get('corr_miles')):
+        mi = float(r['corr_miles'])
+    else:
+        mi = float(r.get('miles') or 0)
+    gain = float(r.get('disp_gain_pm') or r.get('elev_gain_pm') or 0) * mi
+    loss = float(r.get('disp_loss_pm') or r.get('elev_loss_pm') or 0) * mi
+    if gain == 0 and loss == 0:
+        return ''
+    cs = r.get('climb_s_mi')
+    ds = r.get('desc_s_mi')
+    if cs is not None and pd.notna(cs) and ds is not None and pd.notna(ds):
+        return tt_kv('Elevation',
+                     f'+{gain:.0f} ft ({signed_mss(float(cs) * mi)}) / '
+                     f'−{loss:.0f} ft ({signed_mss(float(ds) * mi)})')
+    return tt_kv('Elevation', f'+{gain:.0f}/−{loss:.0f} ft')
 
 
 # --- Hill sessions -----------------------------------------------------------

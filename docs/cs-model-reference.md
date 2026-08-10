@@ -676,10 +676,12 @@ fitness, not the course. (Engine: the `elevation_cost` cost model,
 - **Track races: grade gated OFF** (by surface — flat, barometric noise) but
   the **altitude (hypoxia) term still applies** (a Boulder track race is
   altitude-suppressed).
-- **Race effort ≈ 1.0 by construction**, so paved descents refund at the race
-  edge (`paved_refund(1.0) ≈ 0.85`) — grade bites hardest at race effort.
-- **Inputs.** Per-race grade/altitude come from a DEM resampled along the
-  watch GPS track (the barometric per-race net is noise). Footing + altitude
+- **No effort schedule** (retired Aug 2026): the two-channel hill model —
+  climb cost + steepness-dependent descent benefit — prices races and easy
+  runs identically; see route-normalization-reference.md.
+- **Inputs.** Per-race hill quantities come from the race activity measured
+  alone on the fused baro+DEM substrate (veto-cleaned hill segments); mean
+  elevation stays DEM. Footing + altitude
   betas are pinned from `physical_route_betas` (the same constants recovery
   and long runs use); altitude uses a threshold curve (zero below ~3000 ft).
 - **Refit results.** ~96% 95%-coverage, residual bands tight; the dominant CS

@@ -87,8 +87,9 @@ sits next to CS without feeding back into it.
   corrections, subtracted from each run's time in
   `workouts.project_long_runs` *before* the World Athletics 5K-equivalent
   conversion (so the conversion treats the flat-equivalent as a race).
-  Grade prices each run's per-run measured gain/loss through the shared
-  `elevation_cost` engine with an effort-aware paved descent refund;
+  Grade prices each run's measured hill segments through the shared
+  two-channel `elevation_cost` engine (climb cost + steepness-dependent
+  descent benefit);
   footing and altitude are pinned from `recovery_model.physical_route_betas`
   — the single source of truth shared with the recovery and race-CS
   models. `long_run_model.py` no longer fits anything physical
@@ -587,9 +588,10 @@ raw_resid ~ temp_centered
   5K-equivalent conversion — rather than as residual regressors. Grade is
   each run's per-run measured gain/loss priced through the shared
   `elevation_cost` engine with an effort-aware paved descent refund
-  (`paved_refund`; long runs sit near race effort, so paved descents
-  refund ~0.85). Footing (≈ +4.78 s/mi flat off-road penalty) and altitude
-  (≈ +2.28 s/mi per 1000 ft above a ~3000 ft threshold; per-run measured
+  (one grade-resolved refund curve at every effort — the effort schedule
+  was retired Aug 2026, see route-normalization-reference.md). Footing
+  (trail_frac flat penalty) and altitude
+  (≈ +2 s/mi per 1000 ft above a ~3000 ft threshold; per-run measured
   via `per_run_altitude`, not per-city) are pinned from
   `recovery_model.physical_route_betas` — the single source of truth
   shared with the recovery and race-CS models. The effort ranges of
@@ -669,7 +671,7 @@ so `elev_pm_c`/`altitude_kft` are no longer coefficients of this fit):
 | fat_marathon (peak)         |       +40.41  |
 | fat_race_short (peak)       |       +22.24  |
 
-The pinned physical constants (footing ≈ +4.78 s/mi, altitude ≈ +2.28
+The pinned physical constants (trail_frac footing, altitude slope
 s/mi per 1000 ft above ~3000 ft) come from
 `recovery_model.physical_route_betas`, not this fit; regenerate the
 covariate coefficients above by running `plot_training_quality.py`. The
@@ -882,8 +884,8 @@ race residual = −0.16. Three reasons:
   pinned-slope/fitted-altitude pair (the first replacement for the route
   dummies) was itself superseded by the full physical decomposition
   applied upstream in `workouts.project_long_runs`: grade priced through
-  the shared `elevation_cost` engine off each run's per-run measured
-  gain/loss (with an effort-aware paved descent refund), plus footing and
+  the shared two-channel `elevation_cost` engine off each run's measured
+  hill segments, plus footing and
   per-run-measured altitude pinned from `recovery_model.physical_route_betas`,
   all credited as flat / sea-level-equivalent time corrections before the
   World Athletics 5K-equivalent conversion. The route constant priced terrain

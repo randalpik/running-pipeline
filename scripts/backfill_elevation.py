@@ -32,6 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import numpy as np
 import pandas as pd
 
 from src.shared.env import load_env_file
@@ -54,6 +55,13 @@ ELEV_SPORTS = {M.SPORT_RUN, M.SPORT_TRAIL_RUN}
 # watch use and gets NO watch elevation.
 WATCH_VALID_BAND = (0.6, 1.5)
 
+# Outdoor run types that get elevation rows (races are handled separately from
+# races.csv). long/recovery feed the route models; the rest — trail, hill and
+# quality days — carry the steepest descents in the corpus and feed the
+# grade-distribution analyses.
+RUN_TYPES_ELEV = ('long', 'recovery', 'trail', 'hill_cont', 'hill_rep',
+                  'interval', 'fartlek', 'tempo', 'rep')
+
 # Details dir: a watch-import profile (e.g. maddy) carries its own cache at
 # DATA_DIR/details; the Max drive profile has none there and pulls from the
 # coros (his watch) cache. Resolve to the profile's own cache when present, else
@@ -64,12 +72,18 @@ TOKEN = DATA_DIR / 'profiles' / 'coros' / 'coros_token.json'
 ACTIVITIES = DATA_DIR / 'watch_activities.csv'
 MEAS_OUT = DATA_DIR / 'elevation_measured.csv'
 SPLITS_OUT = DATA_DIR / 'elevation_splits.csv'
+HILLS_OUT = DATA_DIR / 'elevation_hills.csv'
 
 MEAS_COLS = ['date', 'run_type', 'watch_miles', 'corr_miles', 'elev_gain_ft',
-             'elev_loss_ft', 'minetti_factor', 'n_alt_pts',
+             'elev_loss_ft', 'minetti_factor', 'g_gain_pct', 'g_loss_pct',
+             'n_alt_pts', 'fused',
+             'seg_up_ft', 'seg_dn_ft', 'g_up_pct', 'g_dn_pct',
              'dem_gain_ft', 'dem_loss_ft', 'dem_net_ft', 'dem_mean_elev_ft',
-             'dem_n_pts']
-SPLIT_COLS = ['date', 'mile', 'pace_s', 'gain_ft', 'loss_ft']
+             'dem_n_pts', 'dem_g_gain_pct', 'dem_g_loss_pct']
+HILL_COLS = ['date', 'act', 'd0', 'd1', 'vert_ft', 'grade_pct', 'kind',
+             'lat', 'lon', 'dem_net_ft', 'vetoed']
+SPLIT_COLS = ['date', 'mile', 'pace_s', 'gain_ft', 'loss_ft', 'covered',
+              'g_up', 'g_down', 'seg_up_ft', 'seg_dn_ft']
 
 # Flush the DEM point cache to disk every this many days during augmentation.
 # The one-time cold seed can run for hours against the public DEM API's 1 req/s
@@ -125,10 +139,10 @@ def _elev_ids_by_date():
 
 
 def _targets(daily, races, types):
-    """{date: (run_type, corr_miles)} — long/recovery use effective miles,
+    """{date: (run_type, corr_miles)} — daily run types use effective miles,
     races use the official course distance (None -> fall back to watch)."""
     targets = {}
-    for rt in ('long', 'recovery'):
+    for rt in RUN_TYPES_ELEV:
         if rt in types:
             for _, r in daily[daily['run_type'] == rt].iterrows():
                 targets[r['date'].date().isoformat()] = (rt, float(r['eff_miles']))
@@ -143,16 +157,50 @@ def _targets(daily, races, types):
     return targets
 
 
+def _race_rec(recs, off_m):
+    """The single rich activity whose GPS-track length is closest to the
+    official race distance — the race itself (same endpoint rule as
+    dem_elevation.race_activity: MAX cumulative distance, since the trailing
+    samples reset the distance field to 0). Race rows measure THIS activity
+    alone: the whole-day stitch interleaved warmup/cooldown miles into the
+    race's splits and compressed the distance axis by corr/watch (~22% on a
+    3-activity HM day)."""
+    best, best_err = None, None
+    for rec in recs:
+        pts = DEM.track_points(rec)
+        if len(pts) < 5:
+            continue
+        err = abs(max(p[0] for p in pts) - off_m)
+        if best_err is None or err < best_err:
+            best, best_err = rec, err
+    return best
+
+
 def augment_race_dem(meas, races, ids_by_date, sleep_s, verbose=False):
     """Fill DEM gain/loss/net/mean for race rows from the GPS track (races-only;
-    the watch's barometric net is per-race noise — see dem_elevation.py). Idem-
-    potent: only rows missing dem_gain_ft are computed, so a re-run is a cheap
-    cache-served top-up. Returns the count newly computed."""
+    the watch's barometric net is per-race noise — see dem_elevation.py).
+    Rows missing dem_gain_ft are computed, and rows whose stored point count
+    fails the coverage guard (dem_n_pts far below official_dist / SAMPLE_M —
+    the measurement covered the wrong segment, e.g. the pre-fix picker
+    measuring a warmup) are cleared and re-measured, so a bad row heals on the
+    next run instead of freezing. Returns the count newly computed."""
     if 'run_type' not in meas.columns:
         return 0
     off_by_date = {r['date'].date().isoformat(): float(r['distance_m'])
                    for _, r in races.iterrows() if pd.notna(r.get('distance_m'))}
-    need = meas[(meas['run_type'] == 'race') & meas['dem_gain_ft'].isna()]
+    dem_cols = ['dem_gain_ft', 'dem_loss_ft', 'dem_net_ft', 'dem_mean_elev_ft',
+                'dem_n_pts', 'dem_g_gain_pct', 'dem_g_loss_pct']
+    race_rows = meas[meas['run_type'] == 'race']
+    need_idx = []
+    for i, row in race_rows.iterrows():
+        if pd.isna(row.get('dem_gain_ft')):
+            need_idx.append(i)
+        elif not DEM.race_dem_covered(row.get('dem_n_pts'),
+                                      off_by_date.get(row['date'])):
+            for c in dem_cols:          # known-bad: clear so a failed
+                meas.at[i, c] = float('nan')   # re-measure doesn't keep it
+            need_idx.append(i)
+    need = meas.loc[need_idx]
     if need.empty:
         return 0
     cache = DEM._load_cache()
@@ -233,7 +281,7 @@ def augment_run_dem(meas, ids_by_date, run_type, verbose=False):
 
 
 def regate_dem(meas, ids_by_date):
-    """Clear dem_* on long/recovery days whose pooled GPS track now fails the
+    """Clear dem_* on non-race days whose pooled GPS track now fails the
     quality gates (dem_elevation.track_ok) — chiefly rows filled before the gate
     existed. The day falls back to barometric in per_run_elevation. Cheap:
     track_ok is stream arithmetic, no DEM recompute. (Races re-gate through
@@ -241,9 +289,8 @@ def regate_dem(meas, ids_by_date):
     if 'dem_gain_ft' not in meas.columns or 'run_type' not in meas.columns:
         return 0
     cols = ['dem_gain_ft', 'dem_loss_ft', 'dem_net_ft', 'dem_mean_elev_ft',
-            'dem_n_pts']
-    tgt = meas[meas['run_type'].isin(['long', 'recovery'])
-               & meas['dem_gain_ft'].notna()]
+            'dem_n_pts', 'dem_g_gain_pct', 'dem_g_loss_pct']
+    tgt = meas[(meas['run_type'] != 'race') & meas['dem_gain_ft'].notna()]
     n = 0
     for i, row in tgt.iterrows():
         recs = []
@@ -261,10 +308,156 @@ def regate_dem(meas, ids_by_date):
     return n
 
 
+def _geo_hills(d, res, recs, profiles, k):
+    """Hill rows for one day: geography and the aligned DEM net that the veto
+    post-pass adjudicates. Hills arrive on the corrected stitched axis; each is
+    mapped back to its activity (raw axis) for lat/lon and the DEM check."""
+    bounds = res['act_bounds_raw']
+    tracks = [None] * len(recs)
+    rows = []
+    for (d0, d1, vert, grade, kind, _pit, _fl) in res['hills']:
+        mid_raw = (d0 + d1) / 2.0 / k
+        ai = next((i for i, b in enumerate(bounds)
+                   if b and b[0] <= mid_raw < b[1]), None)
+        lat = lon = np.nan
+        dem_net = np.nan
+        if ai is not None:
+            if tracks[ai] is None:
+                tp = DEM.track_points(recs[ai])
+                if len(tp) >= 3:
+                    td = np.array([q[0] for q in tp], float)
+                    keep = np.concatenate(([True], np.diff(td) > 0))
+                    tracks[ai] = (td[keep],
+                                  np.array([q[1] for q in tp], float)[keep],
+                                  np.array([q[2] for q in tp], float)[keep])
+                else:
+                    tracks[ai] = ()
+            if tracks[ai]:
+                td, tla, tlo = tracks[ai]
+                loc = mid_raw - bounds[ai][0]
+                lat = float(np.interp(loc, td, tla))
+                lon = float(np.interp(loc, td, tlo))
+            prof = profiles[ai]
+            if prof is not None:
+                a0 = d0 / k - bounds[ai][0]
+                a1 = d1 / k - bounds[ai][0]
+                dem_net = DEM.aligned_net(prof[0], prof[1], a0, a1, kind)
+        rows.append({'date': d, 'act': ai if ai is not None else -1,
+                     'd0': round(d0, 1), 'd1': round(d1, 1),
+                     'vert_ft': round(vert, 1), 'grade_pct': round(grade, 2),
+                     'kind': int(kind), 'lat': round(lat, 6),
+                     'lon': round(lon, 6),
+                     'dem_net_ft': (round(dem_net, 1)
+                                    if np.isfinite(dem_net) else np.nan),
+                     'vetoed': 0})
+    return rows
+
+
+# --- Persistence-aware hill veto ---------------------------------------------
+# DEM refutes, never confirms: a hill is vetoed only when (a) DEM shows nearly
+# flat ground under it after +/-80 m alignment (net < 25% of the claim AND
+# under the 12 ft hill floor), and (b) the disagreement is a one-off — the same
+# disagreement recurring at the same coordinates on other dates is structure
+# bare-earth lidar cannot see (arch bridges, boardwalks, post-lidar
+# construction), where baro is right. Demanding DEM *confirmation* instead was
+# tested and rejected: it deleted real terrain wholesale (fit R2 fell
+# monotonically with vertical removed and the coefficients went unphysical).
+VETO_FRAC = 0.25
+VETO_ABS_FT = 12.0
+VETO_CELL_DEG = 0.0005        # ~55 m; clusters merge 8-neighbourhoods so GPS
+                              # drift cannot fragment one structure into
+                              # several "locations" (it did: one arch bridge
+                              # read as seven)
+VETO_MIN_DATES = 2            # recurrence on >=2 dates = structure
+
+
+def apply_hill_veto(meas, splits, hills):
+    """Flag one-off DEM-refuted hills, then rebuild the per-run and per-mile
+    segment quantities from the surviving hills. Runs over the FULL hills
+    table every build (it is small), so a structure's first visit is
+    retroactively un-vetoed the day its second visit lands."""
+    if hills.empty:
+        return meas, splits, hills, 0
+    h = hills.copy()
+    cand = (h.dem_net_ft.notna() & (h.dem_net_ft < VETO_FRAC * h.vert_ft)
+            & (h.dem_net_ft < VETO_ABS_FT) & h.lat.notna())
+    hc = h[cand]
+    cy = np.round(hc.lat / VETO_CELL_DEG).astype(int)
+    cx = np.round(hc.lon / VETO_CELL_DEG).astype(int)
+    cells = set(zip(cy, cx))
+    parent = {c: c for c in cells}
+
+    def find(c):
+        while parent[c] != c:
+            parent[c] = parent[parent[c]]
+            c = parent[c]
+        return c
+
+    for (y, x) in cells:
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                n = (y + dy, x + dx)
+                if n in cells:
+                    ra, rb = find((y, x)), find(n)
+                    if ra != rb:
+                        parent[ra] = rb
+    cl = pd.Series([str(find(c)) for c in zip(cy, cx)], index=hc.index)
+    n_dates = hc.groupby(cl)['date'].transform('nunique')
+    h['vetoed'] = 0
+    h.loc[n_dates.index[(n_dates < VETO_MIN_DATES).to_numpy()], 'vetoed'] = 1
+
+    kept = h[h.vetoed == 0]
+    mi_m = 1609.344
+    # per-run segment sums
+    run = {}
+    for d, g in kept.groupby('date'):
+        uv = (g.vert_ft.abs() * (g.kind > 0)).sum()
+        ug = (g.vert_ft.abs() * g.grade_pct * (g.kind > 0)).sum()
+        dv = (g.vert_ft.abs() * (g.kind < 0)).sum()
+        dg = (g.vert_ft.abs() * g.grade_pct * (g.kind < 0)).sum()
+        run[d] = (uv, ug / uv if uv else 0.0, dv, dg / dv if dv else 0.0)
+    meas = meas.copy()
+    vals = meas['date'].map(run)
+    meas['seg_up_ft'] = [round(v[0], 1) if isinstance(v, tuple) else 0.0
+                         for v in vals]
+    meas['g_up_pct'] = [round(v[1], 2) if isinstance(v, tuple) else 0.0
+                        for v in vals]
+    meas['seg_dn_ft'] = [round(v[2], 1) if isinstance(v, tuple) else 0.0
+                         for v in vals]
+    meas['g_dn_pct'] = [round(v[3], 2) if isinstance(v, tuple) else 0.0
+                        for v in vals]
+    # per-mile segment sums (prorated overlap; overwrite what mile_splits
+    # wrote pre-veto so fit and application see one statistic)
+    by_day = {d: g for d, g in kept.groupby('date')}
+    su, gu, sd, gd = [], [], [], []
+    for d, mi in zip(splits['date'], splits['mile']):
+        g = by_day.get(d)
+        uv = ug = dv = dg = 0.0
+        if g is not None:
+            lo, hi = mi * mi_m, (mi + 1) * mi_m
+            ov = (np.minimum(g.d1, hi) - np.maximum(g.d0, lo)).clip(lower=0)
+            f = np.where(g.d1 > g.d0, ov / (g.d1 - g.d0), 0.0)
+            v = g.vert_ft.abs() * f
+            uv = float((v * (g.kind > 0)).sum())
+            ug = float((v * g.grade_pct * (g.kind > 0)).sum())
+            dv = float((v * (g.kind < 0)).sum())
+            dg = float((v * g.grade_pct * (g.kind < 0)).sum())
+        su.append(round(uv, 1))
+        gu.append(round(ug / uv, 2) if uv else 0.0)
+        sd.append(round(dv, 1))
+        gd.append(round(dg / dv, 2) if dv else 0.0)
+    splits = splits.copy()
+    splits['seg_up_ft'], splits['g_up'] = su, gu
+    splits['seg_dn_ft'], splits['g_down'] = sd, gd
+    return meas, splits, h, int(h.vetoed.sum())
+
+
+
 def main():
     load_env_file()
     p = argparse.ArgumentParser()
-    p.add_argument('--run-type', choices=['long', 'recovery', 'race', 'all'],
+    p.add_argument('--run-type',
+                   choices=list(RUN_TYPES_ELEV) + ['race', 'all'],
                    default='all')
     p.add_argument('--full-regen', action='store_true',
                    help='recompute every target day, ignoring the presence cache')
@@ -300,19 +493,31 @@ def main():
                     for r in daily.itertuples() if pd.notna(r.miles)}
     daily['eff_miles'] = effective_daily_miles(daily)
     races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
-    types = (['long', 'recovery', 'race'] if args.run_type == 'all'
+    types = (list(RUN_TYPES_ELEV) + ['race'] if args.run_type == 'all'
              else [args.run_type])
     targets = _targets(daily, races, types)
 
     # Existing rows to reuse for days already computed (presence by date).
-    done, meas_keep, split_keep = set(), [], []
+    # SCHEMA GUARD: artifacts written by the pre-Aug-2026 engine lack the
+    # fused/hill columns (and the hills artifact entirely); reusing them would
+    # mark every day "done" and leave the new model's inputs empty corpus-wide
+    # (the exact failure the first CI run after this lands would hit, since
+    # the state cache restores the old files). Stale schema -> recompute all.
+    done, meas_keep, split_keep, hill_keep = set(), [], [], []
     if MEAS_OUT.exists() and not args.full_regen:
         em = pd.read_csv(MEAS_OUT, dtype={'date': str})
-        done = set(em['date'])
-        meas_keep = em.to_dict('records')
-        if SPLITS_OUT.exists():
-            sp = pd.read_csv(SPLITS_OUT, dtype={'date': str})
-            split_keep = sp.to_dict('records')
+        _need = {'fused', 'seg_up_ft', 'g_up_pct'}
+        if not (_need <= set(em.columns)) or not HILLS_OUT.exists():
+            print('[elevation] stale artifact schema (pre two-channel) — '
+                  'recomputing all days')
+        else:
+            done = set(em['date'])
+            meas_keep = em.to_dict('records')
+            if SPLITS_OUT.exists():
+                sp = pd.read_csv(SPLITS_OUT, dtype={'date': str})
+                split_keep = sp.to_dict('records')
+            hp = pd.read_csv(HILLS_OUT, dtype={'date': str})
+            hill_keep = hp.to_dict('records')
 
     todo = [d for d in sorted(targets) if d in ids_by_date and d not in done]
     if args.limit:
@@ -321,7 +526,8 @@ def main():
           f"reused={len(done)}")
 
     client = None
-    meas_rows, split_rows = [], []
+    meas_rows, split_rows, hill_rows = [], [], []
+    dem_cache = None
     fetched = skipped_slim = skipped_invalid = computed = 0
     for d in todo:
         rt, corr_mi = targets[d]
@@ -357,29 +563,52 @@ def main():
                                    <= WATCH_VALID_BAND[1]):
             skipped_invalid += 1
             continue
-        eff_corr = corr_mi if (corr_mi and corr_mi > 0) else watch_m
-        res = E.measure_day_elevation(recs, eff_corr, watch_m)
+        # Race days measure the race activity alone (warmup/cooldown vertical
+        # and miles stay out of the race's totals and splits); the validity
+        # gate above still judges the whole day against the hand log.
+        meas_recs, meas_watch_m = recs, watch_m
+        if rt == 'race' and corr_mi:
+            rrec = _race_rec(recs, corr_mi * 1609.344)
+            if rrec is not None:
+                meas_recs = [rrec]
+                meas_watch_m = Activity(rrec).distance_m / 1609.344
+        eff_corr = corr_mi if (corr_mi and corr_mi > 0) else meas_watch_m
+        if dem_cache is None:
+            dem_cache = DEM._load_cache()
+        profiles = [DEM.activity_dem_profile(r, dem_cache)
+                    for r in meas_recs]
+        res = E.measure_day_elevation(meas_recs, eff_corr, meas_watch_m,
+                                      dem_profiles=profiles)
         if res is None:
             continue
         meas_rows.append({'date': d, 'run_type': rt,
-                          'watch_miles': round(watch_m, 3),
+                          'watch_miles': round(meas_watch_m, 3),
                           'corr_miles': round(eff_corr, 3),
                           'elev_gain_ft': res['elev_gain_ft'],
                           'elev_loss_ft': res['elev_loss_ft'],
                           'minetti_factor': res['minetti_factor'],
+                          'g_gain_pct': res['g_gain_pct'],
+                          'g_loss_pct': res['g_loss_pct'],
+                          'fused': int(any(pr is not None for pr in profiles)),
                           'n_alt_pts': res['n_alt_pts']})
         for s in res['splits']:
             split_rows.append({'date': d, **s})
+        kk = (eff_corr / meas_watch_m) if meas_watch_m else 1.0
+        hill_rows.extend(_geo_hills(d, res, meas_recs, profiles, kk))
         computed += 1
 
     meas = pd.DataFrame(meas_keep + meas_rows, columns=MEAS_COLS)
     splits = pd.DataFrame(split_keep + split_rows, columns=SPLIT_COLS)
+    hills = pd.DataFrame(hill_keep + hill_rows, columns=HILL_COLS)
+    meas, splits, hills, n_veto = apply_hill_veto(meas, splits, hills)
+    print(f"[elevation] hill veto: {n_veto} one-off DEM-refuted hills vetoed "
+          f"of {len(hills)} ({int((meas['fused'] == 1).sum())} fused days)")
     if 'race' in types and len(meas):
         n_dem = augment_race_dem(meas, races, ids_by_date, args.sleep,
                                  verbose=args.dem_verbose)
         print(f"[elevation] DEM race-elevation: {n_dem} newly computed "
               f"(GPS-track lookup; barometric net is per-race noise)")
-    for rt in ('long', 'recovery'):
+    for rt in RUN_TYPES_ELEV:
         if rt in types and len(meas):
             n_dem = augment_run_dem(meas, ids_by_date, rt,
                                     verbose=args.dem_verbose)
@@ -396,6 +625,9 @@ def main():
     if len(splits):
         splits = splits.sort_values(['date', 'mile']).reset_index(drop=True)
         splits.to_csv(SPLITS_OUT, index=False)
+    if len(hills):
+        hills = hills.sort_values(['date', 'd0']).reset_index(drop=True)
+        hills.to_csv(HILLS_OUT, index=False)
     print(f"[elevation] computed={computed} reused={len(done)} fetched={fetched} "
           f"slim-skipped={skipped_slim} watch-invalid={skipped_invalid} "
           f"-> {len(meas)} days")

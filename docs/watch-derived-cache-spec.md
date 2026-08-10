@@ -32,7 +32,7 @@ changed:
 | `weather_measured.py` | `weather_measured.csv` | yes (pre-`build_dataset`) | ~5 s (now mtime-guarded) |
 | `long_runs.py` | `long_run_measured.csv`, `recovery_measured.csv`, `long_run_calibration.csv` | yes (post-`build_dataset`) | ~10 s |
 | `reps.py` | `workout_measured.csv` | yes (post-`build_dataset`, gated on CS) | (parse heavy) |
-| `backfill_elevation.py` | `elevation_measured.csv` (incl. `dem_*` race cols), `elevation_splits.csv` | **no** — manual backfill, append-mode | — |
+| `backfill_elevation.py` | `elevation_measured.csv` (fused gain/loss + veto-cleaned hill-segment cols `seg_*`/`g_*`, `dem_*` reference cols), `elevation_splits.csv` (per-mile pace + segment quantities), `elevation_hills.csv` (per-hill geometry + veto flags) | **no** — manual backfill, append-mode | — |
 | `dem_elevation.py` | DEM race elevation → `elevation_measured.csv` `dem_*` cols (point cache `dem_cache.json`) | via `backfill_elevation` top-up | network only on cold lookup |
 
 Measured field usage across consumers (verified): every per-second field is
@@ -210,7 +210,8 @@ for standalone/back-compat but delegates to the builder.
     horizontal GPS track is reliable and reproducible (Boston resolves
     Hopkinton→Boston). So races discard the barometric vertical and resample
     elevation from a **DEM** along the cached GPS track — `src/coros/dem_elevation.py`
-    (OpenTopoData public API: USGS NED 10 m for CONUS, SRTM 30 m fallback
+    (OpenTopoData public API: USGS NED 10 m ONLY — no coarser fallback; see
+    route-normalization-reference.md "DEM policy"
     elsewhere; free, no key, deterministic). Point elevations are cached in
     `data/dem_cache.json` keyed by rounded lat/lon, so repeated courses (Boston
     ×6, etc.) and re-runs cost no network. `backfill_elevation.augment_race_dem`

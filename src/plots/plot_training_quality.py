@@ -968,13 +968,24 @@ function buildTooltip(day, isSnap, pointHtml) {
     # effort level (intercept) is fit but NEVER subtracted (see main).
     from src.shared.recovery_model import (physical_route_betas,
                                             ALTITUDE_THRESHOLD_KFT)
-    from src.shared.elevation_cost import CLIMB_COST, REFUND_RECOVERY
+    from src.shared.elevation_cost import engine_params
     pb = physical_route_betas()
+    ep = engine_params()
+    def _rate(base, slope):
+        sign = '+' if slope >= 0 else '−'
+        return f'{base * 100:.4f} {sign} {abs(slope) * 100:.4f} per 1% grade'
+
+    # The two grade terms are rate FORMULAS (base + grade slope). Each is ONE
+    # table row spanning both columns: label line, expression right-justified
+    # beneath it inside the same cell (single-cell rows colspan in
+    # widgets.table) — no extra striped rows, sidebar keeps its width.
     phys_rows = [
-        ('elevation, per ft/mi↑ (paved/trail)',
-         f'{CLIMB_COST["paved"]:.2f}/{CLIMB_COST["mixed"]:.2f}'),
-        ('off-road footing', f'{pb["is_offroad"]:+.1f}'),
-        (f'altitude, per 1000 ft above {ALTITUDE_THRESHOLD_KFT:.0f}k',
+        (f'% of pace per ft/mi gained'
+         f'<div class="num">{_rate(ep["c0"], ep["c1"])}</div>',),
+        (f'% of pace per ft/mi lost'
+         f'<div class="num">{_rate(ep["b0"], ep["b1"])}</div>',),
+        ('unpaved terrain, s/mi', f'{pb["trail_frac"]:+.1f}'),
+        (f'altitude, s/mi per 1000 ft above {ALTITUDE_THRESHOLD_KFT:.0f}k',
          f'{pb["alt_kft"]:+.2f}'),
     ]
     state_rows = []
@@ -997,10 +1008,8 @@ function buildTooltip(day, isSnap, pointHtml) {
                 'race-equivalent pace; pinned from combined recovery and '
                 'long run data')
             + widgets.divider()
-            + widgets.subtitle('Physical route: '
-                               f'descent refunds {REFUND_RECOVERY["paved"]:.0%} '
-                               f'of ascent effort on pavement, {REFUND_RECOVERY["mixed"]:.0%} off-road')
-            + widgets.table(('Term', 'β (s/mi)'), phys_rows, align=('left', 'right'))
+            + widgets.subtitle('Physical route')
+            + widgets.table(('Term', 'β'), phys_rows, align=('left', 'right'))
         )
         if state_rows:
             body += (

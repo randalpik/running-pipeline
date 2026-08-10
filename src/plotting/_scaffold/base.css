@@ -510,3 +510,7 @@ html.rp-mobile .rp-search { top: 0; }
 .rp-table td { padding: 2px 4px; }
 .rp-table tr:nth-child(even) td { background: rgba(255,255,255,0.03); }
 .rp-table .num { text-align: right; }
+/* Interleaved cell (widgets.table single-cell colspan rows): an expression
+   rendered on its own right-aligned line under the label needs breathing
+   room from the label above it. */
+.rp-table td > div.num { margin-top: 4px; }

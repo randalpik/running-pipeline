@@ -12,7 +12,7 @@ Model (fit on the era-detrended residual = pace − CS − era_trend):
                      + β_marathon · fatigue_marathon
                      + β_race    · fatigue_race_short
                      + β_tod     · tod_is_pm
-                     + (pinned) is_offroad·β + alt_kft·β + grade-aware elev_cost
+                     + (pinned) trail_frac·β + alt_kft·β + fractional elev_cost
                      + (pinned) wind_mph · β_wind
 
 The temperature term (``temp_centered_feature``, key still ``temp_centered``)
@@ -59,7 +59,8 @@ import pandas as pd
 
 from src.shared.paths import DATA_DIR
 from src.shared.units import METERS_PER_MILE
-from src.shared.elevation_cost import elevation_cost, paved_refund, REFUND_RECOVERY
+from src.shared.elevation_cost import (climb_cost, descent_benefit,
+                                       engine_params, hill_cost)
 
 # ---------- conditions / pruning excluded from fit ----------
 # Time-of-day binary indicator. Recovery pace runs ~4.5 sec/mi slower in
@@ -204,6 +205,21 @@ ALT_DAILY_PATH = DATA_DIR / 'altitude_daily.csv'
 # docs/route-normalization-reference.md, the elevation engine). The grade-cost model itself
 # lives in shared.elevation_cost; here we keep only the per-run failure guard.
 ELEV_GUARD_FT_PER_MI = 100.0   # extreme watch-failure floor (see per_run_elevation)
+
+# Footing coding (Aug 2026): terrain enters the models ONLY as this flat
+# trail-share modifier — the grade term is terrain-blind (one refund curve;
+# see elevation_cost.py). Continuous coding: mixed routes are ~1/3-2/3 trail
+# surface, trail routes >2/3, so trail carries ~2x the mixed penalty with a
+# single fitted parameter (a free trail level is unidentifiable — one route
+# family). track/unknown -> 0 (paved).
+TRAIL_FRAC = {'paved': 0.0, 'mixed': 0.5, 'trail': 1.0}
+
+# Fallback weighted descent grades (%) by terrain for rows with no measured
+# shape (pre-watch days on never-watched routes) — the corpus medians.
+# Terrain-typical hill grades for the pre-watch fallback (per-run measured
+# values exist for every watch-era day; these cover pre-watch-only routes and
+# CI builds with no elevation artifact).
+G_HILL_DEFAULT = {'paved': 3.0, 'mixed': 3.7, 'trail': 4.5}
 
 # Backfit iterations: the era smoother and the parametric factors are
 # estimated jointly (so era-correlated factors — footing, altitude — aren't
@@ -428,60 +444,89 @@ def add_watch_corrections(rec):
 # ---------- helpers ----------
 
 def per_run_elevation(rec):
-    """Per-run gain/loss (ft per mile) for the physical route model, as fitted
-    features (NOT a pre-combined penalty — the recovery fit estimates the
-    slopes itself, era-free, now that the per-route dummies are gone).
+    """Per-run grade-model inputs for the two-channel engine
+    (src/shared/elevation_cost.py): EXCESS gross gain/loss (ft per mile above
+    the calibrated flat-ground floor) and the effective hill grade
+    g_eff = Σ_hills(vert·grade) / excess_vertical — the statistic under which
+    the run-level closed form exactly equals the continuous calibration's
+    window sums (hill-less vertical enters at grade 0, so a run with no hills
+    prices at the base rates).
 
-    Returns a DataFrame [elev_gain_pm, elev_loss_pm] aligned to ``rec.index``,
-    populated for every row via the fallback chain:
-      per-run MEASURED (elevation_measured.csv, watch enrichment), then
-      route-median measured (pre-watch runs on a watch-covered route), then
-      the route's ``elev_per_mile`` constant (balanced gain≈loss — covers
-      pre-watch-only routes like education hill and CI builds with no
-      elevation artifact), then 0.
-    Extreme watch failures (``gain/mi > max(ELEV_GUARD_FT_PER_MI,
-    3x route median)`` — suburbia 2023-07-27, east boulder 2024-04-24) revert
-    to the route median."""
+    Returns a DataFrame [elev_gain_pm, elev_g_up, elev_loss_pm, elev_g_dn,
+    disp_gain_pm, disp_loss_pm] aligned to ``rec.index`` (the model gain/loss
+    columns are the EXCESS quantities; disp_* are the measured GROSS totals
+    per mile, display-only — what a runner recognizes as the run's gain/loss),
+    via the fallback chain: per-run MEASURED (elevation_measured.csv — fused
+    substrate, veto-cleaned hills), then route-median measured, then the
+    route's ``elev_per_mile`` constant (excess over floor, balanced) with
+    terrain-typical default grades, then 0. Extreme watch failures revert to
+    the route median."""
+    from src.shared.elevation_cost import engine_params
+    ep = engine_params()
     gain = pd.Series(np.nan, index=rec.index, dtype=float)
     loss = pd.Series(np.nan, index=rec.index, dtype=float)
+    gu = pd.Series(np.nan, index=rec.index, dtype=float)
+    gd = pd.Series(np.nan, index=rec.index, dtype=float)
+    dg = pd.Series(np.nan, index=rec.index, dtype=float)
+    dl = pd.Series(np.nan, index=rec.index, dtype=float)
     if ELEV_MEASURED_PATH.exists():
         try:
             em = pd.read_csv(ELEV_MEASURED_PATH, parse_dates=['date'])
         except (pd.errors.EmptyDataError, FileNotFoundError):
             em = None
-        if em is not None and not em.empty and 'elev_gain_ft' in em.columns:
+        if em is not None and not em.empty and 'g_up_pct' in em.columns:
             em = em.merge(rec[['date', 'location']], on='date', how='left')
-            # Prefer DEM-along-GPS gain/loss where present (long-run + race rows;
-            # see dem_elevation.py). Long runs are loops, so the barometric net
-            # is a phantom morning-drift descent — DEM removes it. Recovery rows
-            # carry no dem_* and fall through to barometric, so this is scoped to
-            # whatever the backfill DEM-filled without a run_type branch here.
-            gain_src = (em['dem_gain_ft'].where(em['dem_gain_ft'].notna(),
-                                                em['elev_gain_ft'])
-                        if 'dem_gain_ft' in em.columns else em['elev_gain_ft'])
-            loss_src = (em['dem_loss_ft'].where(em['dem_loss_ft'].notna(),
-                                                em['elev_loss_ft'])
-                        if 'dem_loss_ft' in em.columns else em['elev_loss_ft'])
-            em['gpm'] = gain_src / em['corr_miles']
-            em['lpm'] = loss_src / em['corr_miles']
-            rmed = em.groupby('location')['gpm'].median()
+            eg = (em['elev_gain_ft']
+                  - ep['floor_g'] * em['corr_miles']).clip(lower=0.0)
+            el = (em['elev_loss_ft']
+                  - ep['floor_l'] * em['corr_miles']).clip(lower=0.0)
+            em['gpm'] = eg / em['corr_miles']
+            em['lpm'] = el / em['corr_miles']
+            em['dgpm'] = em['elev_gain_ft'] / em['corr_miles']
+            em['dlpm'] = em['elev_loss_ft'] / em['corr_miles']
+            # effective grade: hill vert·grade mass over the excess vertical
+            em['gu'] = np.where(eg > 0,
+                                em['seg_up_ft'] * em['g_up_pct'] / eg, 0.0)
+            em['gd'] = np.where(el > 0,
+                                em['seg_dn_ft'] * em['g_dn_pct'] / el, 0.0)
+            gmed = em.groupby('location')['gpm'].median()
             lmed = em.groupby('location')['lpm'].median()
+            gum = em.groupby('location')['gu'].median()
+            gdm = em.groupby('location')['gd'].median()
+            dgm = em.groupby('location')['dgpm'].median()
+            dlm = em.groupby('location')['dlpm'].median()
             bad = (em['gpm'] > ELEV_GUARD_FT_PER_MI) & (
-                em['gpm'] > 3 * em['location'].map(rmed))
-            em.loc[bad, 'gpm'] = em.loc[bad, 'location'].map(rmed)
-            em.loc[bad, 'lpm'] = em.loc[bad, 'location'].map(lmed)
+                em['gpm'] > 3 * em['location'].map(gmed))
+            for col, med in (('gpm', gmed), ('lpm', lmed),
+                             ('gu', gum), ('gd', gdm)):
+                em.loc[bad, col] = em.loc[bad, 'location'].map(med)
             per_run = (em.dropna(subset=['date'])
                        .drop_duplicates('date').set_index('date'))
-            gain = rec['date'].map(per_run['gpm'])
-            loss = rec['date'].map(per_run['lpm'])
-            gain = gain.fillna(rec['location'].map(rmed))
-            loss = loss.fillna(rec['location'].map(lmed))
+            gain = rec['date'].map(per_run['gpm']).fillna(
+                rec['location'].map(gmed))
+            loss = rec['date'].map(per_run['lpm']).fillna(
+                rec['location'].map(lmed))
+            gu = rec['date'].map(per_run['gu']).fillna(
+                rec['location'].map(gum))
+            gd = rec['date'].map(per_run['gd']).fillna(
+                rec['location'].map(gdm))
+            dg = rec['date'].map(per_run['dgpm']).fillna(
+                rec['location'].map(dgm))
+            dl = rec['date'].map(per_run['dlpm']).fillna(
+                rec['location'].map(dlm))
     epm = (rec.get('elev_per_mile', pd.Series(np.nan, index=rec.index))
            .astype(float))
-    gain = gain.fillna(epm)
-    loss = loss.fillna(epm)
+    gain = gain.fillna((epm - ep['floor_g']).clip(lower=0.0))
+    loss = loss.fillna((epm - ep['floor_l']).clip(lower=0.0))
+    terr = (rec.get('terrain_type', pd.Series('', index=rec.index))
+            .astype(str).str.strip().str.lower())
+    gdef = terr.map(G_HILL_DEFAULT).fillna(G_HILL_DEFAULT['paved'])
     return pd.DataFrame({'elev_gain_pm': gain.fillna(0.0),
-                         'elev_loss_pm': loss.fillna(0.0)})
+                         'elev_g_up': gu.fillna(gdef),
+                         'elev_loss_pm': loss.fillna(0.0),
+                         'elev_g_dn': gd.fillna(gdef),
+                         'disp_gain_pm': dg.fillna(epm).fillna(0.0),
+                         'disp_loss_pm': dl.fillna(epm).fillna(0.0)})
 
 
 def per_run_altitude(df):
@@ -530,34 +575,50 @@ def altitude_regressor(alt_kft):
     return np.maximum(0.0, np.asarray(alt_kft, dtype=float) - ALTITUDE_THRESHOLD_KFT)
 
 
-def _race_dem_elevation(races):
-    """Per-race gain/loss (ft/mi) and mean elevation (kft) from the DEM-along-
-    GPS layer (``elevation_measured.csv`` race rows, columns ``dem_*``; see
-    src/coros/dem_elevation.py). The watch's barometric net is per-race noise;
-    DEM resampled along the reliable GPS track is the race source of truth.
-    Returns (gain_pm, loss_pm, mean_kft, grade_available) Series aligned to
-    ``races.index`` — NaN / False where no DEM row exists (track races, which
-    the elevation backfill skips, and pre-watch races)."""
+def _race_fused_elevation(races):
+    """Per-race grade-model inputs from the race rows of
+    ``elevation_measured.csv`` (race activity measured alone on the fused
+    substrate, hills veto-cleaned): EXCESS gross gain/loss per mile and the
+    effective hill grades — identical construction to ``per_run_elevation``,
+    race-scoped. Mean elevation stays DEM where present.
+    Returns (gain_pm, g_up, loss_pm, g_dn, gross_gain, gross_loss, mean_kft,
+    grade_available) aligned to ``races.index``."""
+    from src.shared.elevation_cost import engine_params
+    ep = engine_params()
     n = races.index
-    gain = pd.Series(np.nan, index=n, dtype=float)
-    loss = pd.Series(np.nan, index=n, dtype=float)
-    mean_kft = pd.Series(np.nan, index=n, dtype=float)
+    nan = pd.Series(np.nan, index=n, dtype=float)
+    empty = (nan, nan.copy(), nan.copy(), nan.copy(), nan.copy(),
+             nan.copy(), nan.copy(), pd.Series(False, index=n))
     if not ELEV_MEASURED_PATH.exists():
-        return gain, loss, mean_kft, pd.Series(False, index=n)
+        return empty
     try:
         em = pd.read_csv(ELEV_MEASURED_PATH, parse_dates=['date'])
     except (pd.errors.EmptyDataError, FileNotFoundError):
-        return gain, loss, mean_kft, pd.Series(False, index=n)
-    if 'dem_gain_ft' not in em.columns:
-        return gain, loss, mean_kft, pd.Series(False, index=n)
-    em = em[(em['run_type'] == 'race') & em['dem_gain_ft'].notna()].copy()
+        return empty
+    if 'g_up_pct' not in em.columns:
+        return empty
+    em = em[(em['run_type'] == 'race') & em['elev_gain_ft'].notna()
+            & em['g_up_pct'].notna()].copy()
     em = em.drop_duplicates('date').set_index(em['date'].dt.date)
     dist_mi = races['distance_m'].astype(float) / METERS_PER_MILE
     key = pd.to_datetime(races['date']).dt.date
-    gain = key.map(em['dem_gain_ft']) / dist_mi
-    loss = key.map(em['dem_loss_ft']) / dist_mi
-    mean_kft = key.map(em['dem_mean_elev_ft']) / 1000.0
-    return gain, loss, mean_kft, gain.notna()
+    gross_g = key.map(em['elev_gain_ft'])
+    gross_l = key.map(em['elev_loss_ft'])
+    eg = (gross_g - ep['floor_g'] * dist_mi).clip(lower=0.0)
+    el = (gross_l - ep['floor_l'] * dist_mi).clip(lower=0.0)
+    hu = key.map(em['seg_up_ft']) * key.map(em['g_up_pct'])
+    hd = key.map(em['seg_dn_ft']) * key.map(em['g_dn_pct'])
+    gu = pd.Series(np.where(eg > 0, hu / eg, 0.0), index=n)
+    gd = pd.Series(np.where(el > 0, hd / el, 0.0), index=n)
+    mean_kft = (key.map(em['dem_mean_elev_ft']) / 1000.0
+                if 'dem_mean_elev_ft' in em.columns else nan.copy())
+    # Coverage sanity (successor of the DEM guard): a race row whose stream
+    # covered far less than the official distance measured the wrong segment.
+    cov = key.map(em['watch_miles']) / dist_mi
+    ok = eg.notna() & cov.between(0.85, 1.25)
+    return (pd.Series(eg / dist_mi, index=n).where(ok), gu.where(ok),
+            pd.Series(el / dist_mi, index=n).where(ok), gd.where(ok),
+            gross_g.where(ok), gross_l.where(ok), mean_kft, ok.fillna(False))
 
 
 def race_physical_correction(races, daily=None):
@@ -573,10 +634,10 @@ def race_physical_correction(races, daily=None):
 
     Conventions (identical to §A): subtract the cost from the race time. A
     net-DOWNHILL race (cost<0) gets time ADDED → projects SLOWER → correctly
-    discounts the assisted time (Boston). Net-uphill / altitude races are
-    credited faster. Race effort ≈ 1.0 by construction (a race is run at its
-    own-distance ceiling), so paved descents refund at the race edge
-    (``paved_refund(1.0)`` ≈ 0.85) — grade bites hardest here.
+    discounts the assisted time. The grade term is the fractional engine's —
+    one grade-resolved refund curve at every effort (the old race-edge effort
+    haircut was retired Aug 2026; no effort schedule survived the data), on
+    the race's own measured pace via the flat-equivalent closed form.
 
     Gating (the categorical XC ×1.08 / Downhill-exclusion stay as the pre-watch
     fallback — replaced by the measured correction only WHERE WATCH DATA
@@ -622,24 +683,29 @@ def race_physical_correction(races, daily=None):
     if 'terrain_type' not in df.columns:
         df['terrain_type'] = np.nan
 
-    gain_pm, loss_pm, dem_mean_kft, grade_avail = _race_dem_elevation(df)
+    up_pm, g_up, dn_pm, g_dn, gross_gain, gross_loss, dem_mean_kft, \
+        grade_avail = _race_fused_elevation(df)
     is_track = df['surface'].fillna('').astype(str).str.lower() == 'track'
     grade_avail = grade_avail & ~is_track
 
     terr = (df['terrain_type'].astype(str).str.strip().str.lower())
     terr = terr.where(terr.isin(('paved', 'mixed', 'trail')), 'paved')
-    # Race effort ≈ 1.0: paved descents refund at the race edge; mixed/trail
-    # keep their (effort-flat) rough-footing refund.
-    refund = terr.map(REFUND_RECOVERY).astype(float).to_numpy(copy=True)
-    refund[(terr == 'paved').to_numpy()] = paved_refund(1.0)
-    grade = elevation_cost(gain_pm.fillna(0.0).to_numpy(),
-                           loss_pm.fillna(0.0).to_numpy(),
-                           terr.to_numpy(), refund=refund)
+    # Grade: the two-channel engine on the race's own pace — race-scoped hill
+    # segments on the fused substrate (course geometry only).
+    pace = (df['pace_sec_per_mi'].astype(float)
+            if 'pace_sec_per_mi' in df.columns
+            else df['time_sec'].astype(float)
+            / (df['distance_m'].astype(float) / METERS_PER_MILE))
+    gdef = terr.map(G_HILL_DEFAULT)
+    grade = hill_cost(up_pm.fillna(0.0), g_up.fillna(gdef),
+                      dn_pm.fillna(0.0), g_dn.fillna(gdef),
+                      pace.to_numpy(float))
     grade = np.where(grade_avail.to_numpy(), grade, 0.0)
 
     pb = physical_route_betas()
-    is_offroad = terr.isin(('mixed', 'trail')).astype(float).to_numpy()
-    footing = np.where(grade_avail.to_numpy(), pb['is_offroad'] * is_offroad, 0.0)
+    trail_frac = terr.map(TRAIL_FRAC).fillna(0.0).to_numpy()
+    footing = np.where(grade_avail.to_numpy(),
+                       pb['trail_frac'] * trail_frac, 0.0)
     # Altitude: DEM mean where present, else the per-run altitude chain (covers
     # track-at-altitude, whose grade is off but hypoxia is real — Boulder track).
     # Through the science-pinned threshold regressor: a sub-3000 ft race (sea
@@ -658,6 +724,27 @@ def race_physical_correction(races, daily=None):
         'total_s_per_mi': total,
         'dt_sec': total * dist_mi,
         'has_measured': grade_avail.to_numpy() | (alt_eff > 0),
+        # Display channels (tooltips): the race-scoped hill quantities and
+        # the two decomposed terms behind the grade correction. NaN where the
+        # race has no measured row. (Positional numpy like every column above —
+        # df's merge reset its index, so index-aligned Series would scramble
+        # against races.index.)
+        'elev_gain_ft': np.where(grade_avail.to_numpy(),
+                                 gross_gain.to_numpy(float), np.nan),
+        'elev_loss_ft': np.where(grade_avail.to_numpy(),
+                                 gross_loss.to_numpy(float), np.nan),
+        'climb_dt_sec': np.where(
+            grade_avail.to_numpy(),
+            np.asarray(climb_cost(g_up.fillna(0.0)))
+            * up_pm.fillna(0.0).to_numpy(float)
+            * pace.to_numpy(float) * dist_mi, np.nan),
+        'descent_dt_sec': np.where(
+            grade_avail.to_numpy(),
+            -np.asarray(descent_benefit(g_dn.fillna(0.0)))
+            * dn_pm.fillna(0.0).to_numpy(float)
+            * pace.to_numpy(float) * dist_mi, np.nan),
+        'grade_dt_sec': np.where(grade_avail.to_numpy(),
+                                 grade * dist_mi, np.nan),
     }, index=races.index)
     return out
 
@@ -779,7 +866,7 @@ def physical_route_betas():
     long runs on a shared run-pace residual scale (``pace − cs_pace``) with a
     corpus level dummy (``is_long``) and the recovery era-backfit. THE single
     source of truth for every cross-corpus constant: the two PHYSICAL channels
-    (flat-footing ``is_offroad`` + altitude ``alt_kft``) and the three
+    (flat-footing ``trail_frac`` + altitude ``alt_kft``) and the three
     TRANSFERABLE-STATE channels (``temp_centered`` heat slope, ``fat_marathon``
     + ``fat_race_short`` race-fatigue decays). The recovery model pins all five
     (``fit_recovery_model``), the long-run model pins all five
@@ -802,7 +889,7 @@ def physical_route_betas():
     if key in _PHYS_BETAS_CACHE:
         return _PHYS_BETAS_CACHE[key]
     from src.shared.workouts import long_run_fit_rows
-    out = {'is_offroad': 0.0, 'alt_kft': 0.0,
+    out = {'trail_frac': 0.0, 'alt_kft': 0.0,
            'temp_centered': 0.0, 'fat_marathon': 0.0, 'fat_race_short': 0.0}
     try:
         daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
@@ -834,21 +921,22 @@ def physical_route_betas():
             lr['resid'] = lr['pace_for_fit'] - cs_pace
             terr = (lr.get('terrain_type', pd.Series('', index=lr.index))
                     .astype(str).str.strip().str.lower())
-            lr['is_offroad'] = terr.isin(('mixed', 'trail')).astype(float)
+            lr['trail_frac'] = terr.map(TRAIL_FRAC).fillna(0.0)
             lr['alt_kft'] = altitude_regressor(per_run_altitude(lr))
-            terr_c = terr.where(terr.isin(('paved', 'mixed', 'trail')), 'paved')
-            lr['elev_cost'] = elevation_cost(
-                lr['elev_gain_pm'].fillna(0).to_numpy(),
-                lr['elev_loss_pm'].fillna(0).to_numpy(), terr_c.to_numpy())
+            gdef = terr.map(G_HILL_DEFAULT).fillna(G_HILL_DEFAULT['paved'])
+            lr['elev_cost'] = hill_cost(
+                lr['elev_gain_pm'].fillna(0), lr['elev_g_up'].fillna(gdef),
+                lr['elev_loss_pm'].fillna(0), lr['elev_g_dn'].fillna(gdef),
+                lr['pace_for_fit'].to_numpy(float))
             lr['is_long'] = 1.0
             rows.append(lr)
 
         base = ['temp_centered'] + [f'fat_{c}' for c in QUALITY_CATS] + ['tod_is_pm']
         # is_long only when both corpora are present (else collinear w/ const).
-        fit_cols = base + ['is_offroad', 'alt_kft'] + (
+        fit_cols = base + ['trail_frac', 'alt_kft'] + (
             ['is_long'] if len(rows) > 1 else [])
         rcols = ['date', 'resid', 'elev_cost', 'is_long'] + base + \
-            ['is_offroad', 'alt_kft']
+            ['trail_frac', 'alt_kft']
         pool = pd.concat([r.reindex(columns=rcols, fill_value=0.0)
                           for r in rows], ignore_index=True)
         pool = pool.dropna(subset=['resid', 'elev_cost'] + fit_cols)
@@ -858,8 +946,8 @@ def physical_route_betas():
         # Drop both terrain channels; a zero physical cost is just no
         # correction. (The run/walk ceiling on long-run rows has already
         # removed the hikes that made this acute.)
-        if pool['is_offroad'].abs().sum() == 0:
-            fit_cols = [c for c in fit_cols if c not in ('is_offroad', 'alt_kft')]
+        if pool['trail_frac'].abs().sum() == 0:
+            fit_cols = [c for c in fit_cols if c not in ('trail_frac', 'alt_kft')]
         if len(pool) > len(fit_cols) + 1:
             X = np.hstack([np.ones((len(pool), 1)),
                            pool[fit_cols].fillna(0.0).to_numpy(float)])
@@ -877,7 +965,7 @@ def physical_route_betas():
             # Physical channels (dropped together by the no-offroad guard) plus
             # the transferable-state channels (temp + per-category fatigue),
             # which are always in fit_cols — both models pin all of these.
-            out = {'is_offroad': float(cmap.get('is_offroad', 0.0)),
+            out = {'trail_frac': float(cmap.get('trail_frac', 0.0)),
                    'alt_kft': float(cmap.get('alt_kft', 0.0)),
                    'temp_centered': float(cmap.get('temp_centered', 0.0))}
             for c in QUALITY_CATS:
@@ -1143,28 +1231,41 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
     # difference in how Max approached that route — intentionally NOT
     # normalized out.
     elev = per_run_elevation(rec)
-    rec['elev_gain_pm'] = elev['elev_gain_pm']
-    rec['elev_loss_pm'] = elev['elev_loss_pm']
+    for c in ('elev_gain_pm', 'elev_g_up', 'elev_loss_pm', 'elev_g_dn',
+              'disp_gain_pm', 'disp_loss_pm'):
+        rec[c] = elev[c]
     terr = (rec.get('terrain_type', pd.Series('', index=rec.index))
             .astype(str).str.strip().str.lower())
-    # Off-road footing (mixed+trail combined): the FLAT surface penalty, fit
-    # below. Altitude (stored in FEET) → thousands of ft, fit below. Both are
+    # Footing (trail_frac: paved 0 / mixed ½ / trail 1): the FLAT surface
+    # penalty, fit below — the continuous coding encodes mixed ≈ ⅓-⅔ trail
+    # surface, trail > ⅔, so trail carries ~2× the mixed penalty with one
+    # parameter (a free trail level is unidentifiable — one route family).
+    # Altitude (stored in FEET) → thousands of ft, fit below. Both are
     # era-correlated in Max's history (mixed = early/sea-level, paved = Boulder
     # era/altitude), so they're isolated via the backfit, not a sequential
     # era-detrend that would absorb them.
-    rec['is_offroad'] = terr.isin(('mixed', 'trail')).astype(float)
+    rec['trail_frac'] = terr.map(TRAIL_FRAC).fillna(0.0)
     rec['alt_kft'] = altitude_regressor(per_run_altitude(rec))
-    # PINNED grade-aware elevation cost (shared.elevation_cost): climbing
-    # costs, descents refund a terrain-dependent fraction (paved ~full at
-    # recovery effort, mixed ~1/3 — the downhill-braking asymmetry). It SCALES
-    # with the route's actual gain/loss, so a hilly mixed route costs more than
-    # a flat one. Pinned (not fitted) because gain/loss are collinear at run
-    # level — the slopes are imported from the per-mile data where they ARE
-    # identifiable. is_offroad then carries only the residual FLAT-footing cost.
-    terr_for_cost = terr.where(terr.isin(('paved', 'mixed', 'trail')), 'paved')
-    rec['elev_cost'] = elevation_cost(rec['elev_gain_pm'].fillna(0).to_numpy(),
-                                      rec['elev_loss_pm'].fillna(0).to_numpy(),
-                                      terr_for_cost.to_numpy())
+    # PINNED hill cost (shared.elevation_cost, the two-channel model):
+    # climbing costs a live-calibrated fraction of pace per ft/mi of hill
+    # vertical (near grade-invariant), descents return a fraction that
+    # declines with their steepness (zero near 9% — braking beyond). Pinned
+    # (not fitted) because climb and descent vertical are collinear at run
+    # level — the constants come from the mile-grain calibration where they
+    # ARE identifiable. trail_frac then carries only the residual
+    # FLAT-footing cost.
+    rec['elev_cost'] = hill_cost(rec['elev_gain_pm'].fillna(0),
+                                 rec['elev_g_up'].fillna(0),
+                                 rec['elev_loss_pm'].fillna(0),
+                                 rec['elev_g_dn'].fillna(0),
+                                 rec['pace_for_fit'].to_numpy(float))
+    # Channel split for tooltips (display-only; the flat-equivalent guard is
+    # second-order at these magnitudes): climb cost and descent benefit, s/mi.
+    _pf = rec['pace_for_fit'].to_numpy(float)
+    rec['climb_s_mi'] = (np.asarray(climb_cost(rec['elev_g_up'].fillna(0)))
+                         * rec['elev_gain_pm'].fillna(0).to_numpy(float) * _pf)
+    rec['desc_s_mi'] = -(np.asarray(descent_benefit(rec['elev_g_dn'].fillna(0)))
+                         * rec['elev_loss_pm'].fillna(0).to_numpy(float) * _pf)
 
     # Route counts kept for reporting/UI only — routes are no longer fit as
     # free dummies (route_col_map intentionally empty).
@@ -1187,7 +1288,7 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
         base_features = ['tod_is_pm']
     else:
         base_features = ['temp_centered'] + fatigue_features + ['tod_is_pm']
-    # Physical route terms (flat-footing is_offroad + altitude) AND the
+    # Physical route terms (flat-footing trail_frac + altitude) AND the
     # transferable-state terms (temp heat slope + race-fatigue decays) are
     # identified on the POOLED recovery+long-run corpus (physical_route_betas —
     # the single source of truth, shared with the long-run model and the
@@ -1199,7 +1300,7 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
     # reads), which is what breaks the recursion.
     if pin_physical:
         pooled = physical_route_betas()
-        pinned_phys = (pooled['is_offroad'] * rec['is_offroad'].fillna(0.0)
+        pinned_phys = (pooled['trail_frac'] * rec['trail_frac'].fillna(0.0)
                        + pooled['alt_kft'] * rec['alt_kft'].fillna(0.0)
                        + pooled['temp_centered'] * rec['temp_centered'].fillna(0.0)
                        + sum(pooled[f'fat_{c}'] * rec[f'fat_{c}'].fillna(0.0)
@@ -1209,7 +1310,7 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
     else:
         pooled = None
         pinned_phys = np.zeros(len(rec))
-        physical_features = ['is_offroad', 'alt_kft']
+        physical_features = ['trail_frac', 'alt_kft']
     feature_cols = base_features + physical_features
 
     # Wind: pooled, pinned per-mph cost applied symmetrically around the median
@@ -1270,7 +1371,7 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
     intercept = float(coef[0])
     betas = {f: float(b) for f, b in zip(feature_cols, coef[1:])}
     if pin_physical:
-        betas['is_offroad'] = float(pooled['is_offroad'])
+        betas['trail_frac'] = float(pooled['trail_frac'])
         betas['alt_kft'] = float(pooled['alt_kft'])
         betas['temp_centered'] = float(pooled['temp_centered'])
         for c in QUALITY_CATS:
@@ -1321,11 +1422,12 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
             print(f'    {"wind_mph":18s}  β = {betas["wind_mph"]:+.3f} s/mi per '
                   f'mph (pinned; applied where a watch reading exists)')
         print(f'\n  Physical route model (replaces per-route dummies):')
-        print(f'    elevation grade: PINNED grade-aware cost '
+        print(f'    elevation grade: PINNED fractional engine '
               f'(shared.elevation_cost); mean {rec_fit["elev_cost"].mean():+.1f} '
-              f's/mi over the fit set (scales with each route\'s gain/loss)')
-        print(f'    off-road footing: β = {betas["is_offroad"]:+.1f} s/mi (flat '
-              f'surface penalty)')
+              f's/mi over the fit set (scales with each route\'s gain/loss '
+              f'and descent steepness)')
+        print(f'    footing: β = {betas["trail_frac"]:+.1f} s/mi per trail_frac '
+              f'(mixed = half, flat surface penalty)')
         print(f'    altitude: β = {betas["alt_kft"]:+.2f} s/mi per 1000 ft above '
               f'{ALTITUDE_THRESHOLD_KFT:.0f}k threshold '
               f'(= {betas["alt_kft"] * (5.4 - ALTITUDE_THRESHOLD_KFT):+.1f} at '
@@ -1350,26 +1452,16 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
     rec['contrib_wind'] = wind_off
 
     # Physical route cost, split into independently-toggleable channels:
-    #   elevation = NET grade at the paved/full-refund baseline,
-    #               c_up·(gain−loss) — ZERO for loops, net up/down for
-    #               point-to-point.
-    #   terrain   = paved-vs-not FLAT-footing (is_offroad β) — zero on paved,
-    #               the flat surface penalty on mixed/trail.
-    #   terrain_descent = the refund asymmetry (elev_cost − paved-equivalent):
-    #               the mixed/trail downhill-braking penalty, which SCALES with
-    #               descent. It's an elevation×terrain interaction — it exists
-    #               only because the route both descends AND is rough — so it is
-    #               applied only when BOTH the Elevation and Terrain toggles are
-    #               on (gated in make_recovery_plots.js), not as its own
-    #               checkbox. Folded into contrib_route below so the pinned
-    #               physical offset (wind_beta target) stays complete.
+    #   elevation = the FULL grade cost from the fractional engine (terrain-
+    #               blind by design — one refund curve, so the old
+    #               elevation×terrain "descent" interaction channel is gone;
+    #               contrib_terrain_descent is kept as an always-zero column so
+    #               the plot's customdata layout and JS gate stay untouched).
+    #   terrain   = the flat trail_frac footing (zero on paved, half on mixed).
     #   altitude  = the altitude penalty.
-    paved_equiv = elevation_cost(rec['elev_gain_pm'].fillna(0).to_numpy(),
-                                 rec['elev_loss_pm'].fillna(0).to_numpy(),
-                                 np.full(len(rec), 'paved'))
-    rec['contrib_elevation'] = paved_equiv
-    rec['contrib_terrain'] = betas['is_offroad'] * rec['is_offroad'].fillna(0)
-    rec['contrib_terrain_descent'] = rec['elev_cost'].to_numpy() - paved_equiv
+    rec['contrib_elevation'] = rec['elev_cost'].to_numpy(float)
+    rec['contrib_terrain'] = betas['trail_frac'] * rec['trail_frac'].fillna(0)
+    rec['contrib_terrain_descent'] = np.zeros(len(rec))
     rec['contrib_altitude'] = betas['alt_kft'] * rec['alt_kft'].fillna(0)
     rec['contrib_route'] = (rec['contrib_elevation'] + rec['contrib_terrain']
                             + rec['contrib_terrain_descent']
