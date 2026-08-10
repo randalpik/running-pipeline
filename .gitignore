@@ -25,3 +25,4 @@ tests/tooltip/playwright-report/
 
 # Local scratch/experiment area (prototypes, one-off plots) — never committed.
 scratch/
+/test-results/
