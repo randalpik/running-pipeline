@@ -315,6 +315,27 @@ older `workout_vdot_v6.csv`, with these rule changes:
   (June 2026) — keyed by rep distance, so a `10×500` gets far more rest/mile than
   a `4×1600`, instead of the old flat per-type median that under-rested short-rep
   days logged as intervals. The hardcoded defaults above are the last resort.
+- **Continuous tempo from the watch** (`reps.extract_tempo_day`, Aug 2026): a
+  tempo logged without a `(0:00 rest/mi)` annotation used to take the 60 s/mi
+  default *untrusted*, which cost it twice — no connected `d_eff`, and a failed
+  `continuous` course-trust rescue in Gate 1, so it landed as `uncertain course`
+  and left TQ entirely. (2026-08-25 `47j, 5000t@5:58, 14j` vs 2022-07-29
+  `15j, 5000t@5:36 (0:00 rest/mi), 16j`: the annotation was the only difference.)
+  The watch settles it. A steady tempo is invisible to block detection — the
+  detector's cutoff is CS pace + 20 s/mi (~5:25/mi in Aug 2026) and Max's 5000t
+  sits at 5:36–5:58, so every window in it reads as jog and `extract_day`
+  returns `no-subset`. But a tempo doesn't need block detection: the log already
+  fixes distance and pace, and the only open question is whether the block ran
+  unbroken. So we find the single moving segment whose duration matches the
+  logged quality time (±5%, with the watch span within 0.85–1.15× the logged
+  distance), confirm nothing stands still inside it, and emit ONE rep at the
+  LOGGED distance and the MEASURED time — the same division of labour as the
+  hill-loop path. The day becomes watch-verified, rest = 0, `d_eff` = the full
+  block. Every guard can only reject, and a rejection falls through to the
+  ordinary pipeline: 2024-05-04's `10000t@4:56` was really 3×3200 with ~3 min
+  rests, no single segment comes near its 1839 s, and it still decomposes the
+  old way. Where there is no watch record at all, a bare `Nt@` stays
+  `uncertain course` — that is what the gate is for.
 
 Decomposer-level prunes (24 rows go to `workout_pruned_v7.csv`):
 2016-07-11 anomaly; tempos with paces over 10:00/mi; `qd < 100`; continuous
@@ -462,6 +483,13 @@ does. Prune inside the fit is iterative one-sided MAD (drops only
 egregious easy days; currently 1). The trail coefficient is persisted
 to `hill_model.csv`; the Workouts plot recomputes the Minetti factor
 from loop covariates and subtracts the same trail term.
+
+Minetti is deliberately NOT the shared two-channel elevation engine:
+replacing it was investigated Aug 2026 and rejected — over-corrects hc
+~1.7×, under-prices hill-rep climbs, out of calibration support at
+workout grades/verticals, and the descent refund doesn't transfer to
+workout effort. See "Two-channel elevation engine for hill workouts"
+under Considered and rejected.
 
 ### Stage 4 — Corrections
 
@@ -790,6 +818,46 @@ race residual = −0.16. Three reasons:
   when per-loop offsets existed (any uniform per-loop shift collapsed
   into the offset, making it redundant). Adopted June 2026 once the
   offsets were gone — it is now the pinned gain correction.
+- **Two-channel elevation engine for hill workouts (Aug 2026).** The
+  natural follow-on to the two-channel overhaul — one grade model for
+  races, long runs, recovery AND hill workouts — investigated and
+  rejected; the engine fails "at least as good as Minetti" in opposite
+  directions on the two workout types. **hc:** swapping the engine into
+  `project_hill_continuous` (surveyed geometry, floor-excess convention,
+  symmetric split — validated against measured hill segments on the 24
+  watch days: lc ~5.0–5.5% vs surveyed 5.7%, rc 7.4% vs 7.5%) corrects
+  ~1.7× Minetti at every loop (lc 22 vs 13 s/mi at 5:30 pace, pwr1 62 vs
+  38) with no dispersion win (resid SD 16.0 vs 15.7, n=127). It breaks
+  the cross-loop effort story Minetti produces: trail-corrected gaps
+  cluster under Minetti (lc +26 / rc +30 / pwr1 +23 — one hill-effort
+  class, and watch-era lc +20.8 ≈ watch-era tempo +21.7) but scatter
+  under the engine (lc +17 / rc +24 / pwr1 +4.5 — two same-era trail
+  loops 20 s/mi apart, pwr1 at race effort), while half the trail term
+  (+25.1 → +13.3) disappears into the steeper grade pricing. Days
+  beating the CS line go 6/127 → 16/127, and the pinned intuition anchor
+  fails: 2021-12-19 (4mi @ 5:09 on lc) reads 4:47/mi vs Minetti's 4:55
+  (line 5:04) — the free-slope failure mode, milder. Root cause is the
+  engine's own transfer rule (route-normalization principle 4): the
+  descent refund doesn't transfer across effort — b(g) was measured on
+  cautious easy-run descents; hc descents are attacked and reclaim what
+  Minetti's energy symmetry says they do. **hr:** the climb-only bridge
+  (descent is rest, so principle 4 is not violated) under-prices steep
+  climbs — linear c(g) extrapolated to 10.3–10.8% sits below Minetti's
+  in-domain convex curve (GAP factors 1.54/1.59 vs 1.68/1.72), slowing
+  the two measured days' 5K-equivalents 5:15→5:46 and 5:35→6:08, i.e.
+  +49/+73 s/mi slow of the line — no effort class lives there. Both
+  types also sit at/outside calibration support (loop blocks 150–267
+  ft/mi at 5.7–10.1% vs mile-gain p99 176 / climb-grade p99 8.1%; reps
+  543–571 ft/mi past the hill-grade p99 ~9.6% and near the 12% clamp)
+  and invert the engine's perturbative regime (full-run fractions 2–8%;
+  hc 7–23%; hr 54–59% — the correction IS the measurement, amplifying
+  parameter error 3–10×). Revisit only if a future calibration gains
+  support at ≥10% grades with workout-effort descents, which day-FE
+  calibration on recovery/long corpora structurally cannot provide.
+  Substrate unification (fused-substrate block geometry auditing the
+  surveyed loop constants — e.g. the anomalous 2026-03-27 hj day, +79
+  s/mi under Minetti, the fit's one pruned outlier) remains open and
+  does not touch the cost curve.
 - **Riegel projection.** Used initially; mathematically reasonable but
   theoretically unfounded. Replaced by CS-hyperbolic to unify with the
   rest of the pipeline.

@@ -9,8 +9,13 @@ artifacts — the long-run pair consumed by
 ``long_run_measured.csv`` / ``recovery_measured.csv`` — one row per
 long-run (resp. recovery) day with watch activities:
     date, n_acts, status (rich|slim), complete (time gate, below),
+    gps_ok (space gate — see GPS_LAG_CEIL_S), gps_lag_s, gps_coverage,
     watch_miles, watch_moving_s, watch_total_s, pause_s, stall_s,
     n_segs, d_eff_frac, longest_seg_mi
+
+The two gates are independent and both must pass before a day's watch
+distance is used: ``complete`` asks whether the watch recorded the whole run
+in TIME, ``gps_ok`` whether it recorded it in SPACE.
 
 ``long_run_calibration.csv`` — the profile's log-vs-watch distance curve:
     intercept_mi, slope, sigma_mi, n_fit, n_pruned
@@ -55,6 +60,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np
 import pandas as pd
 
+from src.coros import dem_elevation as DEM
 from src.shared.paths import DATA_DIR
 from src.shared.recovery_model import STRIDE_SUFFIX_RX
 from src.shared.workouts import RECON_TAU_S
@@ -68,6 +74,22 @@ STREAM_GAP_S = 10.0     # stream gap beyond this = watch pause, not a sample
 # disagrees with the logged duration by more than this fraction has an
 # unrecorded segment or a dead watch — the watch can't vouch for the run.
 TIME_COMPLETE_FRAC = 0.10
+
+# GPS track-quality gate for DISTANCE use (Aug 2026). The time gate above and
+# the recovery model's route-deviation guard both judge a day the watch
+# RECORDED; neither can see a day the watch recorded incompletely in SPACE.
+# Two failure modes, both taken from the elevation layer rather than re-derived:
+#   * late first fix (dem_elevation.LAG_CEIL_S) — the watch dead-reckons the
+#     un-fixed opening stretch, so its distance is short by pace x lag while
+#     moving time stays whole. This is the dominant one: 108 of Max's 1300
+#     watch-corrected recovery days, incl. 2026-08-24 (518 s lag, 1782 m open
+#     loop, 1.3 mi of a 10 mi run untracked).
+#   * mid-run dead-zone (dem_elevation.COVERAGE_FLOOR) — orthogonal; catches a
+#     track that dies in the middle rather than at the start.
+# A day failing either keeps its LOGGED distance and pace, and drops out of the
+# calibration corpus. See docs/recovery-runs-reference.md.
+GPS_LAG_CEIL_S = DEM.LAG_CEIL_S
+GPS_COVERAGE_FLOOR = DEM.COVERAGE_FLOOR
 
 # Calibration fit knobs (match the house MAD-prune style).
 CAL_PRUNE_SIGMA = 3.0
@@ -182,7 +204,17 @@ def measure_day(acts):
     (no per-second stream); their segment/stall fields degrade to one segment
     per activity, but the distance/moving-time fields are exact either way."""
     day_segs, stall_s = [], 0.0
+    lags, covs = [], []
     for i, (rec, act) in enumerate(acts):
+        # GPS track quality (see GPS_LAG_CEIL_S). Activities with no GPS at all
+        # — indoor runs — are skipped, not treated as an infinite lag; the
+        # `any_indoor` flag already speaks for those.
+        lag = DEM.first_fix_lag_s(rec)
+        if lag is not None:
+            lags.append(lag)
+            q = DEM.track_quality(rec)
+            if q is not None:
+                covs.append(q[1])
         segs, st = _activity_segments(rec, act)
         stall_s += st
         if i + 1 < len(acts):
@@ -205,7 +237,35 @@ def measure_day(acts):
         'n_segs': len(day_segs),
         'd_eff_frac': _connected_d_eff(day_segs) / dist_m if dist_m else np.nan,
         'longest_seg_mi': max((s[0] for s in day_segs), default=0.0) / MILE_M,
+        # Worst activity of the day on each axis: one incompletely-tracked leg
+        # is enough to make the day's summed distance untrustworthy.
+        'gps_lag_s': round(max(lags), 1) if lags else np.nan,
+        'gps_coverage': round(min(covs), 4) if covs else np.nan,
     }
+
+
+def _f(v):
+    """float(v) with a NaN for anything missing — watch_daily is read back as
+    strings, and older rows predate the GPS columns entirely."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return np.nan
+    return f
+
+
+def gps_ok(m):
+    """Whether a watch_daily row's GPS track is complete enough to price the
+    day's DISTANCE (see GPS_LAG_CEIL_S). Missing values pass: pre-schema-5 rows
+    and streams with no GPS to judge shouldn't retroactively lose their
+    correction — the failure this catches is positive evidence, not absence."""
+    lag = _f(m.get('gps_lag_s'))
+    cov = _f(m.get('gps_coverage'))
+    if lag == lag and lag > GPS_LAG_CEIL_S:
+        return False
+    if cov == cov and cov < GPS_COVERAGE_FLOOR:
+        return False
+    return True
 
 
 def measure_runs(daily, wd, run_type='long'):
@@ -228,6 +288,9 @@ def measure_runs(daily, wd, run_type='long'):
             'n_acts': int(m['n_acts']),
             'status': m['status'],
             'complete': complete,
+            'gps_ok': gps_ok(m),
+            'gps_lag_s': _f(m.get('gps_lag_s')),
+            'gps_coverage': _f(m.get('gps_coverage')),
             'watch_miles': float(m['watch_miles']),
             'watch_moving_s': moving_s,
             'watch_total_s': float(m['watch_total_s']),
@@ -268,6 +331,11 @@ def fit_calibration(daily, wd):
         log_s = float(drow['minutes']) * 60.0 if pd.notna(drow.get('minutes')) else 0.0
         if not (log_s > 0 and moving_s > 0
                 and abs(moving_s - log_s) / log_s <= TIME_COMPLETE_FRAC):
+            continue
+        # A late-lock / dead-zone day is short in SPACE, so its logged "excess"
+        # is inflated — leaving it in biases the curve toward over-correcting
+        # every other day. Same gate the corrections themselves use.
+        if not gps_ok(m):
             continue
         watch_mi = float(m['watch_miles'])
         excess = float(drow['miles']) - watch_mi

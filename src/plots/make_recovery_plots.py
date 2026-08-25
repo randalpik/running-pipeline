@@ -63,8 +63,11 @@ can fall into multiple classes** — the three flags are independent.
 
   1. Bad conditions — conditions ∈ {snow, icy}, OR the workout string
      contains "snow" (catches "[2" snow]" annotations the conditions
-     field missed). Inside/treadmill/indoor-track runs are kept (still
-     valid pace data on a stable surface).
+     field missed). HAND-LOGGED inside/treadmill/indoor-track runs are
+     kept (still valid pace data on a stable surface); WATCH-derived
+     indoor runs are dropped from the corpus upstream, before this plot
+     sees them — their distance is the watch's uncalibrated stride
+     estimate (recovery_model.is_watch_indoor).
   2. Partner runs — any partners entry outside ADMITTED_PARTNERS
      (blank/solo/none/varsity). Varsity is admitted (June 2026): in the
      2016-17 era the varsity group's recovery pace WAS Max's own pace
@@ -292,6 +295,9 @@ def main():
         elif (pd.notna(row.get('conditions_clean'))
               and str(row['conditions_clean']) not in ('nan', '')):
             parts.append(tt_kv('Conditions', row['conditions_clean']))
+        if row.get('gps_gated') and pd.notna(row.get('gps_lag_s')):
+            parts.append(f"<i>GPS fix {int(row['gps_lag_s'])}s late — "
+                         f"watch distance not used</i>")
         if row.get('is_partner_run'):
             parts.append(f"<i>Partners: {row['partners']} "
                          f"(excluded from fit)</i>")

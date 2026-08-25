@@ -98,12 +98,16 @@ FLUSH_EVERY_DAYS = 25
 def _flush_cache(cache, prev_size, processed, total, label):
     """Persist the DEM cache mid-loop and report progress. ``+N fetched`` is the
     live network signal (points that came over the wire since the last flush).
+    Counts only cells carrying a real elevation — the cache also holds
+    negative-cached misses (DEM.MISS_NOTE), and counting those would report
+    "fetched" for ground NED does not cover.
     Returns the new baseline point count."""
     DEM._save_cache(cache)
-    print(f"[elevation]   ↳ saved {len(cache):,} pts "
-          f"(+{len(cache) - prev_size:,} fetched) — {processed}/{total} "
+    n = DEM.point_count(cache)
+    print(f"[elevation]   ↳ saved {n:,} pts "
+          f"(+{n - prev_size:,} fetched) — {processed}/{total} "
           f"{label} days done", flush=True)
-    return len(cache)
+    return n
 
 
 def _elev_ids_by_date():
@@ -176,7 +180,7 @@ def _race_rec(recs, off_m):
     return best
 
 
-def augment_race_dem(meas, races, ids_by_date, sleep_s, verbose=False):
+def augment_race_dem(meas, races, ids_by_date, sleep_s, cache, verbose=False):
     """Fill DEM gain/loss/net/mean for race rows from the GPS track (races-only;
     the watch's barometric net is per-race noise — see dem_elevation.py).
     Rows missing dem_gain_ft are computed, and rows whose stored point count
@@ -203,10 +207,9 @@ def augment_race_dem(meas, races, ids_by_date, sleep_s, verbose=False):
     need = meas.loc[need_idx]
     if need.empty:
         return 0
-    cache = DEM._load_cache()
     print(f"[elevation] DEM race: {len(need)} days need lookup "
-          f"({len(cache):,} pts cached)", flush=True)
-    n, processed, prev_size = 0, 0, len(cache)
+          f"({DEM.point_count(cache):,} pts cached)", flush=True)
+    n, processed, prev_size = 0, 0, DEM.point_count(cache)
     for i, row in need.iterrows():
         processed += 1
         if processed % FLUSH_EVERY_DAYS == 0:
@@ -231,11 +234,10 @@ def augment_race_dem(meas, races, ids_by_date, sleep_s, verbose=False):
         for k, v in res.items():
             meas.at[i, k] = v
         n += 1
-    DEM._save_cache(cache)
     return n
 
 
-def augment_run_dem(meas, ids_by_date, run_type, verbose=False):
+def augment_run_dem(meas, ids_by_date, run_type, cache, verbose=False):
     """Fill DEM gain/loss/net/mean for ``run_type`` (long/recovery) rows from the
     day's pooled GPS track (see dem_elevation.measure_run_elevation). Training
     runs are loops, so the barometric net carries a phantom morning-drift descent
@@ -249,10 +251,9 @@ def augment_run_dem(meas, ids_by_date, run_type, verbose=False):
     need = meas[(meas['run_type'] == run_type) & meas['dem_gain_ft'].isna()]
     if need.empty:
         return 0
-    cache = DEM._load_cache()
     print(f"[elevation] DEM {run_type}: {len(need)} days need lookup "
-          f"({len(cache):,} pts cached)", flush=True)
-    n, processed, prev_size = 0, 0, len(cache)
+          f"({DEM.point_count(cache):,} pts cached)", flush=True)
+    n, processed, prev_size = 0, 0, DEM.point_count(cache)
     for i, row in need.iterrows():
         processed += 1
         if processed % FLUSH_EVERY_DAYS == 0:
@@ -276,7 +277,6 @@ def augment_run_dem(meas, ids_by_date, run_type, verbose=False):
         for k, v in res.items():
             meas.at[i, k] = v
         n += 1
-    DEM._save_cache(cache)
     return n
 
 
@@ -475,12 +475,15 @@ def main():
     # ~1 m-keyed cache stored ~4x duplicate near-points that never reused across
     # runs; collapsing to the ~10 m grid makes repeated routes cache-hit and
     # shrinks the cache. Idempotent — re-saves only when it actually changed.
+    # ONE cache for the whole process. It used to be loaded and re-saved inside
+    # each augment_* call — five load/save cycles of a 6.4 MB JSON per build.
     cache = DEM._load_cache()
     migrated = DEM.migrate_cache(cache)
     if len(migrated) < len(cache):
-        DEM._save_cache(migrated)
         print(f"[elevation] DEM cache upgraded to {DEM.KEY_DECIMALS}-decimal "
               f"grid: {len(cache):,} -> {len(migrated):,} points", flush=True)
+        cache = migrated
+        DEM._save_cache(cache)
 
     ids_by_date = _elev_ids_by_date()
     if ids_by_date is None:
@@ -527,7 +530,7 @@ def main():
 
     client = None
     meas_rows, split_rows, hill_rows = [], [], []
-    dem_cache = None
+    dem_cache = cache
     fetched = skipped_slim = skipped_invalid = computed = 0
     for d in todo:
         rt, corr_mi = targets[d]
@@ -573,8 +576,6 @@ def main():
                 meas_recs = [rrec]
                 meas_watch_m = Activity(rrec).distance_m / 1609.344
         eff_corr = corr_mi if (corr_mi and corr_mi > 0) else meas_watch_m
-        if dem_cache is None:
-            dem_cache = DEM._load_cache()
         profiles = [DEM.activity_dem_profile(r, dem_cache)
                     for r in meas_recs]
         res = E.measure_day_elevation(meas_recs, eff_corr, meas_watch_m,
@@ -604,16 +605,17 @@ def main():
     print(f"[elevation] hill veto: {n_veto} one-off DEM-refuted hills vetoed "
           f"of {len(hills)} ({int((meas['fused'] == 1).sum())} fused days)")
     if 'race' in types and len(meas):
-        n_dem = augment_race_dem(meas, races, ids_by_date, args.sleep,
+        n_dem = augment_race_dem(meas, races, ids_by_date, args.sleep, cache,
                                  verbose=args.dem_verbose)
         print(f"[elevation] DEM race-elevation: {n_dem} newly computed "
               f"(GPS-track lookup; barometric net is per-race noise)")
     for rt in RUN_TYPES_ELEV:
         if rt in types and len(meas):
-            n_dem = augment_run_dem(meas, ids_by_date, rt,
+            n_dem = augment_run_dem(meas, ids_by_date, rt, cache,
                                     verbose=args.dem_verbose)
             print(f"[elevation] DEM {rt}-run elevation: {n_dem} newly computed "
                   f"(GPS-track lookup; barometric net is morning-drift phantom)")
+    DEM._save_cache(cache)
     if len(meas):
         n_clr = regate_dem(meas, ids_by_date)
         if n_clr:

@@ -74,6 +74,39 @@ TOD_PM_VALUES = {'afternoon', 'late'}
 
 EXCLUDED_CONDITIONS = {'snow', 'icy'}
 
+# Watch-derived indoor runs are DROPPED from the recovery corpus entirely
+# (Aug 2026) — not flagged, dropped, because a flagged row is still plotted and
+# would still set the axis. On a watch-import profile a treadmill run's distance
+# is the watch's uncalibrated stride estimate, and the resulting pace is not
+# comparable to outdoor recovery: maddy's 2026-07-05 (Coros sportType 101,
+# 0.92 mi / 10.9 min = 11:50/mi) sat 114 s/mi outside a 447-596 s/mi corpus and,
+# with the axis taken from `quantile(0.999)` over ~100 rows, set the entire
+# scale of the Recovery plot single-handed.
+#
+# HAND-LOGGED indoor runs are deliberately KEPT (unchanged): Max's own
+# treadmill days carry a distance he chose, on a stable surface, and the plot
+# has always shown them. Both halves of the test below are load-bearing —
+# `build_current_log` writes exactly 'indoors' for a watch indoor run, but Max's
+# 2017-07-19/20 HAND-log rows also read 'indoors' (his other 15 use 'inside'),
+# so only pairing it with the watch-built source_file isolates the right rows.
+INDOOR_WEATHER = 'indoors'
+WATCH_SOURCE_PREFIX = 'snapshot:current_log'
+
+
+def is_watch_indoor(df):
+    """Boolean mask of watch-derived indoor rows (see INDOOR_WEATHER). False
+    everywhere when either column is missing — a profile without them has no
+    watch-built rows to gate."""
+    n = pd.Series(False, index=df.index)
+    if 'weather' not in df.columns or 'source_file' not in df.columns:
+        return n
+    indoor = (df['weather'].fillna('').astype(str).str.strip().str.lower()
+              == INDOOR_WEATHER)
+    watch = (df['source_file'].fillna('').astype(str)
+             .str.startswith(WATCH_SOURCE_PREFIX))
+    return indoor & watch
+
+
 # Workout-string snow detection. Catches "[2\" snow]" and similar annotations
 # in workout_raw that the conditions field missed.
 SNOW_IN_WORKOUT_RE = re.compile(r'\bsnow\b', re.IGNORECASE)
@@ -366,6 +399,8 @@ def add_watch_corrections(rec):
                           .apply(lambda s: bool(STRIDE_SUFFIX_RX.search(s))))
     rec['rec_watch'] = False
     rec['rec_rule'] = False
+    rec['gps_gated'] = False
+    rec['gps_lag_s'] = np.nan
     for col in ('corr_miles', 'corr_time_s', 'corr_pace_sec_per_mi', 'pause_s'):
         rec[col] = np.nan
 
@@ -377,8 +412,27 @@ def add_watch_corrections(rec):
         except pd.errors.EmptyDataError:
             # A profile with watch details but no recovery days writes a
             # column-less artifact.
-            meas = pd.DataFrame(columns=['date', 'complete'])
-        meas = meas[meas['complete'].astype(bool)] if len(meas) else meas
+            meas = pd.DataFrame(columns=['date', 'complete', 'gps_ok'])
+        # Two independent gates (long_runs.measure_runs): `complete` = the watch
+        # recorded the whole run in TIME, `gps_ok` = it recorded it in SPACE.
+        # A late GPS lock passes the time gate and the route-deviation guard
+        # below (its shortfall hides inside WATCH_FAIL_DEV) while the watch
+        # distance is short by pace x lag, so the day must be gated here.
+        # `gps_ok` is absent on artifacts written before schema 5 — treat a
+        # missing verdict as passing, matching long_runs.gps_ok.
+        if len(meas):
+            ok = meas['complete'].astype(bool)
+            if 'gps_ok' in meas.columns:
+                gps = meas['gps_ok'].fillna(True).astype(bool)
+                # Days the watch RECORDED fully in time but not in space: the
+                # tooltip says so, rather than silently showing a logged pace
+                # with no watch tag and no explanation.
+                gated = meas.loc[ok & ~gps].set_index('date')
+                rec['gps_gated'] = rec['date'].isin(gated.index)
+                if 'gps_lag_s' in gated.columns:
+                    rec['gps_lag_s'] = rec['date'].map(gated['gps_lag_s'])
+                ok &= gps
+            meas = meas[ok]
         meas = meas.set_index('date')
         paved = (rec.get('terrain_type', pd.Series(np.nan, index=rec.index))
                  .astype(str).str.strip().str.lower() == 'paved')
@@ -1092,6 +1146,15 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
     # Recovery subset
     rec = daily[daily['run_type'] == 'recovery'].copy()
     rec = rec.dropna(subset=['recovery_pace_sec_per_mi'])
+    # Watch-derived treadmill runs never enter the corpus (see is_watch_indoor).
+    # Dropped here, before the plot's axis is taken from these rows. Mileage is
+    # untouched — eff_miles and every total still count the run.
+    n_indoor = int(is_watch_indoor(rec).sum())
+    if n_indoor:
+        rec = rec[~is_watch_indoor(rec)]
+        if verbose:
+            print(f'  dropped {n_indoor} watch-derived indoor day(s) '
+                  f'(uncalibrated treadmill distance)')
     rec = rec.sort_values('date').reset_index(drop=True)
     if rec.empty:
         if verbose:

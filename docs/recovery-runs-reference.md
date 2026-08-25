@@ -185,7 +185,21 @@ flags exclude the row from the OLS fit but the points remain plotted.
    bracket annotations the conditions field missed). 2017's untagged
    snow days come in via the workout regex. **`inside` was removed from
    the bad-cond set** in April 2026 — those are treadmill/indoor-track
-   runs at stable surface and pace, valid data.
+   runs at stable surface and pace, valid data. That holds for
+   HAND-LOGGED indoor days only: **watch-derived indoor runs are dropped
+   from the corpus entirely** (Aug 2026, `is_watch_indoor`) before any
+   flag or axis is computed, because on a watch-import profile the
+   treadmill distance is the watch's uncalibrated stride estimate rather
+   than a number Max chose. maddy's 2026-07-05 (Coros sportType 101,
+   0.92 mi / 10.9 min = 11:50/mi) sat 114 s/mi outside a 447–596 s/mi
+   corpus and, with the axis taken from `quantile(0.999)` over ~100 rows,
+   stretched the whole plot from 6:30–10:00 to 6:00–12:00 by itself.
+   Dropped, not flagged — a flagged row is still plotted and would still
+   set the axis. The test is `weather == 'indoors'` **and** a
+   `snapshot:current_log` source: both halves matter, because
+   `build_current_log` writes exactly `indoors` for a watch indoor run
+   but Max's 2017-07-19/20 *hand-log* rows read `indoors` too (his other
+   15 use `inside`). Mileage is untouched either way.
 
 2. **Partner runs** (`is_partner_run`): any `partners` entry outside
    `ADMITTED_PARTNERS` = blank/solo/none/**varsity**. Varsity was
@@ -223,6 +237,28 @@ the long-run one; the **calibration curve is shared**
 (`long_run_calibration.csv` — it was already fit on the pooled paved
 recovery+long corpus).
 
+- **GPS track gate** (`gps_ok`, Aug 2026): a day whose watch recorded it
+  fully in TIME but not in SPACE keeps its logged distance and pace, and
+  leaves the calibration corpus. Two axes, both borrowed from the
+  elevation layer rather than re-derived: a first GPS fix later than
+  `dem_elevation.LAG_CEIL_S = 30 s`, or GPS coverage below
+  `COVERAGE_FLOOR = 0.80`. The lag arm is the one that bites (142 of Max's
+  recovery days): the watch dead-reckons the un-fixed opening stretch, so
+  moving time stays whole and the shortfall hides inside `WATCH_FAIL_DEV`
+  below. Validated against **loop closure** — on clean-lock activities the
+  median start-to-end gap is 22 m and 86% close within 100 m (per route:
+  centennial 99.6%, east boulder 99.2%, mccabe 99.0%, lakefront 98.0%),
+  while closure collapses to 43% in the 20–30 s lag band, 22% at 30–45 s
+  and 0–4% beyond 45 s, with the median gap tracking `pace × lag` at a
+  ratio of 0.56 (the chord of the missing arc). The gate ships on **lag,
+  not on the gap**: ~14% of the corpus is genuine point-to-point running
+  that a gap test would wrongly reject, whereas only 2 of 108 lag>30 s
+  days close the loop. Worked case — 2026-08-24, `river trail`, logged
+  10.0 mi: 518 s to first fix, 1782 m open loop, watch reads 9.289 mi
+  (1.3 mi untracked), and the old path shaved it to 9.87 mi at +8.1 s/mi.
+  Coverage alone would have missed it (0.88 > the 0.80 floor); it is
+  centred at ~1.02 because GPS jitter inflates the point-to-point sum, so
+  it masks a missing arc. Gated days are labelled in the tooltip.
 - **Watch correction** (paved + time-complete days): corrected distance
   = `watch_mi·(1+slope) + intercept`, corrected time = watch moving
   seconds, corrected pace = their ratio. ~1,190 of ~2,550 recovery days

@@ -136,6 +136,23 @@ by running differently.
   data wanted a small climb cost against a large descent benefit. Independent
   channels also drop the consistent-effort assumption — which is what kept
   hill workouts on a separate Minetti model.
+- **Engine boundary — hill workouts stay on Minetti (Aug 2026,
+  investigated and rejected).** The channel split made a unification
+  *possible* in principle; the empirical check killed it in both directions.
+  Hill workouts live at/beyond the calibration's support (loop blocks
+  150–267 ft/mi at 5.7–10.1% vs mile-gain p99 ~176 ft/mi, climb-grade p99
+  ~8%; hill reps 543–571 ft/mi at 10.3–10.8%, past the 12% clamp), and they
+  invert the engine's perturbative design — full-run corrections are 2–8%
+  fractions, hc blocks 7–23%, hill reps 54–59%, so the correction *is* the
+  measurement and parameter error amplifies 3–10×. On hc the bridge needs
+  the descent channel, which principle 4 below forbids transferring across
+  effort (workout descents are attacked; b(g) was measured on cautious easy
+  descents) — it over-corrects ~1.7× Minetti, breaks cross-loop effort
+  coherence, and reads the documented 2021-12-19 anchor at 4:47 vs the
+  intuition-pinned 4:55. On reps the climb-only bridge is principled but
+  the linear c(g) extrapolates below Minetti's in-domain convex curve at
+  >10%, slowing rep 5K-equivalents ~31–33 s/mi into no effort class.
+  Full numbers: training-quality-reference.md "Considered and rejected".
 - **Climb cost is near grade-invariant** (c1 small, Minetti-consistent). The
   steepness effect is a **descent** phenomenon: b(g) declines hard with grade
   and **crosses zero near 9% — the braking regime — measured inside the data**
@@ -343,6 +360,18 @@ per-sample noise adds to it and never subtracts — SRTM's surcharge measured a
 flat +30.4 ft/mi on two Banff routes whose real relief differed 5×. Baro's own
 error is a mild under-read plus occasional spikes (capped at 45° per step in
 `elevation.py`), which errs toward under-correcting: the conservative direction.
+
+**Misses are cached too (Aug 2026).** `dem_cache.json` stores a `None` for any
+cell NED answered for but does not cover, so it is never queried again
+(`dem_elevation.MISS_NOTE`). Without this the NED-only policy above had a nasty
+side effect: only *hits* were cached, so every build re-asked the public API for
+the same ~18k cells under Paris / Calais / Berlin / Seoul / Tokyo / Osaka /
+Banff — 5–10 minutes per run at the 1 req/s courtesy limit, fetching nothing
+(the pipeline log's `+0 fetched`). Foreign runs still keep their barometric
+profile exactly as designed; only the re-asking stopped. A cell is
+negative-cached **only on a successful response** — a network failure returns no
+list at all, so one flaky minute can't blacklist a route. `DEM.point_count()` is
+the honest "real points" count for logging, since `len(cache)` now counts misses.
 
 **Races use a DEM, not the barometric stream.** The watch's per-race *net* is
 noise (the same Bolder Boulder course read −19 ft/mi net one year and +5 the

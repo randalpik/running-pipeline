@@ -24,6 +24,12 @@ is a mild UNDER-read plus occasional spikes (spike-capped in elevation.py),
 which errs toward under-correcting — the conservative direction for a pace
 correction. So: 10 m lidar where it exists, barometer everywhere else.
 
+Point elevations are cached BOTH ways: a hit stores its elevation, a cell NED
+answered for but does not cover stores ``None`` so it is never re-queried (see
+MISS_NOTE below). Callers already read a ``None`` as "no DEM here", so a
+negative entry and an absent one behave identically downstream — they differ
+only in whether the next build pays for the lookup again.
+
 Gain/loss/net are computed with the SAME gridding+smoothing as the barometric
 path (``elevation._gridded_altitude``, ``gain_loss_ft``) so the two sources are
 directly comparable; only the altitude source differs.
@@ -147,6 +153,44 @@ def track_quality(rec):
     watch_m = (rec.get('summary') or {}).get('distance')
     coverage = cum[-1] / (watch_m / 100.0) if watch_m else float('nan')
     return best, coverage
+
+
+# Late GPS lock (Aug 2026). Distinct from the two failures above and invisible
+# to both: the watch records from the moment it is started but has no position
+# until the fix lands, dead-reckoning distance in between. Moving time stays
+# intact (so the log-vs-watch time gate passes) and the missing arc is masked by
+# jitter in ``coverage`` (which centres at ~1.02, not 1.00), so the day sails
+# through every existing check while its distance is short by pace x lag.
+#
+# Validated against LOOP CLOSURE — the straight-line distance from the first
+# GPS-fixed sample to the last. Max's routes are loops: on clean-lock activities
+# (lag <= 5 s) the median start-to-end gap is 22 m and 86% close within 100 m,
+# and per route it is tighter still (centennial 99.6%, east boulder 99.2%,
+# mccabe 99.0%, lakefront 98.0% closing). Loop closure collapses exactly where
+# the lag grows: 43% closing in the 20-30 s band, 22% at 30-45 s, then 0-4%
+# beyond 45 s, with the median gap tracking pace x lag at a ratio of 0.56 — the
+# chord of the missing arc. LAG_CEIL_S is set at the break.
+#
+# The gate ships on LAG, not on the gap, deliberately: ~14% of the corpus is
+# genuine point-to-point running (kona, vancouver, central park) that a
+# gap-based gate would wrongly reject, whereas only 2 of 108 lag>30 s days
+# close the loop. The gap is the evidence; the lag is the gate.
+LAG_CEIL_S = 30.0
+
+
+def first_fix_lag_s(rec):
+    """Seconds from an activity's first stream sample to its first sample
+    carrying a GPS fix. None when the stream has no GPS at all (indoor runs) —
+    the caller must skip those rather than read a missing fix as an infinite
+    lag."""
+    freq = rec.get('freq') or []
+    if not freq or freq[0][0] is None:
+        return None
+    t0 = freq[0][0] / 100.0
+    for f in freq:
+        if len(f) >= 6 and f[0] is not None and f[3] and f[4]:
+            return f[0] / 100.0 - t0
+    return None
 
 
 def track_ok(rec):
@@ -273,6 +317,23 @@ def aligned_net(grid, alt, d0, d1, sign, shift_m=ALIGN_SHIFT_M):
     return best if best > -1e18 else float('nan')
 
 
+# MISS_NOTE — negative caching (Aug 2026). The cache stores ``None`` for a cell
+# NED answered for but does not cover, so the cell is never queried again. Before
+# this, only hits were stored: every build re-asked the public API for the same
+# ~18k cells under Paris / Calais / Berlin / Seoul / Tokyo / Osaka / Banff (all
+# outside NED since the SRTM fallback was retired), which at BATCH=100 and 1 req/s
+# cost 5-10 minutes per run and fetched nothing — the "0 points fetched" the CI log
+# reported. Foreign runs still keep their BAROMETRIC elevation, exactly as
+# designed (see the module docstring); this only stops re-asking. A cell is
+# negative-cached ONLY on a successful response — see _query.
+
+
+def point_count(cache):
+    """Cached cells carrying a real elevation (negative-cached misses excluded).
+    The honest number for progress logging: ``len(cache)`` now counts misses."""
+    return sum(1 for v in cache.values() if v is not None)
+
+
 def _load_cache():
     if CACHE_PATH.exists():
         try:
@@ -292,9 +353,12 @@ def migrate_cache(cache):
     for k, v in cache.items():
         la, lo = k.split(',')
         nk = _key(float(la), float(lo))
+        if v is None:                      # negative-cached miss: carries no
+            agg.setdefault(nk, (0.0, 0))   # value to average, but must survive
+            continue                       # the migration as a miss
         s, c = agg.get(nk, (0.0, 0))
         agg[nk] = (s + v, c + 1)
-    return {k: s / c for k, (s, c) in agg.items()}
+    return {k: (s / c if c else None) for k, (s, c) in agg.items()}
 
 
 def _save_cache(cache):
@@ -308,7 +372,13 @@ def _save_cache(cache):
 
 
 def _query(latlons, dataset):
-    """Batched DEM lookup; returns list of elevations (m), None for misses."""
+    """Batched DEM lookup. Returns a list of elevations (m) with ``None`` for
+    cells the dataset genuinely does not cover, or ``None`` (instead of a list)
+    when the REQUEST itself failed.
+
+    The distinction is the whole point: a covered-but-null answer is permanent
+    and gets negative-cached by the caller, a failed request is transient and
+    must not be, or one flaky minute would blacklist a route forever."""
     locs = '|'.join(f'{la:.6f},{lo:.6f}' for la, lo in latlons)
     url = f'{dataset}?{urllib.parse.urlencode({"locations": locs})}'
     with urllib.request.urlopen(url, timeout=30) as resp:
@@ -327,6 +397,8 @@ def dem_elevations(lat, lon, cache, sleep_s=SLEEP_S, verbose=False):
     keys = [_key(lat[i], lon[i]) for i in range(len(lat))]
     # Unique not-yet-cached cells: a 30 m-resampled track can put several points
     # in one ~10 m cell, and repeated routes share cells — query each only once.
+    # A cell already carrying a None (negative-cached miss) is "in cache" and so
+    # is never re-queried.
     pend0 = list(dict.fromkeys(k for k in keys if k not in cache))
     for ds in (_NED,):
         pend = [k for k in pend0 if k not in cache]
@@ -337,17 +409,23 @@ def dem_elevations(lat, lon, cache, sleep_s=SLEEP_S, verbose=False):
             latlons = [tuple(map(float, k.split(','))) for k in chunk]
             try:
                 elevs = _query(latlons, ds)
-            except Exception as e:  # network/HTTP — leave as misses
+            except Exception as e:                # transient — do NOT cache
                 if verbose:
                     print(f'  DEM query failed ({ds.split("/")[-1]}): {e}')
-                elevs = [None] * len(chunk)
+                elevs = None
+            if elevs is None:
+                time.sleep(sleep_s)
+                continue
+            # The response is authoritative for every cell it answered for,
+            # nulls included: NED simply does not cover that ground, and no
+            # amount of re-asking changes it. Cache the null so the next build
+            # skips the cell instead of re-fetching it forever (see MISS_NOTE).
             for k, ev in zip(chunk, elevs):
-                if ev is not None:
-                    cache[k] = ev
+                cache[k] = ev
             if verbose:
                 done = min(b + BATCH, len(pend))
                 print(f"      [dem] {ds.split('/')[-1]} {done}/{len(pend)} "
-                      f"cells ({len(cache):,} cached)", flush=True)
+                      f"cells ({point_count(cache):,} cached)", flush=True)
             time.sleep(sleep_s)
     return [cache.get(k) for k in keys]
 

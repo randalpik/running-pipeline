@@ -330,7 +330,12 @@ def _lr_watch_corrections(lr):
     if cal is not None and LR_MEASURED_PATH.exists():
         c, m = cal
         meas = pd.read_csv(LR_MEASURED_PATH, parse_dates=['date'])
-        meas = meas[meas['complete']].set_index('date')
+        # `complete` (time) AND `gps_ok` (space) — see long_runs.measure_runs.
+        # Missing gps_ok = pre-schema-5 artifact, treated as passing.
+        _ok = meas['complete'].astype(bool)
+        if 'gps_ok' in meas.columns:
+            _ok &= meas['gps_ok'].fillna(True).astype(bool)
+        meas = meas[_ok].set_index('date')
         # Surface gate (Max, June 2026): terrain_type is purely a SURFACE
         # label (paved / mixed / trail). The calibration curve is fit on
         # paved-outdoor days; the gate's job is to keep possibly-forested

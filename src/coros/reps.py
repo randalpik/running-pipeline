@@ -64,6 +64,7 @@ import pandas as pd
 
 from src.coros import mappings as M
 from src.coros.build_current_log import Activity, strip_paused
+from src.coros.long_runs import _detect_stalls
 from src.shared.paths import DATA_DIR
 from src.shared.hill_model import FT_PER_M
 from src.shared.workouts import _parse_hr, hc_loop_distance, parse_hc
@@ -1184,6 +1185,69 @@ def annotate(reps, pts):
             r['rest_jog_s'] = r['rest_stand_s'] = None
 
 
+# ---------- continuous tempo (duration match) ----------
+# A steady tempo is invisible to block detection: `cs_cut` is CS pace + 20 s/mi
+# (~5:25/mi for Max in Aug 2026) and his 5000t sits at 5:36-5:58, so every
+# window in it reads as jog and `extract_day` returns 'no-subset'. Widening the
+# cutoff is not an option — it is what separates reps from the jog around them.
+#
+# But a tempo does not need block detection. The hand log already fixes the
+# distance and the pace; the ONE thing it leaves open is whether the block was
+# run unbroken or split into reps, and that is exactly what the stream can say.
+# So: find the single moving segment whose duration matches the logged quality
+# time, verify nothing stands still inside it, and the day is a continuous
+# tempo with rest = 0.
+#
+# Distance comes from the LOG, time from the WATCH — the same division of
+# labour as the hill-loop path (surveyed distance authoritative, GPS reads
+# short under cover). 2026-08-25 at hartman: watch 4533 m for a logged 5000 m
+# (-9%, trail), while its 1109 s lands within 3 s of the logged 1112 s.
+#
+# Deliberately conservative — every guard below can only REJECT, and a rejected
+# day just falls through to the normal block path. A broken tempo cannot match:
+# 2024-05-04's `10000t@4:56` was really 3x3200 with ~3 min rests, so no single
+# segment comes near its 1839 s and it still decomposes the old way.
+TEMPO_TIME_TOL = 0.05      # |seg_time - logged_time| / logged_time
+TEMPO_DIST_BAND = (0.85, 1.15)   # watch span / logged distance
+
+
+def extract_tempo_day(recs, logged_qd, logged_qp):
+    """(reps, status) for a hand-logged tempo day whose block ran unbroken.
+
+    Returns a single rep at the LOGGED distance and the MEASURED time, or
+    ``([], reason)`` when the day is not demonstrably continuous — in which
+    case the caller falls back to the ordinary block pipeline."""
+    if not logged_qd or not logged_qp or logged_qd <= 0 or logged_qp <= 0:
+        return [], 'tempo-no-log'
+    t_log = logged_qp * logged_qd / MILE
+    cands = []
+    for rec in recs:
+        for seg in moving_segments(rec):
+            t = seg.time_at(seg.d1) - seg.time_at(seg.d0)
+            span = seg.d1 - seg.d0
+            if abs(t - t_log) > TEMPO_TIME_TOL * t_log:
+                continue
+            if not (TEMPO_DIST_BAND[0] <= span / logged_qd
+                    <= TEMPO_DIST_BAND[1]):
+                continue          # right duration, wrong ground — a jog leg
+            cands.append((seg, t, span))
+    if len(cands) != 1:           # 0 = not continuous; >1 = can't tell which
+        return [], ('tempo-ambiguous' if cands else 'tempo-no-match')
+    seg, t, span = cands[0]
+    # moving_segments already split on stream gaps, so a watch pause cannot
+    # hide inside the segment — but standing still while recording can.
+    if _detect_stalls([(q[0], q[1]) for q in seg.pts]):
+        return [], 'tempo-stalled'
+    chosen = [{'seg': seg, 'L': float(logged_qd), 't': t, 'raw': span,
+               't0': seg.time_at(seg.d0), 't1': seg.time_at(seg.d1),
+               'tier': 0.0, 'is_alt': False, 'cf': False}]
+    # HR + rest fields, exactly as extract_day does for its own picks (a
+    # lone rep has no following rep, so annotate leaves both rests None,
+    # which is what 'no rest' means downstream).
+    annotate(chosen, sorted(q for rec in recs for q in _freq_points(rec)))
+    return chosen, 'exact'
+
+
 # ---------- day pipeline ----------
 
 def cs_threshold_fn(cs_path):
@@ -1270,7 +1334,7 @@ WORKOUT_MEASURED_COLS = ['date', 'status', 'logged_qd_m', 'rep_idx', 'kind',
 
 
 def _extract_day_rows(date, recs, logged, cf, hill, cutoff, label_ids,
-                      watch_only):
+                      watch_only, tempo=None):
     """Rows for one analyzed day (status row rep_idx=0 + one row per rep).
     Returns (rows, slim_skipped). `label_ids` is the day's labelId set, stamped
     on the status row as the presence key for incremental reuse."""
@@ -1293,8 +1357,17 @@ def _extract_day_rows(date, recs, logged, cf, hill, cutoff, label_ids,
             if watch_only and status == 'hillrep-exact':
                 status = 'hillrep-watch'
     else:
-        chosen, status = extract_day(rich, cutoff(date), logged, cf)
-        kind = None
+        chosen, status, kind = [], None, None
+        if tempo:
+            # Continuous-tempo path (extract_tempo_day). Tried FIRST because a
+            # steady tempo sits below the block detector's quality cutoff and
+            # would otherwise return 'no-subset'; any rejection falls straight
+            # through to the ordinary pipeline below.
+            chosen, status = extract_tempo_day(rich, *tempo)
+            kind = 'tempo' if chosen else None
+        if not chosen:
+            chosen, status = extract_day(rich, cutoff(date), logged, cf)
+            kind = None
     rows = [{'date': date, 'status': status, 'logged_qd_m': logged,
              'rep_idx': 0, 'label_ids': label_ids}]
     for i, r in enumerate(chosen):
@@ -1354,14 +1427,22 @@ def _day_plan(by_date, daily, watch_only, races_path):
               if h is not None and run_type in QUALITY_TYPES
               and pd.notna(h['quality_distance_m']) else None)
         cf = h is not None and 'f@' in str(h['workout_raw'])
+        # Continuous-tempo anchor: the logged distance AND pace, which together
+        # fix the quality block's expected duration (extract_tempo_day).
+        qp = (float(h['quality_pace_sec_per_mi'])
+              if h is not None and run_type == 'tempo'
+              and pd.notna(h.get('quality_pace_sec_per_mi')) else None)
+        tempo = (qd, qp) if (qd and qp) else None
         track_ids = [l for l, st in acts if st == M.SPORT_TRACK_RUN]
         all_ids = [l for l, st in acts]
         if track_ids:
             if run_type == 'race':
                 continue
-            plan[date] = {'logged': qd, 'cf': cf, 'hill': None, 'ids': track_ids}
+            plan[date] = {'logged': qd, 'cf': cf, 'hill': None,
+                          'tempo': tempo, 'ids': track_ids}
         elif run_type in QUALITY_TYPES:
-            plan[date] = {'logged': qd, 'cf': cf, 'hill': None, 'ids': all_ids}
+            plan[date] = {'logged': qd, 'cf': cf, 'hill': None,
+                          'tempo': tempo, 'ids': all_ids}
         elif run_type == 'hill_cont':
             _min, nreps, loop = parse_hc(h)
             loop_m = hc_loop_distance(loop) if loop else None
@@ -1445,7 +1526,7 @@ def build_workout_measured(daily, details_dir, cs_path, *, watch_only=False,
         reextracted += 1
         drows, sk = _extract_day_rows(date, load_recs(meta), meta['logged'],
                                       meta['cf'], meta['hill'], cutoff, key,
-                                      watch_only)
+                                      watch_only, meta.get('tempo'))
         rows.extend(drows)
         skipped += sk
     if indexed:

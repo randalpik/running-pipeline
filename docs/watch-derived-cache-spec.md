@@ -73,12 +73,24 @@ temp_c, weather_bin, wind_mph, humidity_pct, time_of_day,
 # --- distance / structure (whole-day, watch-measured) ---
 watch_miles, watch_moving_s, watch_total_s, pause_s, stall_s,
 n_segs, d_eff_frac, longest_seg_mi,
+# --- GPS track quality (schema 5) ---
+gps_lag_s, gps_coverage,        # worst activity of the day on each axis
 # --- elevation ---
 gain_ft, loss_ft, corr_miles,
 # --- provenance ---
 label_ids,                      # sorted labelId set consumed for this day
 derived_schema_version          # bumps to force a global regen on schema change
 ```
+
+`gps_lag_s` / `gps_coverage` (schema 5, Aug 2026) are the per-day GPS
+track-quality scalars — seconds to the first GPS fix, and GPS-haversine length
+over the watch's reported distance. `long_runs.measure_runs` turns them into the
+`gps_ok` verdict carried by `long_run_measured.csv` / `recovery_measured.csv`,
+which gates every DISTANCE use of the watch (both correction paths and the
+calibration fit). Rationale, thresholds and the loop-closure validation live in
+`recovery-runs-reference.md`; the constants themselves are
+`dem_elevation.LAG_CEIL_S` / `COVERAGE_FLOOR`, shared with the elevation layer.
+Rows written before schema 5 have no verdict, and a missing verdict passes.
 
 - **`run_type` is deliberately absent.** Consumers join it from `daily.csv`.
 - **`weather_bin`** is carried for completeness but the daily pipeline still
