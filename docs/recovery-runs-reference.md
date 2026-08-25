@@ -258,7 +258,7 @@ recovery+long corpus).
   (1.3 mi untracked), and the old path shaved it to 9.87 mi at +8.1 s/mi.
   Coverage alone would have missed it (0.88 > the 0.80 floor); it is
   centred at ~1.02 because GPS jitter inflates the point-to-point sum, so
-  it masks a missing arc. Gated days are labelled in the tooltip.
+  it masks a missing arc.
 - **Watch correction** (paved + time-complete days): corrected distance
   = `watch_mi·(1+slope) + intercept`, corrected time = watch moving
   seconds, corrected pace = their ratio. ~1,190 of ~2,550 recovery days

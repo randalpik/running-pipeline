@@ -295,9 +295,6 @@ def main():
         elif (pd.notna(row.get('conditions_clean'))
               and str(row['conditions_clean']) not in ('nan', '')):
             parts.append(tt_kv('Conditions', row['conditions_clean']))
-        if row.get('gps_gated') and pd.notna(row.get('gps_lag_s')):
-            parts.append(f"<i>GPS fix {int(row['gps_lag_s'])}s late — "
-                         f"watch distance not used</i>")
         if row.get('is_partner_run'):
             parts.append(f"<i>Partners: {row['partners']} "
                          f"(excluded from fit)</i>")

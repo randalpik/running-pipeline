@@ -399,8 +399,6 @@ def add_watch_corrections(rec):
                           .apply(lambda s: bool(STRIDE_SUFFIX_RX.search(s))))
     rec['rec_watch'] = False
     rec['rec_rule'] = False
-    rec['gps_gated'] = False
-    rec['gps_lag_s'] = np.nan
     for col in ('corr_miles', 'corr_time_s', 'corr_pace_sec_per_mi', 'pause_s'):
         rec[col] = np.nan
 
@@ -423,15 +421,7 @@ def add_watch_corrections(rec):
         if len(meas):
             ok = meas['complete'].astype(bool)
             if 'gps_ok' in meas.columns:
-                gps = meas['gps_ok'].fillna(True).astype(bool)
-                # Days the watch RECORDED fully in time but not in space: the
-                # tooltip says so, rather than silently showing a logged pace
-                # with no watch tag and no explanation.
-                gated = meas.loc[ok & ~gps].set_index('date')
-                rec['gps_gated'] = rec['date'].isin(gated.index)
-                if 'gps_lag_s' in gated.columns:
-                    rec['gps_lag_s'] = rec['date'].map(gated['gps_lag_s'])
-                ok &= gps
+                ok &= meas['gps_ok'].fillna(True).astype(bool)
             meas = meas[ok]
         meas = meas.set_index('date')
         paved = (rec.get('terrain_type', pd.Series(np.nan, index=rec.index))
