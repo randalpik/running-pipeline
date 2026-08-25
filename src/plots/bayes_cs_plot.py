@@ -53,6 +53,27 @@ from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
 DEFAULT_IN_DIR = str(DATA_DIR)
 DEFAULT_RACES  = str(DATA_DIR / 'races.csv')
 
+# Visibility floor for the race tooltip's course-correction rows, in seconds.
+# ONE constant for both gates deliberately: the "Course correction" line and the
+# "Elevation" line that explains it must appear together, or a race shows a
+# corrected time with nothing accounting for it (2026-05-23 Soldier Field 10:
+# 32:38 -> 32:36, entirely from +1.82 s of grade over 111 ft of gain, with the
+# elevation row suppressed by a separate 3 s threshold).
+#
+# 1 s is set by the CORRECTION side and can't be raised: the row states the
+# race's corrected time, so hiding it whenever the correction is small would
+# leave the tooltip disagreeing with the diamond actually plotted. The elevation
+# row follows it down.
+#
+# The gates still separate where they should — they test different quantities.
+# The correction row tests the TOTAL (grade + footing + altitude + the
+# categorical XC factor); the elevation row tests the GRADE component alone. So
+# a correction driven by trail footing or by Boulder's altitude with only
+# incidental grade shows no elevation row (2025-01-01 Club Northwest Resolution
+# Run: -24.7 s of correction, 24.2 s of it footing, 0.5 s grade), which is
+# correct — an elevation line there would explain a sliver and imply the rest.
+CORRECTION_MIN_SEC = 1.0
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -274,20 +295,23 @@ def main():
         # that (project mutates it; time_sec_original is the raw race time).
         # Shown only when a correction actually moved the time.
         t_corr = float(row['time_sec'])
-        has_corr = abs(t_corr - t_orig) >= 1.0
+        has_corr = abs(t_corr - t_orig) >= CORRECTION_MIN_SEC
         corr_line = ''
         if has_corr:
             corr_line = (f"<div>Course correction: <b>{sec_to_mss_prec(t_corr, td)}</b> "
                          f"<span class='tt-mute'>"
                          f"({sec_to_mss(t_corr / dist_mi)}/mi)</span></div>")
 
-        # Measured vertical behind the course correction, shown when the grade
-        # term moved the time notably (>= 3 s). Just the gain and loss — the
-        # correction itself is the next line, and a 30 ft half marathon here is
-        # how the North Shore warmup mis-pick would have been caught on day one.
+        # Measured vertical behind the course correction — the same
+        # CORRECTION_MIN_SEC floor the correction row uses, so any correction
+        # that grade actually caused arrives with its explanation attached.
+        # Just the gain and loss; the correction itself is the next line, and a
+        # 30 ft half marathon here is how the North Shore warmup mis-pick would
+        # have been caught on day one.
         elev_line = ''
         g_dt = row.get('tt_grade_dt_sec')
-        if (g_dt is not None and not pd.isna(g_dt) and abs(float(g_dt)) >= 3.0
+        if (g_dt is not None and not pd.isna(g_dt)
+                and abs(float(g_dt)) >= CORRECTION_MIN_SEC
                 and not pd.isna(row.get('tt_elev_gain_ft'))):
             from src.plotting.hover import signed_mss
             elev_line = (
