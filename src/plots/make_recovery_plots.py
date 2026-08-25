@@ -541,6 +541,12 @@ def main():
     # from the same payload — the only difference is the snap path uses
     # the snapped point's day directly (so trend rows reflect that exact
     # day) and skips the date header + "Nearest run" caption.
+    #
+    # These are the FIRST-PAINT values. Every normalization toggle and
+    # visibility filter recomputes the points and both trends in JS, which
+    # writes the new values back here (make_recovery_plots.js syncTooltip) —
+    # so anything added to this payload that the sidebar can change must be
+    # re-synced there too, or the tooltip will quietly go stale.
     js_epoch = pd.Timestamp('1970-01-01')
     plot_start = x_lo.normalize()
     plot_end   = x_hi.normalize()
@@ -656,8 +662,14 @@ function buildTooltip(day, isSnap, pointHtml) {
                          :  dd2 + ' day' + (dd2 === -1 ? '' : 's'));
       html += '<div class="tt-section-title">Nearest run [' + lbl + ']</div>';
     }
+    // Both rows are distances FROM THIS RUN: to the fitness line (which is
+    // y=0 on the residual panel, so the run's own residual IS that distance)
+    // and to the trend line at the run's date. Reporting the trend line's own
+    // value instead would just restate Trend pace − 5K fitness, two rows up.
+    var toTrend = (run.resid != null && trResid != null)
+                  ? run.resid - trResid : null;
     html += '<div class="tt-row"><span>Fitness residual</span><b>' + signedSec(run.resid) + ' sec/mi</b></div>';
-    html += '<div class="tt-row"><span>Trend residual</span><b>' + signedSec(trResid) + ' sec/mi</b></div>';
+    html += '<div class="tt-row"><span>Trend residual</span><b>' + signedSec(toTrend) + ' sec/mi</b></div>';
     html += (isSnap && pointHtml ? pointHtml : run.html);
     html += '</div>';
   }

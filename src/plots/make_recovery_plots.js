@@ -6,7 +6,8 @@
 // customdata, subtracts the selected factor contributions, and
 // restyles both the pace panel and the residual panel. Trend lines
 // are recomputed via a Gaussian rolling smoother to mirror the
-// Python-side trend exactly (σ provided via window.__PLOT_TREND_SIGMA_DAYS).
+// Python-side trend exactly (σ provided via window.__PLOT_TREND_SIGMA_DAYS),
+// and the cursor tooltip's payload is re-synced to match (see syncTooltip).
 //
 // Hidden points get y=null + opacity=0 so hover hit-testing skips them
 // AND the rolling-mean trend ignores them.
@@ -144,6 +145,48 @@
       var tr = rollingTrend(dateMs, newResid, visibleMask);
       Plotly.restyle(plot, { x: [tp.x, tr.x], y: [tp.y, tr.y] },
                      [idx.trendPace, idx.trendResid]);
+      syncTooltip(tp, tr, newResid, dateMs);
+    }
+  }
+
+  // The cursor tooltip reads its rows from window.__TT_DATA, which Python bakes
+  // once at first paint. Everything above moves the points and both trend lines,
+  // so the payload has to move with them — otherwise the tooltip keeps reporting
+  // the un-normalized, all-points numbers against a normalized chart (measured
+  // drift with every factor on: median 7.5, max 66 sec/mi on the trend rows and
+  // mean 11.2, max 68 on the per-run residual).
+  //
+  // Trend arrays are placed by DATE, not by position: rollingTrend emits only
+  // the days whose window held >= 5 visible points, so a filter that thins a
+  // stretch leaves real holes, and those days should read '—' in the tooltip
+  // exactly as the line breaks on the chart.
+  function syncTooltip(tp, tr, newResid, dateMs) {
+    var P = window.__TT_DATA;
+    if (!P) return;
+    function toGrid(t, len) {
+      var out = new Array(len);
+      for (var i = 0; i < len; i++) out[i] = null;
+      for (var k = 0; k < t.x.length; k++) {
+        var g = Math.round(t.x[k].getTime() / 86400000) - P.first_day;
+        if (g >= 0 && g < len) out[g] = t.y[k];
+      }
+      return out;
+    }
+    P.trend_pace = toGrid(tp, P.trend_pace.length);
+    P.trend_resid = toGrid(tr, P.trend_resid.length);
+    // Sessions are matched to trace points by day (recovery has at most one
+    // run per day) rather than by index, so the two orderings can't silently
+    // drift apart. A hidden point carries a null residual, which the tooltip
+    // renders as '—'.
+    var byDay = {};
+    for (var i = 0; i < dateMs.length; i++) {
+      byDay[Math.round(dateMs[i] / 86400000)] = i;
+    }
+    for (var j = 0; j < P.sessions.length; j++) {
+      var pi = byDay[P.sessions[j].day];
+      if (pi === undefined) continue;
+      var v = newResid[pi];
+      P.sessions[j].resid = (v == null || isNaN(v)) ? null : v;
     }
   }
 
