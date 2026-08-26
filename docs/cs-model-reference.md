@@ -14,7 +14,7 @@ tracking, replacing earlier VDOT-based approaches.
 ## Files
 
 - `bayes_cs_fit.py` — fits the model with PyMC HSGP. Reads `races.csv`,
-  derives auto-exclusions internally, writes summary, residuals, params,
+  weights races by causal shortfall internally, writes summary, residuals, params,
   posterior `.nc`, diagnostics, and an exclusions audit. Default invocation:
   `python bayes_cs_fit.py --tag v10`. Runtime ~8 min.
 - `bayes_cs_plot.py` — renders the timeline as interactive HTML. Reads
@@ -429,81 +429,93 @@ level-bias finding.**
   - XC non-5K: `5K-equiv (XC-corrected): <time> (<pace>/mi)`
   - Non-XC non-5K: `5K-equiv: <time> (<pace>/mi)`
 
-## Auto-exclusion rule (replaces manual `cs_exclusions_v7.csv`)
+## Race weighting — causal shortfall (Aug 2026, replaces the auto-exclusion rule)
 
-Implemented in `derive_exclusions()` in `bayes_cs_fit.py`. Two-tier rule
-chosen empirically by inspecting the actual residual distributions of long
-vs short races; long and short need different treatments because their
-residual structures are different.
+**There is no exclusion step.** Every eligible race enters the fit; each is
+weighted continuously by how far it fell short of a capability it had ALREADY
+DEMONSTRATED. `causal_race_weights()` in `bayes_cs_fit.py`.
 
-### Tier 1 — long races (≥15K: HM + Marathon)
+### The rule
 
-Retuned **July 2026** to match the WA switch: residuals are measured in
-**log WA-5K-equivalent time** — the same space the fit's likelihood
-consumes — instead of raw same-band seconds. For each ≥15K race, residual =
-own `log(t5k)` minus the median `log(t5k)` of **all eligible aerobic races
-(≥1500m, any distance)** within a symmetric ±2yr window (self excluded,
-n≥2 guard; pools run 20–95 races vs the old same-band 2–5). Prune if the
-residual exceeds **+6%** (`tier1_thresh=0.06`, log-space fraction).
+```
+shortfall_i = t5k_i / (best t5k in the trailing window, excluding self) - 1
+w_i         = StudentT IRLS weight on shortfall_i / scale, normalised to 1 at shortfall <= 0
+sigma_i     = sigma_base / sqrt(w_i)          # per-race variance inflation
+```
 
-One threshold covers both bands with wide margins: kept long races top out
-at +3.40% (Boston 2025) vs the first excluded at +7.51% (Nashville RnR
-2021); on the HM side kept-max is +1.31% (Craft Classic 2024) vs Deception
-Pass 2016 at +24.14%. Excluded: Boston 2021 (+18.18%), Boston 2024
-(+8.01%), Boulderthon 2024 (+7.74%), Nashville RnR 2021 (+7.51%),
-Deception Pass 2016 (+24.14%). The retune **readmitted five marathons**
-the old raw-seconds rule pruned — Nashville 2019 (+1.19%), Boston 2022
-(+1.92%), Berlin 2023 (+2.32%), Boston 2025 (+3.40%), Seattle 2025
-(+1.53%) — races far from the marathon-band median in raw seconds but
-entirely consistent with concurrent short-race fitness once WA-converted
-(Seattle 2025's 5K-equiv, 15:33 corrected, was *faster* than a 5K five
-weeks earlier).
+No past inside the window -> shortfall undefined -> weight 1. A race at or
+under its trailing best cannot be a shortfall and keeps full weight however
+slow the fitted curve thinks it was.
 
-Why symmetric (not past-only): marathons have bonk-polluted past medians
-(2021 Boston/Nashville bonks pull subsequent past-medians upward, making
-later 2022 bonks look "fast" by past-only). Symmetric pulls in fast races
-from both sides of the date and gives a stable reference.
+Constants: `CAUSAL_SHORTFALL_SCALE = 0.05` (a race this far below its recent
+best counts about half), `CAUSAL_WINDOW_DAYS = 365`, `CAUSAL_WEIGHT_DF = 4.0`.
+Both are exposed as `--causal-scale` / `--causal-window`.
 
-### Tier 2 — Sub-marathon (<15K)
+### Why the residual has to be CAUSAL
 
-Same-band past-only ±2yr median of log-pace, with `K_min ≥ 5` past races
-required. Past-only protects against fitness-rise contamination — early-HS
-races aren't measured against future faster races.
+The retired tier-1/tier-2 gates were one-sided threshold trimmers compensating
+for a symmetric quadratic likelihood: measured on 216 races the residuals skew
++1.24 with a slow tail 1.81x the fast one, 59% of races landed FASTER than the
+curve, and all six pruned races were slow ones — both tiers were written
+`> threshold` and so could never prune a suspiciously FAST race.
 
-Global σ across all sub-marathon races via iterated trimmed MAD (3
-iterations at 2% trim). Uniform scale across bands and eras avoids the
-local-cluster artifacts that per-race MAD-z would produce. Empirically
-σ_global ≈ 0.048 (~4.8% pace) — represents the natural spread of race-to-
-race variation against own-history.
+The obvious fix — a heavy-tailed likelihood — was built and **rejected**. A
+residual measured against the fitted curve is contaminated by the future: in a
+steeply improving era a July lifetime PR reads as "slow" because November was
+faster, so the tail discounts the very races that define the rise. Measured:
++70 s of over-claimed fitness across 2013 (with 14 races in it) and +71 s across
+2008-2012, the pre-2013 hiatus floor collapsing from levelling-out to a straight
+line, and the `fit_hiatus_floor` join slope falling -294 -> -106 s/yr. An
+exponentially-modified-Gaussian variant failed the same way. **Steepness, not
+sparsity, is what breaks a curve-referenced robust likelihood.**
 
-Threshold: `z = (log_resid - global_median) / σ_global > 2.5`.
+Referencing the trailing best instead removes the contamination by
+construction — you cannot fall short of a capability you had not yet
+demonstrated — and the mean weight comes out flat across eras
+(2008-12: 0.839, 2013-14: 0.842, 2015-20: 0.849, 2021-26: 0.844).
 
-### Important design note
+### What it does on Max's corpus
 
-The Tier 2 rule is **intentionally less aggressive** than the prior manual
-list. Statistically, the sub-marathon residual distribution does not have a
-fat tail of bonks: 95th percentile z ≈ +2.08, 99th ≈ +2.45, max ≈ +4.45
-(Tahoma 2014, +20% slow). Several races that "look like" bonks visually
-(WGP 2016 XC at z=2.42, WGP 2019 XC at z=1.75) sit at the same z as
-currently-kept races (Frank Shorter 2025 z=2.42, Derby Days 2018 z=2.31)
-and cannot be cleanly separated by data alone.
+Median weight 0.926; 21 of 222 races under 0.5, 5 under 0.25. The bottom of the
+distribution reproduces the retired gates' own judgement without a threshold —
+Deception Pass 0.094, Tahoma 2014 0.159, Boston 2021 0.176 — while also
+reaching races **no gate could**: Berlin 2023 (tier-1 +3.72% against a 6%
+threshold) lands at 0.666, and 2023-08-02 (tier-2 z=2.202 against 2.5) at 0.473.
+Meanwhile July 2013's PRs sit at exactly 1.000.
 
-These are statistically indistinguishable from normal race-day variance and
-are absorbed by the model's likelihood (σ_per_race ≈ 0.028 in log time)
-without structural distortion of the CS curve. Only Tahoma 2014 is a
-genuine sub-marathon outlier.
+Leverage of a single bad race on its year: **+3.75 s -> +1.53 s** of 5K-equiv
+(seed-to-seed noise is ~1.2 s post-2014, ~12 s pre-2014 — every comparison in
+this section is against that floor). Weighted residuals beat production in every
+era: 2008-12 +3.4 s (was +5.4), 2013 -0.6 s (was +2.8), 2014 +1.3 s (was +12.0),
+2015+ +0.5 s (was +4.0).
 
-This means the auto-rule produces ~11 exclusions vs the prior ~16. The
-five not auto-pruned (Nike 2008, Tahoma 2013, WGP 2016 XC, Color Run 2016,
-WGP 2019 XC) stay in the fit. If a future race is a clear bonk it will
-land at z > 2.5 and auto-prune; otherwise the model handles it.
+Tightening `scale` to 0.03 was tested and is worse: leverage barely moves
+(-20%), frontier peak headroom drops 26.1 -> 18.8 s/mi, and the 2023 sag gets
+*worse* (+8.1 -> +10.0 s) because the sag is a RELATIVE measure — discounting
+harder lifts the dip and both shoulders equally. 0.05 is the operating point.
 
-### Tunable parameters
+### Known asymmetry
 
-`derive_exclusions()` exposes thresholds as keyword args:
-`tier1_thresh=0.06` (log WA-5K-equiv fraction, ≈ +6%), `tier2_z_thresh=2.5`,
-`tier2_kmin=5`, `window_years=2.0`, `trim_pct=0.02`, `sigma_iters=3`. Edit
-defaults in the function signature if recalibration is needed.
+The reference is a trailing best, so the model admits steep UP-slopes but
+resists a decline while racing continuously. Accepted (Max, Aug 2026): fitness
+builds faster than it decays, and no such stretch exists on record. A decline
+*after a layoff* is followable — once a gap exceeds `CAUSAL_WINDOW_DAYS` the
+window empties, the shortfall goes undefined, and the curve is free to drop.
+That is the window's second, physical job.
+
+Two live caveats: the shortfall inherits the cross-distance WA conversion (thin
+corpora lean on it hard — the maddy profile's only discounted race is a 1600 m
+time trial at 0.766), and the trailing *minimum* means one mismeasured-fast race
+raises the bar for everything after it. A trailing 10th-percentile reference is
+the fallback if the minimum proves too sharp.
+
+### Not fixed by this
+
+July 2013 races still sit ~+110 s above the curve at full weight. That is a **GP
+smoothness limit** — 28:56-equiv in 2010 to 23:40 in July 2013 to 17:52 that
+October is a turn a Matern kernel with a ~0.36 yr length scale cannot make. The
+lever there is the deviation length scale, not the weighting.
+
 
 
 
@@ -590,8 +602,11 @@ timescale are cleanly visible. Findings:
   CS-excluded so out-of-sample) show a real penalty: mean **+7.2 s/mi,
   sd 9.0, n = 10** (range −5.5…+22.5; all-comers/HS doubles). Group
   effect ≈ 2.5σ, but per-race correction would be indefensible at sd 9 —
-  and the within-day gap/first-race distance aren't logged. The
-  exclusion policy stands; the number is now quantified.
+  and the within-day gap/first-race distance aren't logged. The number is
+  quantified; the *blanket* exclusion policy it justified did NOT survive
+  (see "Multi-race days" below) — a same-day penalty averaging +7.2 s/mi is
+  no reason to discard a second race that beat the first by 44 s of
+  5K-equivalent.
 - **Temperature, 5K bin** (the most promising slice a priori: n = 56
   with temp): β **−0.02 ± 0.17** — null, and since adjacent 5Ks weeks
   apart see real temp swings the CS curve can't track, this is only
@@ -651,6 +666,38 @@ BEFORE it informs CS, so the demonstrated-capability frontier measures
 fitness, not the course. (Engine: the `elevation_cost` cost model,
 `physical_route_betas`, the altitude threshold curve, the DEM mechanics —
 → see route-normalization-reference.md (elevation engine).)
+
+### Multi-race days (Aug 2026)
+
+A day contributes its **best 5K-equivalent** race, not its first
+(`cs_projection.admit_best_per_day`, applied identically by `build_eligible`,
+the Fitness plot and `performance_frontier` — three call sites that must agree
+or the chart shows diamonds the fit never saw). This replaced the `fatigued`
+rule (`race_seq == 1` only), which assumed the first race of a day is the best.
+
+Max's 2026 track season disproved that outright: on three meets the second race
+scored far better and only the first reached the fit (2026-08-19, opening mile
+15:57 vs a 2-mile 40 minutes later at 15:12). Across the corpus the discarded
+set held his **2nd-fastest 5K ever** (2023-06-14, 15:04.3) and 2nd-fastest 3000
+(2023-06-07). 19 days carry multiple races; 8 change hands.
+
+Ordering matters: the selector runs AFTER the hard filters, so the winner is
+chosen among genuinely eligible races. That is what admits 2023-08-02, whose
+`race_seq` 1 and 2 are both sub-120 s 400s — its only qualifying race is
+`race_seq == 3`, so the old rule left the day contributing nothing at all.
+
+Effect on the fitted curve, measured against a seed-to-seed noise floor (a
+re-fit at seed 43 on identical data — mandatory here, because pre-2014 the
+corpus is sparse enough that MCMC noise reaches 12 s while the post-2014 floor
+is ≤1.2 s): real movement in 2022 (−2.9 s), 2025 (−1.2 s) and 2026 (−5.8 s
+mean, −12.6 s at the current edge); everything before 2014 is noise.
+
+2023 moved the WRONG way (+1.3 s) on one race: the newly-admitted 2023-08-02
+3000, run straight off a double-leg 4×400 and 8.0% slower than its band's past
+median. It sits at tier-2 **z = +2.202 against a > 2.5 threshold** — admitted by
+0.30σ. It costs +3.75 s across 2023 (peak +5.82 s) and flips the year from
+−2.43 s to +1.32 s. Left in deliberately, for consistency of rule over
+per-race judgement; revisit the threshold, not this race, if it should go.
 
 - **Single source of truth: `recovery_model.race_physical_correction(races)`**.
   Applied IDENTICALLY in two places that must stay consistent: **(a)** the CS

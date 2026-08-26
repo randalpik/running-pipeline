@@ -374,6 +374,87 @@ def _beta_long_factor(d, beta_long, d_thresh_long):
     return 1.0
 
 
+def admit_best_per_day(elig, verbose=False):
+    """Keep exactly ONE race per date: the one with the best (fastest)
+    5K-equivalent. Returns a filtered copy of ``elig``.
+
+    Replaces the old ``fatigued`` rule (Aug 2026), which kept ``race_seq == 1``
+    and discarded everything after it. That rule assumed the first race of a day
+    is the best one, which Max's 2026 track season disproved outright: on
+    2026-08-19 the opening mile projected to 15:57 and the 2-mile 40 minutes
+    later to 15:12, and only the 15:57 reached the fit. Across the corpus the
+    discarded set included his 2nd-fastest 5K ever (2023-06-14, 15:04.3) and his
+    2nd-fastest 3000 (2023-06-07) — the most informative observations available,
+    thrown away for arriving second on the day.
+
+    Call this AFTER the hard filters (Downhill, sub-120 s), not before: the
+    "best" must be chosen among races that are actually eligible. That ordering
+    is what rescues 2023-08-02, whose ``race_seq`` 1 and 2 are both sub-120 s
+    400s — the day's only qualifying race is the ``race_seq == 3`` 3000, so
+    under the old rule the day contributed no race point at all.
+
+    Ranking uses the app's canonical 5K-equivalent — the same hybrid projection
+    the Fitness diamonds are drawn at — so the race admitted is always the one a
+    reader would pick off the chart. That needs a CS timeline, which the fit is
+    in the business of producing, so this seeds from the existing
+    ``bayes_cs_summary.csv``. The apparent circularity is not one in practice:
+    the comparison is WITHIN a single day, where CS is a constant, and the
+    winner is unchanged across a +/-10% perturbation of the whole CS curve
+    (verified Aug 2026 on all 13 multi-race days). With no summary to seed from
+    (a cold CI cache), it falls back to the WA tables — the fit's own CS-free
+    equivalence, used by ``derive_exclusions``. The two agree at every distance
+    in the corpus except sub-1500 m, where the hybrid's CP3+v_max rates Max's
+    800 s better than the population tables do (2022-06-29: 15:47.9 vs 16:16.7).
+    """
+    if 'date' not in elig.columns or elig.empty:
+        return elig
+    d = pd.to_datetime(elig['date'])
+    if not d.duplicated().any():
+        return elig
+
+    # Positional throughout: _five_k_equiv_rank returns a plain array, and the
+    # caller's index may be anything (the fit resets it, the plot doesn't).
+    rank = _five_k_equiv_rank(elig)
+    keep = (pd.DataFrame({'d': d.to_numpy(), 'r': rank})
+            .groupby('d')['r'].idxmin().to_numpy())
+    out = elig.iloc[np.sort(keep)].copy()
+    if verbose and len(out) < len(elig):
+        print(f"  multi-race days: {len(elig)} races -> {len(out)} "
+              f"(best 5K-equivalent per day)")
+    return out
+
+
+def _five_k_equiv_rank(elig):
+    """5K-equivalent seconds per race, for ranking only (lower = better).
+
+    Canonical hybrid projection where a CS timeline exists, WA tables where it
+    does not. NaN never wins: an unprojectable race sinks to the bottom rather
+    than silently beating a real one."""
+    from src.shared.paths import DATA_DIR
+    from src.shared.wa_scoring import wa_5k_equiv_time
+    rank = np.full(len(elig), np.inf)
+    try:
+        summary, beta_long, d_thresh, xc = load_cs_outputs(str(DATA_DIR), '')
+        proj = project_races_to_5k_pace(elig, summary, beta_long, d_thresh,
+                                        apply_xc_correction=True,
+                                        xc_correction=xc)
+        v = proj['pace_norm_min'].to_numpy(dtype=float)
+        rank = np.where(np.isfinite(v), v, np.inf)
+    except Exception:
+        pass
+    # Fill anything the projection couldn't place (incl. the no-summary case).
+    need = ~np.isfinite(rank)
+    if need.any():
+        dm = elig['distance_m'].to_numpy(dtype=float)
+        ts = elig['time_sec'].to_numpy(dtype=float)
+        for i in np.flatnonzero(need):
+            try:
+                rank[i] = wa_5k_equiv_time(float(dm[i]), float(ts[i]))
+            except Exception:
+                rank[i] = np.inf
+    return rank
+
+
 def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
                               *, apply_xc_correction=True, xc_correction=0.0,
                               apply_physical_correction=True, daily=None,

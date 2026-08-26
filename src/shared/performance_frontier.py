@@ -68,7 +68,8 @@ import pandas as pd
 from src.shared.paths import DATA_DIR
 from src.shared.units import METERS_PER_MILE
 from src.shared.cs_projection import (project_races_to_5k_pace,
-                                      pace5k_series_to_anchor, load_cs_outputs)
+                                      pace5k_series_to_anchor, load_cs_outputs,
+                                      admit_best_per_day)
 
 # FORWARD: first-order relaxation into the floor — the frontier sheds a
 # fixed fraction of its current gap to the reference line per day. tau from
@@ -125,26 +126,34 @@ def load_corpus_demos():
 
 def standard_demos(daily_summary, beta_long, d_thresh, xc_correction,
                    races_path=None, exclusions_path=None, corpus=None):
-    """The canonical demonstration set: kept races (fit conventions —
-    hard eligibility, auto-exclusions, XC correction, beta un-bias) plus the
-    kept TQ corpus. Every frontier consumer builds from this so the line is
+    # exclusions_path is accepted and IGNORED (Aug 2026): the fit no longer
+    # prunes races, it weights them continuously by causal shortfall
+    # (bayes_cs_fit.causal_race_weights). Kept in the signature so existing
+    # callers — and a stale artifact restored from a CI cache — are harmless.
+    """The canonical demonstration set: eligible races (fit conventions —
+    hard eligibility, XC correction, beta un-bias) plus the kept TQ corpus. Every frontier consumer builds from this so the line is
     identical across tabs.
 
     corpus: pass a prebuilt corpus frame (plot_training_quality has one
     in-memory) to skip the artifact read; default reads the CSV.
     """
     race_demos = _race_demos(daily_summary, beta_long, d_thresh, xc_correction,
-                             races_path, exclusions_path)
+                             races_path)
     if corpus is None:
         corpus = load_corpus_demos()
     return pd.concat([race_demos, corpus], ignore_index=True)
 
 
 def _race_demos(daily_summary, beta_long, d_thresh, xc_correction,
-                races_path=None, exclusions_path=None):
-    """Kept-race demonstrations (fit conventions: hard eligibility, auto-
-    exclusions, XC correction, projection) as (date, pace_min, src, category,
-    detail). Shared by standard_demos and the structure gate.
+                races_path=None):
+    """Race demonstrations (fit conventions: hard eligibility, XC correction,
+    projection) as (date, pace_min, src, category, detail). Shared by
+    standard_demos and the structure gate.
+
+    EVERY eligible race is a demonstration — there is no exclusion step. The
+    fit weights races by causal shortfall rather than pruning them, so a race
+    the model largely discounts still appears here and on the chart; it simply
+    does not bind the frontier, because a slow race never could.
 
     time ≥ 120 s: every race of 2+ minutes is frontier evidence — 800s included
     and may bind (a ≥1500 m cutoff was tried and reverted June 2026: the
@@ -153,25 +162,18 @@ def _race_demos(daily_summary, beta_long, d_thresh, xc_correction,
     aerobic capability.
     """
     races_path = races_path or (DATA_DIR / 'races.csv')
-    exclusions_path = exclusions_path or (DATA_DIR / 'bayes_cs_auto_exclusions.csv')
     races = pd.read_csv(races_path, parse_dates=['date'])
     if 'fatigued' not in races.columns:
         races['fatigued'] = False
     if 'surface' not in races.columns:
         races['surface'] = 'Unknown'
-    elig = races[(~races['fatigued'].astype(bool))
-                 & (races['surface'] != 'Downhill')
+    elig = races[(races['surface'] != 'Downhill')
                  & (races['time_sec'] >= 120)].copy()
-    if exclusions_path and exclusions_path.exists():
-        try:
-            excl = pd.read_csv(exclusions_path, parse_dates=['date'])
-        except pd.errors.EmptyDataError:
-            excl = pd.DataFrame()
-        if len(excl):
-            keys = set(zip(excl['date'].dt.date, excl['distance_m'].astype(int)))
-            elig = elig[~pd.Series(
-                list(zip(elig['date'].dt.date, elig['distance_m'].astype(int))),
-                index=elig.index).isin(keys)]
+    # One race per multi-race day, the best 5K-equivalent — the same rule the
+    # fit and the Fitness plot apply. Kept in step deliberately: the frontier is
+    # drawn on the Fitness tab over those same diamonds, so a race admitted
+    # there and ignored here would put the red line under a visible point.
+    elig = admit_best_per_day(elig)
     elig = project_races_to_5k_pace(
         elig, daily_summary, beta_long, d_thresh,
         apply_xc_correction=True, xc_correction=xc_correction)

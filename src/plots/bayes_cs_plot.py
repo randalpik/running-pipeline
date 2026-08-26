@@ -40,7 +40,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.units import METERS_PER_MILE
 from src.shared.plot_window import data_span, first_race_date, axis_pad_entry
-from src.shared.cs_projection import load_cs_outputs, project_races_to_5k_pace
+from src.shared.cs_projection import (load_cs_outputs, project_races_to_5k_pace,
+                                      admit_best_per_day)
 from src.shared.performance_frontier import standard_demos, build_frontier_band
 from src.shared.recovery_model import race_physical_correction
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
@@ -112,35 +113,20 @@ def main():
         races['surface'] = 'Unknown'
 
     elig = races[
-        (~races['fatigued'].astype(bool)) &
         (races['surface'] != 'Downhill') &
         (races['time_sec'] >= 120)
     ].copy().sort_values('date')
+    # Same rule as the fit (cs_projection.admit_best_per_day): one race per day,
+    # the best 5K-equivalent. Must match bayes_cs_fit.build_eligible exactly, or
+    # the plot draws diamonds the fit never saw.
+    elig = admit_best_per_day(elig, verbose=True)
     print(f"Hard-eligible races: {len(elig)}")
 
-    # Apply the same auto-exclusions the fit applied. Match the fit's composite
-    # key (date, distance_m) — see bayes_cs_fit.py.
-    excl_path = os.path.join(args.in_dir, f'bayes_cs_auto_exclusions{suffix}.csv')
-    if os.path.exists(excl_path):
-        try:
-            excl_df = pd.read_csv(excl_path, parse_dates=['date'])
-        except pd.errors.EmptyDataError:
-            # The fit writes a header-less file when there are 0 exclusions
-            # (e.g. a profile with very few races) — nothing to exclude.
-            excl_df = pd.DataFrame()
-        if len(excl_df):
-            excl_keys = set(zip(excl_df['date'].dt.date,
-                                excl_df['distance_m'].astype(int)))
-            elig['_key'] = list(zip(elig['date'].dt.date,
-                                    elig['distance_m'].astype(int)))
-            n_before = len(elig)
-            elig = elig[~elig['_key'].isin(excl_keys)].drop(columns=['_key'])
-            print(f"Applied {len(excl_df)} auto-exclusions: "
-                  f"{n_before} -> {len(elig)} races")
-    else:
-        print(f"WARNING: no auto-exclusions file at {excl_path} — "
-              f"plot will show all hard-eligible races")
-
+    # No exclusion step: the fit weights every race continuously by its CAUSAL
+    # shortfall (bayes_cs_fit.causal_race_weights, Aug 2026) instead of pruning
+    # a hand-thresholded few, so the plot shows every eligible race. A stale
+    # bayes_cs_auto_exclusions.csv restored from a CI cache is ignored by
+    # design — reading it would re-apply a rule the fit no longer used.
     # ---------- truncate to plotting window + project races to 5K-equivalent ----------
     # Left bound: the Max profile is a hardcoded exception — pinned at
     # 2013-06-01 (his pre-2013 races are sparse with huge uncertainty). Every
@@ -201,7 +187,7 @@ def main():
     demos = standard_demos(daily_summary, beta_long_med, d_thresh_long,
                            xc_correction,
                            races_path=Path(args.races),
-                           exclusions_path=Path(excl_path))
+                           exclusions_path=None)
     frontier, front_lo, front_hi, demos = build_frontier_band(
         demos, pd.DatetimeIndex(summary_plot['date']), summary_plot)
     n_front = int(frontier['frontier_pace_min'].notna().sum())

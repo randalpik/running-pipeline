@@ -73,7 +73,7 @@ jobs:
             data/historical_daily.csv
             data/bayes_cs_summary.csv
             data/bayes_cs_params.csv
-            data/bayes_cs_auto_exclusions.csv
+            data/bayes_cs_race_weights.csv
             data/watch_activities.csv
             data/weather_measured.csv
             data/elevation_measured.csv
@@ -94,7 +94,7 @@ jobs:
             data/profiles/maddy/details
             data/profiles/maddy/bayes_cs_summary.csv
             data/profiles/maddy/bayes_cs_params.csv
-            data/profiles/maddy/bayes_cs_auto_exclusions.csv
+            data/profiles/maddy/bayes_cs_race_weights.csv
           key: pipeline-state-v1-${{ github.run_id }}
           restore-keys: |
             pipeline-state-v1-
@@ -210,7 +210,7 @@ jobs:
             data/historical_daily.csv
             data/bayes_cs_summary.csv
             data/bayes_cs_params.csv
-            data/bayes_cs_auto_exclusions.csv
+            data/bayes_cs_race_weights.csv
             data/watch_activities.csv
             data/weather_measured.csv
             data/elevation_measured.csv
@@ -231,7 +231,7 @@ jobs:
             data/profiles/maddy/details
             data/profiles/maddy/bayes_cs_summary.csv
             data/profiles/maddy/bayes_cs_params.csv
-            data/profiles/maddy/bayes_cs_auto_exclusions.csv
+            data/profiles/maddy/bayes_cs_race_weights.csv
           key: pipeline-state-v1-${{ github.run_id }}
 
       - uses: actions/setup-node@v4

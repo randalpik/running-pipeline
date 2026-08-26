@@ -46,7 +46,7 @@ Outputs (in --out-dir, default data/):
     bayes_cs_residuals.csv        One row per race: predicted vs actual time, residual
     bayes_cs_posterior.nc         Full InferenceData for any deeper analysis
     bayes_cs_diagnostics.txt      R-hat, divergences, residual bands
-    bayes_cs_auto_exclusions.csv  Audit trail: which races the rule pruned and why
+    bayes_cs_race_weights.csv     Audit trail: every race's causal shortfall and weight
 
 Expected runtime on a normal laptop with M=60 basis functions, 14d grid,
 ~200 races, 4 chains × 2000 total draws: 5–20 minutes.
@@ -68,7 +68,8 @@ from src.shared.paths import DATA_DIR, DEBUG_DIR
 from src.shared.units import METERS_PER_MILE
 from src.shared.plot_window import pad_range
 from src.shared.recovery_model import race_physical_correction
-from src.shared.cs_projection import dprime_fixed, CP3_IAAF_BOUNDARY_M
+from src.shared.cs_projection import (dprime_fixed, CP3_IAAF_BOUNDARY_M,
+                                      admit_best_per_day)
 from src.shared.wa_scoring import wa_5k_equiv_time
 
 
@@ -77,15 +78,75 @@ DEFAULT_DAILY   = str(DATA_DIR / 'daily.csv')
 DEFAULT_OUT_DIR = str(DATA_DIR)
 
 
+# ---- causal race weighting (Aug 2026) --------------------------------------
+# Default scale for the shortfall weight, as a fraction. A race this far below
+# the best already demonstrated counts about half. 5% keeps the median weight at
+# 0.93 over Max's corpus, puts 21 of 222 races under 0.5 and 5 under 0.25 — i.e.
+# it reproduces what the retired tier-1/tier-2 gates were reaching for, without a
+# threshold. Interpretable, so pinned rather than fitted.
+CAUSAL_SHORTFALL_SCALE = 0.05
+# Trailing window over which a demonstrated capability remains the reference.
+# Insensitive as a *shortfall* measure (365/548/730 give identical values on
+# every decisive race in Max's corpus), but it carries a second, physical
+# meaning: after this long without racing the old best stops constraining, which
+# is what lets the curve follow a genuine DECLINE across a layoff. A decline
+# while racing continuously is still resisted — deliberately, since fitness is
+# built faster than it decays (Max, Aug 2026), and no such stretch exists on
+# record.
+CAUSAL_WINDOW_DAYS = 365
+CAUSAL_WEIGHT_DF = 4.0
+
+
+def causal_race_weights(dates, t5k, *, window_days=CAUSAL_WINDOW_DAYS,
+                        scale=CAUSAL_SHORTFALL_SCALE, df=CAUSAL_WEIGHT_DF):
+    """Per-race observation weights from CAUSAL shortfall (past-only).
+
+    The failure this fixes: a residual measured against the fitted curve is
+    contaminated by the future. In a steeply improving era a July lifetime PR
+    reads as "slow" because November was faster, so any robust likelihood
+    discounts the very races that define the rise — measured at +70s of
+    over-claimed fitness across 2013, with 14 races in it.
+
+    A race can only fall short of a capability ALREADY DEMONSTRATED. So the
+    reference is the best 5K-equivalent inside the trailing window, excluding
+    the race itself; a race at or under that reference cannot be a shortfall and
+    keeps full weight, no matter how slow the curve thinks it is. With no past
+    inside the window the shortfall is undefined and the weight is 1 — which is
+    also what lets the fit follow a post-layoff decline.
+
+    The weight itself is the Student-t IRLS weight on shortfall/scale,
+    normalised to 1 at zero shortfall, applied downstream as a per-race variance
+    inflation. The Gaussian family is retained: the robustness comes from WHERE
+    the residual is measured, not from a heavy tail (a heavy tail on the model
+    residual is exactly what failed).
+
+    Returns (weights, shortfall) — shortfall is NaN where undefined.
+    """
+    d = np.asarray(pd.to_datetime(pd.Series(dates)).values, dtype='datetime64[D]')
+    t = np.asarray(t5k, dtype=float)
+    sf = np.full(len(t), np.nan)
+    for i in range(len(t)):
+        past = (d < d[i]) & (d >= d[i] - np.timedelta64(int(window_days), 'D'))
+        if past.any():
+            sf[i] = t[i] / np.nanmin(t[past]) - 1.0
+    x = np.where(np.isnan(sf), 0.0, np.maximum(sf, 0.0)) / scale
+    w = ((df + 1.0) / (df + x ** 2)) / ((df + 1.0) / df)
+    return np.clip(w, 0.0, 1.0), sf
+
+
 def build_eligible(races_path):
-    """Load races.csv and apply hard-eligibility filters (no auto-exclusions yet).
+    """Load races.csv and apply hard-eligibility (VALIDITY) filters.
 
     Filters:
-        fatigued != True       (multi-race-day non-first races)
         surface != 'Downhill'  (downhill courses are not CS-comparable)
         time_sec >= 120        (anything sub-2-min is data noise)
+        one race per day       (the best 5K-equivalent — admit_best_per_day;
+                                replaced the old race_seq==1 / fatigued rule)
 
-    Auto-exclusions are applied separately by derive_exclusions().
+    These are validity gates only — they say "not a measurement of aerobic
+    capability", never "outlier". Outliers are handled continuously by
+    causal_race_weights, which replaced the tier-1/tier-2 exclusion rule in
+    Aug 2026; there is no exclusion step any more.
     """
     races = pd.read_csv(races_path, parse_dates=['date'])
     races['date'] = races['date'].dt.date
@@ -111,187 +172,15 @@ def build_eligible(races_path):
     # behavior for any future watch-covered downhill course.)
     has_measured = race_physical_correction(races)['has_measured'].to_numpy()
     elig = races[
-        (~races['fatigued'].astype(bool)) &
         ((races['surface'] != 'Downhill') | has_measured) &
         (races['time_sec'] >= 120)
-    ].copy().sort_values('date').reset_index(drop=True)
+    ].copy().sort_values('date')
+    # Multi-race days contribute their BEST 5K-equivalent race, not whichever
+    # ran first. Applied AFTER the hard filters above so the day's winner is
+    # chosen among genuinely eligible races — that ordering is what admits
+    # 2023-08-02, whose only non-400 race is race_seq 3.
+    elig = admit_best_per_day(elig).reset_index(drop=True)
     return elig
-
-
-def derive_exclusions(elig, xc_correction=0.06,
-                      tier1_thresh=0.06,
-                      tier2_z_thresh=2.5,
-                      tier2_kmin=5,
-                      window_years=2.0,
-                      trim_pct=0.02,
-                      sigma_iters=3):
-    """Apply unified two-tier auto-exclusion rule.
-
-    Replaces the historical hand-curated `cs_exclusions_v7.csv`. The rule
-    treats long and short races differently because their residual
-    distributions are structurally different:
-
-    Tier 1 — long races (>=15K: HM + Marathon):
-        Symmetric ±window_years residual in log WA-5K-equivalent time versus
-        the median of ALL eligible aerobic races (>=1500m, any distance) in
-        the window — the same space the fit's likelihood consumes. Prune if
-        the residual exceeds tier1_thresh (log-space fraction; 0.06 ≈ +6%).
-
-        One threshold covers HM and Marathon: kept long races top out at
-        +3.4% (Boston 2025) while the first genuine bonk sits at +7.5%
-        (Nashville RnR 2021); on the HM side kept-max is +1.3% vs Deception
-        Pass 2016 at +24%. The pre-WA rule (raw same-band seconds, split
-        115s marathon / 500s HM thresholds, marathon knife-edge) was retired
-        July 2026 — judging marathons only against other marathons excluded
-        races (e.g. Seattle 2025, +166s vs the marathon-band median) whose
-        5K-equivalents were entirely consistent with concurrent short-race
-        fitness.
-
-    Tier 2 — sub-marathon (<15K):
-        Same-band past-only ±window_years log-pace median, K_min ≥ tier2_kmin.
-        Past-only protects against fitness-rise contamination (early-career
-        races aren't measured against future faster races). Log-pace makes
-        residuals comparable across distances and eras.
-
-        Global σ via iterated trimmed MAD over the full pool of sub-marathon
-        log-residuals (trim_pct on each iter, sigma_iters total) — uniform
-        scale across bands and eras avoids the local-cluster artifacts that
-        per-race MAD-z would produce.
-
-        z = (log_resid - global_median) / global_σ; prune if z > tier2_z_thresh.
-
-    Design note: this rule is INTENTIONALLY less aggressive than the prior
-    manual list for sub-marathon distances. With σ_robust ≈ 5% pace, races
-    that look like "obvious bonks" (e.g. WGP XC days) often sit at z=2.4 —
-    statistically indistinguishable from kept races at the same z. The CS
-    model's σ_per_race ≈ 0.028 absorbs ~3σ events naturally without
-    structural distortion. Only Tahoma 2014 (z=4.45, +20% slow) is a
-    genuine sub-marathon outlier worth pruning.
-
-    Args:
-        elig: DataFrame returned by build_eligible (already-filtered).
-        xc_correction: Same divisor as the main fit (default 0.06 = 6%).
-
-    Returns:
-        (excl_df, sigma_global, median_global)
-            excl_df: DataFrame with one row per pruned race; columns
-                date, distance_m, event, surface, tier, metric, value,
-                threshold, n_neighbors, sigma_global.
-            sigma_global, median_global: floats from sub-marathon pool;
-                NaN if pool too small.
-    """
-    df = elig.copy().reset_index(drop=True)
-    df['date'] = pd.to_datetime(df['date'])
-
-    # Race-time pre-correction (matches the main fit). Physical route
-    # correction first (grade + footing + altitude → flat/sea-level-equivalent),
-    # then the categorical XC factor ONLY where there's no measured correction
-    # — so the exclusion residuals are computed on the same times the fit sees.
-    df['time_sec_corr'] = df['time_sec'].astype(float)
-    corr = race_physical_correction(df)
-    df['time_sec_corr'] = df['time_sec_corr'] - corr['dt_sec'].to_numpy()
-    has_measured = corr['has_measured'].to_numpy()
-    xc_mask = (df['surface'].fillna('').astype(str).str.upper() == 'XC') & ~has_measured
-    df.loc[xc_mask, 'time_sec_corr'] = df.loc[xc_mask, 'time_sec_corr'] / (1.0 + xc_correction)
-
-    # Distance bands
-    def band(d):
-        if d < 1500:  return '<1500m'
-        if d < 3500:  return '1500-3499m'
-        if d < 5500:  return '5K'
-        if d < 8500:  return '5mi-8K'
-        if d < 12000: return '10K'
-        if d < 15000: return None  # 10K-15K gap; no races fall here historically
-        if d < 25000: return 'HM'
-        return 'Marathon'
-    df['band'] = df['distance_m'].apply(band)
-    df['log_pace'] = np.log(df['time_sec_corr'] / (df['distance_m'] / METERS_PER_MILE))
-
-    # ---- Tier 1: long races (>=15K), symmetric ±window_years residual in ----
-    # ---- log WA-5K-equiv time vs ALL aerobic races in the window         ----
-    df['log_t5k'] = np.nan
-    aero_mask = df['distance_m'] >= 1500
-    df.loc[aero_mask, 'log_t5k'] = [
-        float(np.log(wa_5k_equiv_time(float(d), float(t))))
-        for d, t in zip(df.loc[aero_mask, 'distance_m'],
-                        df.loc[aero_mask, 'time_sec_corr'])
-    ]
-    df['t1_resid'] = np.nan
-    df['t1_n']     = 0
-    win = pd.Timedelta(days=int(window_years * 365))
-    aero = df[aero_mask]
-    for i in df.index[df['distance_m'] >= 15000].tolist():
-        d_i = df.loc[i, 'date']
-        mask = (aero['date'] >= d_i - win) & (aero['date'] <= d_i + win) & (aero.index != i)
-        nb = aero[mask]
-        df.loc[i, 't1_n'] = len(nb)
-        if len(nb) >= 2:
-            df.loc[i, 't1_resid'] = df.loc[i, 'log_t5k'] - nb['log_t5k'].median()
-
-    # ---- Tier 2: sub-marathon, past-only same-band log-pace ----
-    sub_bands = ['<1500m', '1500-3499m', '5K', '5mi-8K', '10K']
-    df['t2_log_resid'] = np.nan
-    df['t2_n_past']    = 0
-    for b in sub_bands:
-        idx = df.index[df['band'] == b].tolist()
-        sub = df.loc[idx]
-        for i in idx:
-            d_i = df.loc[i, 'date']
-            mask = (sub['date'] < d_i) & (sub['date'] >= d_i - win)
-            nb = sub[mask]
-            df.loc[i, 't2_n_past'] = len(nb)
-            if len(nb) >= 2:
-                df.loc[i, 't2_log_resid'] = df.loc[i, 'log_pace'] - nb['log_pace'].median()
-
-    # Global σ from iterated trimmed MAD over the pool
-    pool_mask = (df['band'].isin(sub_bands)) & (df['t2_n_past'] >= tier2_kmin) & df['t2_log_resid'].notna()
-    pool = df.loc[pool_mask, 't2_log_resid'].values
-    sigma_g = float('nan')
-    med_g   = float('nan')
-    if len(pool) >= 10:
-        x = pool.copy()
-        for _ in range(sigma_iters):
-            q_lo, q_hi = np.percentile(x, [trim_pct * 100, (1 - trim_pct) * 100])
-            x_t = x[(x >= q_lo) & (x <= q_hi)]
-            med_g   = float(np.median(x_t))
-            mad     = float(np.median(np.abs(x_t - med_g)))
-            sigma_g = 1.4826 * mad
-        df['t2_z'] = (df['t2_log_resid'] - med_g) / max(sigma_g, 1e-6)
-    else:
-        df['t2_z'] = np.nan
-
-    # ---- Apply rules; build audit trail ----
-    rows = []
-    for _, r in df.iterrows():
-        if r['distance_m'] >= 15000:
-            if pd.notna(r['t1_resid']) and r['t1_resid'] > tier1_thresh:
-                rows.append({
-                    'date': r['date'].date() if hasattr(r['date'], 'date') else r['date'],
-                    'distance_m': int(r['distance_m']),
-                    'event': r.get('event', ''), 'surface': r.get('surface', ''),
-                    'tier': 'long', 'metric': 'symmetric_t5k_resid_pct',
-                    'value': round(float(r['t1_resid']) * 100, 2),
-                    'threshold': round(tier1_thresh * 100, 2),
-                    'n_neighbors': int(r['t1_n']),
-                    'sigma_global': '',
-                })
-        elif r['band'] in sub_bands:
-            if r['t2_n_past'] >= tier2_kmin and pd.notna(r['t2_z']) and r['t2_z'] > tier2_z_thresh:
-                rows.append({
-                    'date': r['date'].date() if hasattr(r['date'], 'date') else r['date'],
-                    'distance_m': int(r['distance_m']),
-                    'event': r.get('event', ''), 'surface': r.get('surface', ''),
-                    'tier': 'sub-M', 'metric': 'past_log_pace_z',
-                    'value': round(float(r['t2_z']), 3),
-                    'threshold': tier2_z_thresh,
-                    'n_neighbors': int(r['t2_n_past']),
-                    'sigma_global': round(sigma_g, 4),
-                })
-
-    excl_df = pd.DataFrame(rows)
-    if len(excl_df) > 0:
-        excl_df = excl_df.sort_values('date').reset_index(drop=True)
-    return excl_df, sigma_g, med_g
 
 
 def main():
@@ -313,7 +202,19 @@ def main():
     p.add_argument('--tune', type=int, default=1000)
     p.add_argument('--chains', type=int, default=4)
     p.add_argument('--seed', type=int, default=42)
-    # Tunable priors (for grid-search experimentation)
+    # --- Layer-1 likelihood (Aug 2026 re-evaluation; see
+    #     ~/.claude/plans/fitness-model-reevaluation.md) ---
+    p.add_argument('--causal-scale', type=float, default=CAUSAL_SHORTFALL_SCALE,
+                   help=f'causal weights: shortfall scale (default '
+                        f'{CAUSAL_SHORTFALL_SCALE}; a race this far below its '
+                        f'recent best counts ~half)')
+    p.add_argument('--causal-window', type=int, default=CAUSAL_WINDOW_DAYS,
+                   help=f'causal weights: trailing window in days (default '
+                        f'{CAUSAL_WINDOW_DAYS}); also sets how long a '
+                        f'demonstrated capability keeps constraining')
+    p.add_argument('--target-accept', type=float, default=0.95,
+                   help='NUTS target_accept (default 0.95; the one-sided '
+                        'likelihood wants 0.99).')
     p.add_argument('--sigma-base-prior', type=float, default=0.02,
                    help='HalfNormal σ for sigma_base (default 0.02)')
     p.add_argument('--ell-cs-mu', type=float, default=0.25,
@@ -371,33 +272,9 @@ def main():
 
     # ---------- load + auto-derive exclusions + filter ----------
     elig_full = build_eligible(args.races)
-    print(f"Hard-eligible races (post fatigued/Downhill/<120s filter): {len(elig_full)}")
+    print(f"Hard-eligible races (post Downhill/<120s/best-per-day filter): {len(elig_full)}")
 
-    excl_df, sigma_g, sigma_med = derive_exclusions(elig_full,
-                                                    xc_correction=args.xc_correction)
-    audit_path = os.path.join(args.out_dir, f'bayes_cs_auto_exclusions{suffix}.csv')
-    excl_df.to_csv(audit_path, index=False)
-    print(f"Auto-derived {len(excl_df)} exclusions "
-          f"(sub-marathon σ_global={sigma_g:.4f}, median={sigma_med:+.4f})")
-    print(f"Wrote audit trail: {audit_path}")
-    if len(excl_df):
-        # Compact stdout summary
-        for _, r in excl_df.iterrows():
-            print(f"  PRUNE  {r['date']}  {r['distance_m']:>5}m  {r['surface']:5s}  "
-                  f"tier={r['tier']:<5s}  {r['metric']}={r['value']}  "
-                  f"thresh={r['threshold']}  n={r['n_neighbors']}  "
-                  f"{str(r.get('event',''))[:35]}")
-
-    # Filter eligibility by auto-derived set (composite key: date + distance_m
-    # because some dates have multiple races with different race_seq)
-    excl_keys = set(zip(pd.to_datetime(excl_df['date']).dt.date if len(excl_df) else [],
-                        excl_df['distance_m'].astype(int) if len(excl_df) else []))
-    elig_full = elig_full.copy()
-    elig_full['_key'] = list(zip(
-        pd.to_datetime(elig_full['date']).dt.date,
-        elig_full['distance_m'].astype(int),
-    ))
-    elig = elig_full[~elig_full['_key'].isin(excl_keys)].drop(columns=['_key']).reset_index(drop=True)
+    elig = elig_full.reset_index(drop=True)
     print(f"Eligible races after auto-exclusion: {len(elig)}")
     print(f"Distinct distances: {sorted(set(int(d) for d in elig['distance_m']))}")
     print(f"Date range: {elig['date'].min()} to {elig['date'].max()}")
@@ -418,7 +295,7 @@ def main():
     # Convert each watch-covered race to its flat / sea-level / smooth-equivalent
     # TIME before it enters the likelihood, so CS measures fitness not the
     # course (docs/cs-model-reference.md "Race physical correction"). MUST match the same
-    # helper in cs_projection (the displayed diamonds) and derive_exclusions.
+    # helper in cs_projection (the displayed diamonds).
     # Net-downhill races get time ADDED (Boston discounted); net-uphill /
     # altitude races credited faster. Subtracted BEFORE the β_long un-bias.
     phys = race_physical_correction(elig)
@@ -515,6 +392,35 @@ def main():
     print(f"IAAF 5K-equiv: {len(fit_df)} aerobic races homogenized "
           f"(identity at 5K; WA tables for 1500m-marathon).")
 
+    # Causal race weights (see causal_race_weights). Applied as a per-race
+    # variance inflation sigma_i = sigma_base / sqrt(w_i) — standard weighted
+    # regression, so a low-weight race is simply a less informative
+    # observation rather than an excluded one. Written out per race so the
+    # judgement is readable: "this race was N% slower than anything you had run
+    # in the previous year, so it counted w".
+    race_w, race_sf = causal_race_weights(
+        fit_df['date'], t5k_equiv,
+        window_days=args.causal_window, scale=args.causal_scale)
+    wdf = pd.DataFrame({
+        'date': pd.to_datetime(fit_df['date']).dt.date,
+        'distance_m': fit_df['distance_m'].astype(int),
+        'event': fit_df['event'] if 'event' in fit_df.columns else '',
+        'surface': fit_df['surface'] if 'surface' in fit_df.columns else '',
+        't5k_equiv_sec': np.round(t5k_equiv, 1),
+        'causal_shortfall_pct': np.round(race_sf * 100, 2),
+        'weight': np.round(race_w, 4)})
+    wpath = os.path.join(args.out_dir, f'bayes_cs_race_weights{suffix}.csv')
+    wdf = wdf.sort_values('weight').reset_index(drop=True)
+    wdf.to_csv(wpath, index=False)
+    print(f"Causal weights: scale={args.causal_scale:.3f} "
+          f"window={args.causal_window}d | median {np.median(race_w):.3f}, "
+          f"{int((race_w < 0.5).sum())} races < 0.5, "
+          f"{int((race_w < 0.25).sum())} < 0.25 -> {wpath}")
+    for _, r in wdf.head(5).iterrows():
+        print(f"    {r['date']} {int(r['distance_m']):>5}m "
+              f"{str(r['event'])[:30]:<30} shortfall "
+              f"{r['causal_shortfall_pct']:+6.1f}%  weight {r['weight']:.3f}")
+
     # ---------- optional near-race workout observations (spike) ----------
     wobs = None
     if args.workout_obs:
@@ -573,9 +479,36 @@ def main():
         log_fit_dev   = gp_dev.prior('log_fit_dev',   X=X_grid)
         log_t5k_total = mu_fit + log_fit_trend + log_fit_dev
 
-        # Likelihood: each aerobic race's log 5K-equiv time ~ N(latent, sigma).
-        pm.Normal('obs', mu=log_t5k_total[race_grid_idx], sigma=sigma_base,
-                  observed=log_t5k)
+        # Likelihood.
+        #
+        # Per-race variance inflation from the causal weights (1.0 = no change).
+        sigma_obs_scale = 1.0 / np.sqrt(race_w)
+        # 'normal' (historical): log t5k ~ N(latent, sigma). Symmetric, so the
+        # latent is the conditional MEAN of race performance — a race is held as
+        # likely to land 3% faster than fitness as 3% slower. That is coherent
+        # for an average and incoherent for capability, and it is what forced the
+        # one-sided auto-exclusion gates: with a symmetric likelihood the long
+        # slow tail drags the curve, so slow races have to be trimmed by hand.
+        # Measured on 216 kept races: skew +1.24, slow tail 1.81x the fast tail,
+        # 59.3% of races FASTER than the curve, and all 6 exclusions slow ones.
+        #
+        # 'shortfall': every race is a max-effort attempt, so
+        #     log t_race = log t_capability + s + eps,   s >= 0
+        # with eps ~ N(0, sigma_meas) for timing/course precision. The latent is
+        # then CAPABILITY. A slow race is cheap to explain (large s) regardless
+        # of cause — fatigue, heat, illness, a bad day — so it barely moves the
+        # curve, which is the point: no per-cause gate can cover the reasons that
+        # were never logged. A fast race stays expensive and so stays
+        # influential, which is the wanted fragility: fast races are the audited
+        # ones, and an over-corrected or short-course input should be loud.
+        #
+        # s ~ Exponential convolved with the Gaussian eps is exactly the
+        # exponentially-modified Gaussian, which has a closed-form logp — so
+        # there is no per-race latent variable and NUTS sees no hard boundary.
+        # nu is the mean shortfall; it is identified by the SKEW of the residual
+        # distribution, which is why sigma_meas has to be pinned rather than fit.
+        pm.Normal('obs', mu=log_t5k_total[race_grid_idx],
+                  sigma=sigma_base * sigma_obs_scale, observed=log_t5k)
 
         # Near-race workout observations (spike; experimental, off by default):
         # 5K-equivalent efforts entering the same latent-fitness likelihood.
@@ -602,11 +535,20 @@ def main():
         trace: Any = pm.sample(
             draws=args.draws, tune=args.tune,
             chains=args.chains, cores=min(args.chains, os.cpu_count()),
-            target_accept=0.95, random_seed=args.seed,
+            target_accept=args.target_accept, random_seed=args.seed,
             return_inferencedata=True,
         )
     elapsed = tclock.time() - t0
     print(f"Sampling done in {elapsed/60:.1f} min")
+    # Likelihood-parameter posterior, always printed: these are the knobs the
+    # Layer-1 re-evaluation turns, and reading them should not require
+    # --diagnostics.
+    _lik = [v for v in ('sigma_base',)
+            if v in trace.posterior]
+    if _lik:
+        print('\nLikelihood parameters:')
+        print(az.summary(trace, var_names=_lik)[
+            ['mean', 'sd', 'hdi_3%', 'hdi_97%', 'ess_bulk', 'r_hat']].to_string())
 
     # ---------- output paths ----------
     # summary + params CSVs are essential inputs to the plot pipeline and
@@ -632,22 +574,21 @@ def main():
             f.write(f"sigma_base prior: HalfNormal(σ={args.sigma_base_prior})\n")
             f.write(f"ell_cs_dev prior: LogNormal(μ=log({args.ell_cs_mu}), σ={args.ell_cs_sigma})\n")
             f.write(f"chains: {args.chains}, draws: {args.draws}, tune: {args.tune}\n")
-            f.write(f"target_accept: 0.95\n")
+            f.write(f"target_accept: {args.target_accept}\n")
             f.write(f"xc_correction: {args.xc_correction:.4f} ({args.xc_correction*100:.1f}% terrain penalty)\n")
 
-            f.write(f"\n=== Auto-derived exclusions ===\n")
-            f.write(f"Total: {len(excl_df)} races pruned from {len(elig_full)} hard-eligible\n")
-            f.write(f"Sub-marathon σ_global (iterated trimmed MAD): {sigma_g:.4f} "
-                    f"(≈ {sigma_g*100:.2f}% pace) | median: {sigma_med:+.4f}\n")
-            if len(excl_df):
-                f.write(f"\n{'date':<12s} {'dist':>6s} {'surf':<5s} {'tier':<6s} "
-                        f"{'metric':<22s} {'value':>10s} {'thresh':>8s} {'n':>3s}  event\n")
-                for _, r in excl_df.iterrows():
-                    f.write(f"{str(r['date']):<12s} {r['distance_m']:>6d} "
-                            f"{str(r['surface'])[:5]:<5s} {r['tier']:<6s} "
-                            f"{r['metric']:<22s} {r['value']:>10.2f} "
-                            f"{r['threshold']:>8.1f} {r['n_neighbors']:>3d}  "
-                            f"{str(r.get('event',''))[:40]}\n")
+            f.write(f"\n=== Causal race weights ===\n")
+            f.write(f"scale={args.causal_scale:.3f} window={args.causal_window}d | "
+                    f"median {np.median(race_w):.3f}, "
+                    f"{int((race_w < 0.5).sum())} races < 0.5, "
+                    f"{int((race_w < 0.25).sum())} < 0.25 "
+                    f"(of {len(race_w)} in the fit corpus)\n")
+            f.write(f"\n{'date':<12s} {'dist':>6s} {'shortfall':>10s} "
+                    f"{'weight':>7s}  event\n")
+            for _, r in wdf.head(15).iterrows():
+                f.write(f"{str(r['date']):<12s} {int(r['distance_m']):>6d} "
+                        f"{r['causal_shortfall_pct']:>9.2f}% {r['weight']:>7.3f}  "
+                        f"{str(r.get('event',''))[:40]}\n")
 
             f.write(f"\n=== Hyperparameter posterior summary ===\n")
             summ = az.summary(trace, var_names=['mu_fit',

@@ -54,7 +54,7 @@ Suffixes: `j`=jog, `st`=strides, `sp`=sprints, `hc`=hill continuous, `hr`=hill r
 
 1. Unclassifiable entries: 0 miles → rest; positive mileage → recovery.
 2. Quality shorthand without `@pace` is **not** a quality workout (e.g. bare `24f` = recovery).
-3. Multi-race days: races after the first get `race_seq >= 2` and `fatigued = True`. Filter or caveat when analyzing.
+3. Multi-race days: races after the first get `race_seq >= 2` and `fatigued = True`. That flag is provenance, NOT an exclusion — as of Aug 2026 Fitness/CS/frontier admit the day's **best 5K-equivalent** race via `cs_projection.admit_best_per_day` (applied after the hard filters), so a `race_seq >= 2` race can and does represent its day. Filter or caveat when analyzing raw `races.csv`.
 4. Pre-2018 data is less consistent — don't preserve 2016 quirks beyond race-data needs.
 
 ## `daily.csv` is running-only
