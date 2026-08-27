@@ -250,7 +250,9 @@ jobs:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
         run: |
-          npx --yes netlify-cli@latest deploy \
+          # Pinned: netlify-cli 27.3+ pulls @netlify/dev@^5.0.1, whose 5.0.4
+          # release depends on an unpublished @netlify/ai version (2026-08-27).
+          npx --yes netlify-cli@27.1.2 deploy \
             --prod \
             --dir=dist \
             --site="$NETLIFY_SITE_ID" \
