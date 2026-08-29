@@ -104,6 +104,15 @@ if [[ $fit -eq 1 ]]; then
   loud_step "bayes_cs_fit"  python src/models/bayes_cs_fit.py "${diag_flag[@]}"
   watch_regen=(--full-regen)
 fi
+# v_max CS-multiples (k_evid, k_pred) derived from this profile's races + CS
+# fit -> data/vmax_ratios.csv, which cs_projection reads (the hardcoded
+# registry / defaults are only the fallback). Mirrors build_coros_data: after
+# the fit, before reps/parse_workouts (workout deflation uses k_evid). Without
+# this step the max profile's production builds silently ran on the frozen
+# registry snapshot instead of the live calibration.
+if [[ -f data/bayes_cs_summary.csv ]]; then
+  quiet_step "calibrate_vmax"        python scripts/calibrate_vmax.py --write
+fi
 # Watch-derived rep extraction: reconciles the Coros per-second stream against
 # the hand log (parse_workouts consumes the result). Incremental via the
 # watch_activities index. Skipped when the details cache or CS timeline is
