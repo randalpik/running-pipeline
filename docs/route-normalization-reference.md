@@ -400,8 +400,11 @@ of runs, and the pinned betas are fit on them.
    timescale; a sequential era-detrend would absorb them).
 4. **Refund is terrain × effort dependent.** Energy transfers across effort;
    the downhill *pace* refund does not.
-5. **Bucket by LOCATION terrain, not race surface** (e.g. 7 "Road" races are
-   run on mixed-terrain locations — Run for the Pies, etc.).
+5. **TRAINING runs bucket by LOCATION terrain; RACES bucket by SURFACE**
+   (Aug 2026: `SURFACE_TERRAIN`, Track/Road/Downhill ⇒ paved, Offroad ⇒
+   mixed, XC ⇒ trail — every race has a surface, and the location lookup
+   was wrong at multi-use venues like Magnuson Park; off-road courses
+   formerly logged "Road" are recategorized Offroad in the data).
 6. **Channels stay separate** (grade / footing / altitude) — no double-count.
 7. **For races, pin the curve, don't refit it** from the races being corrected
    (races feed CS and the correction is against CS-derived effort — circular).
@@ -418,9 +421,11 @@ of runs, and the pinned betas are fit on them.
   Replaced the old route-constant `0.17·elev_per_mile`.
 - **Race CS** (`cs-model-reference.md`, `recovery_model.race_physical_
   correction`): corrects each watch-covered race's time to its flat / sea-level
-  / smooth-equivalent before it informs CS, replacing the categorical XC ×1.08
-  / Downhill-exclusion where watch data exists (categorical = pre-watch
-  fallback). Track races gate grade off (by surface) but keep altitude.
+  / smooth-equivalent before it informs CS, replacing the terrain-scaled flat
+  correction (XC ×1.06 / Offroad ×1.03) / Downhill-exclusion where watch data
+  exists (the flat percent = pre-watch fallback; strictly one branch per
+  race). Race terrain comes from surface. Track races gate grade off (by
+  surface) but keep altitude — altitude rides both branches.
 
 ## Powerline name disambiguation
 

@@ -74,8 +74,8 @@ Plot date floors are **data-derived per profile**, not hardcoded (see `src/share
 ```
 load + combine
   → build_race_segments
-  → apply_race_rules
   → append_additions
+  → apply_race_rules
   → apply_adjustments
   → apply_autopop
   → surface refresh        (re-call surface_from_location after autopop)
@@ -85,13 +85,21 @@ load + combine
   → synthesize_daily_from_additions  (pre-2016 race-only daily stubs)
 ```
 
-Autopop runs **after** adjustments so event-normalization can match events that were set via the changes sheet. Adjustment-sourced surfaces are preserved during the surface refresh. The historical override fills `location` where it's blank OR where an earlier historical entry set it (last-wins among historical entries, so a narrow trip entry like `Nashville`/`Geneva` overrides the broad `2016-17 → education hill` catch-all within its window) — but never over a parser-set route, so freeze-time hill-loop synthesis (`powerline west`, `rollercoaster`, …) survives. Synthesize runs last so its rows pick up the same canonical city_state/surface as `races.csv`.
+Additions land **before** the race rules, whose preserve list (`Road/Track/XC/Offroad/Downhill`) keeps an addition's explicit surface from being rewritten by the distance rules. Autopop runs **after** adjustments so event-normalization can match events that were set via the changes sheet. Adjustment- and addition-sourced surfaces are preserved during the surface refresh. The historical override fills `location` where it's blank OR where an earlier historical entry set it (last-wins among historical entries, so a narrow trip entry like `Nashville`/`Geneva` overrides the broad `2016-17 → education hill` catch-all within its window) — but never over a parser-set route, so freeze-time hill-loop synthesis (`powerline west`, `rollercoaster`, …) survives. Synthesize runs last so its rows pick up the same canonical city_state/surface as `races.csv`.
 
-## Race classification rules
+## Race surfaces
+
+**Taxonomy (Max, Aug 2026):** `Track` = rubber track; `Road` = paved for the vast majority of the course; `Offroad` = unpaved for a significant portion (dark blue diamond); `XC` = unpaved for the vast majority; `Downhill` = aided descent (PR-excluded). There's a deliberate case-by-case component beyond these lines — Max assigns; don't sharpen the boundary algorithmically.
+
+**Surface is the ONLY terrain source for races** (`recovery_model.SURFACE_TERRAIN`): Track/Road/Downhill ⇒ paved, Offroad ⇒ mixed, XC ⇒ trail — no location-lookup terrain for races. Training runs still bucket by locations-sheet `terrain_type`.
+
+**Classification rules** (fill only where the surface is blank):
 
 - 5K within the XC date window → XC.
 - 5K otherwise → Road.
 - Distance < 3218m → Track.
+
+Offroad is never auto-assigned by distance — it comes from additions/changes sheets or the carnation rule.
 
 ## Location and event normalization
 
@@ -99,11 +107,11 @@ Autopop runs **after** adjustments so event-normalization can match events that 
 
 | substring | event | city_state | chains? |
 |---|---|---|---|
-| `carnation` | `Run for the Pies` | `Carnation, WA` | — |
+| `carnation` | `Run for the Pies` | `Carnation, WA` | → `surface=Offroad` |
 | `shoreline` | `Club Northwest All Comers` | `Shoreline, WA` | → `surface=Track` |
 | `boston` | `Boston Marathon` | `Boston, MA` | — |
 
-`city_state` always overwrites; event is set only when blank.
+`city_state` always overwrites; event is set only when blank. A rule's surface chain overrides parser/rule surfaces but never a changes-sheet adjustment, and it doesn't reach rows that short-circuit autopop as `noop` (city-state location + event already set — e.g. pre-2016 Pies additions carry their own surface).
 
 **Six event-normalization rules** (case-insensitive):
 

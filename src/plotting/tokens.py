@@ -28,6 +28,7 @@ TREND_WIDTH   = 2.0
 SURFACES = {
     'Track':    '#ff5b4d',
     'Road':     '#4aa3ff',
+    'Offroad':  '#3560e0',   # dark blue — deeper than Road, apart from hill_cont #3D85C6
     'XC':       '#4ade80',
     'Downhill': '#b87de9',
     'Unknown':  '#888888',

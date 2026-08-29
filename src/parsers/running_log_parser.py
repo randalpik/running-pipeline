@@ -869,7 +869,7 @@ def apply_race_rules(row):
     Order matters — specific rules before fall-throughs so defaults can't
     swallow real XC races.
     """
-    if row["surface"] in ("Road", "Track", "XC"):
+    if row["surface"] in ("Road", "Track", "XC", "Offroad", "Downhill"):
         return row["surface"]
     dist = row["distance_m"]
     if dist is None or pd.isna(dist):
@@ -901,7 +901,7 @@ def apply_race_rules(row):
 def set_race_surface_source(row):
     if row.get("surface_source") in ("routes", "location", "addition", "adjustment"):
         return row["surface_source"]
-    if row["surface"] in ("Road", "Track", "XC", "Downhill"):
+    if row["surface"] in ("Road", "Track", "XC", "Offroad", "Downhill"):
         return "rule"
     return "unknown"
 
@@ -1193,8 +1193,12 @@ def append_additions(races_df, additions):
 # Hardcoded rules: when the log's location matches (case-insensitive substring),
 # set event to the canonical name and location to the city-state. If event is
 # already set on the race, it's preserved — the rule only fills blanks.
+# An optional "surface" chain overrides parser/rule surfaces (never a
+# changes-sheet adjustment); rows that short-circuit as autopop 'noop'
+# (city-state location + event already set) keep their own surface.
 HARDCODED_LOCATION_RULES = [
-    {"match": "carnation", "event": "Run for the Pies", "city_state": "Carnation, WA"},
+    {"match": "carnation", "event": "Run for the Pies", "city_state": "Carnation, WA",
+     "surface": "Offroad"},
     {"match": "shoreline", "event": "Club Northwest All Comers", "city_state": "Shoreline, WA"},
     {"match": "boston",    "event": "Boston Marathon",           "city_state": "Boston, MA"},
 ]
@@ -1347,6 +1351,9 @@ def apply_autopop(race_row, lookup, hardcoded_rules=None,
             race_row["location"] = rule["city_state"]
             if not event:
                 race_row["event"] = rule["event"]
+            if rule.get("surface") and race_row.get("surface_source") != "adjustment":
+                race_row["surface"] = rule["surface"]
+                race_row["surface_source"] = "location"
             return "hardcoded"
 
     # Step 3: lookup table (exact match on lowercased key)

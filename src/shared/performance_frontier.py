@@ -167,7 +167,14 @@ def _race_demos(daily_summary, beta_long, d_thresh, xc_correction,
         races['fatigued'] = False
     if 'surface' not in races.columns:
         races['surface'] = 'Unknown'
-    elig = races[(races['surface'] != 'Downhill')
+    # Downhill admission matches build_eligible in bayes_cs_fit: a Downhill
+    # race with measured grade coverage is corrected to its flat-equivalent
+    # time and may inform the frontier; without coverage it stays excluded.
+    # (bin_frontier deliberately differs — it runs on RAW times, where an
+    # aided time would inflate a per-distance card.)
+    from src.shared.recovery_model import race_physical_correction
+    has_measured = race_physical_correction(races)['has_measured'].to_numpy()
+    elig = races[((races['surface'] != 'Downhill') | has_measured)
                  & (races['time_sec'] >= 120)].copy()
     # One race per multi-race day, the best 5K-equivalent — the same rule the
     # fit and the Fitness plot apply. Kept in step deliberately: the frontier is
@@ -279,6 +286,9 @@ def bin_frontier(bin_races, anchor_m, grid_dates, daily_summary,
     floor_t = np.asarray(pace5k_series_to_anchor(
         p5k_pace_min, daily_summary, anchor_m, beta_long, d_thresh), float)
     miles = anchor_m / METERS_PER_MILE
+    # Downhill stays categorically excluded HERE even when watch-covered
+    # (unlike _race_demos / build_eligible): the bin frontier runs on RAW
+    # times, so an aided time would inflate a per-distance card.
     keep = bin_races[bin_races.get(
         'surface', pd.Series('', index=bin_races.index)).fillna('') != 'Downhill']
     if keep.empty:

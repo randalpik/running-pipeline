@@ -106,14 +106,18 @@ The summary keeps the old column names so downstream code is unchanged:
 `cs_mps_med = (5000−D'_fixed)/t5k`, `dp_med = D'_fixed` (constant), and
 `load_cs_outputs` derives `p5k_implied =` the latent 5K-equiv pace.
 
-### XC pre-correction
+### Terrain-scaled flat pre-correction (XC / Offroad)
 
-XC race times are divided by `(1 + xc_correction)` BEFORE entering the model
-(`--xc-correction 0.08` by default — 8% terrain penalty). This is exogenous,
-not learned, because XC races cluster in fall seasons with no concurrent
-non-XC races for the model to compare against — so the model can't
-empirically separate terrain from fitness loss. We encode terrain
+No-watch off-road race times are divided by `(1 + xc_correction ×
+terrain_frac)` BEFORE entering the model (`--xc-correction 0.06` by default:
+XC = trail = the full 6%, Offroad = mixed = half, i.e. 3%). This is
+exogenous, not learned, because XC races cluster in fall seasons with no
+concurrent non-XC races for the model to compare against — so the model
+can't empirically separate terrain from fitness loss. We encode terrain
 correction as a fact and let the model fit pre-corrected times naturally.
+Grade-measured races skip it entirely — the binary rule: measured
+grade+footing where watch elevation exists, the flat percent where it
+doesn't, never both and never a partial mix.
 
 The 6% value was calibrated visually: at 4% Max's HS XC seasons still
 appeared as fitness troughs vs. spring track; 6% aligns them with surrounding
@@ -639,15 +643,16 @@ timescale are cleanly visible. Findings:
   the categorical regression stays closed, but for races WITH watch
   coverage a per-run DEM-based physical correction now ships and feeds
   CS directly — superseding the "not fittable" conclusion *for the
-  watch-covered subset*. The categorical rules (XC ×1.08, Downhill
-  hard-exclusion) survive as the pre-watch fallback.
+  watch-covered subset*. The categorical rules (the terrain-scaled flat,
+  XC ×1.06 / Offroad ×1.03, and the Downhill hard-exclusion) survive as
+  the pre-watch fallback.
 
 One durable insight from the Deception Pass decomposition: the **XC
 correction is FOOTING, not elevation** — the hill model's trail term
-(+27 s/mi ≈ 8% at those paces) independently matches the 8% XC factor,
-so terrain × Minetti stacking is a correct decomposition, not
-double-counting (XC courses' own rolling terrain is mild enough that
-the 8% absorbs it).
+independently matches the flat XC factor at those paces, so terrain ×
+Minetti stacking is a correct decomposition, not double-counting (XC
+courses' own rolling terrain is mild enough that the flat percent
+absorbs it).
 
 Bottom line: **race times stay unadjusted, all threads closed** —
 fatigue (null beyond same-day; same-day quantified at +7.2 s/mi and
@@ -702,21 +707,34 @@ per-race judgement; revisit the threshold, not this race, if it should go.
 - **Single source of truth: `recovery_model.race_physical_correction(races)`**.
   Applied IDENTICALLY in two places that must stay consistent: **(a)** the CS
   fit (`bayes_cs_fit.py`) — subtracted from `race_times` before the β_long
-  un-bias and the likelihood; `build_eligible` now ADMITS a watch-covered
+  un-bias and the likelihood; `build_eligible` ADMITS a watch-covered
   Downhill race (the measured grade discounts its assisted time) where it
-  used to hard-exclude all Downhill; `derive_exclusions` applies the same
-  correction so exclusion residuals match. **(b)**
+  used to hard-exclude all Downhill. **(b)**
   `cs_projection.project_races_to_5k_pace` — the displayed race diamonds and
   the performance frontier they feed, gated by an `apply_physical_correction`
   flag (default on; OFF for the actual-pace race plots in `make_race_plots`).
+  The projection also exposes the applied correction as `phys_*` columns so
+  tooltips display exactly what was subtracted (recomputing on the corrected
+  frame would re-price grade at the corrected pace).
   If the fit and the projection disagreed, the plotted race position wouldn't
   match what fed CS.
-- **Replaces the categorical ONLY WHERE WATCH DATA EXISTS.** It supersedes
-  the categorical XC ×1.08 pre-correction and the Downhill hard-exclusion
-  only for watch-covered races; the categorical rules remain the pre-watch
-  fallback. Today no XC or Downhill race has watch coverage, so the
-  replacement paths are armed but no-op — all current XC still get ×1.08, and
-  the one pre-watch Downhill TT stays excluded.
+- **BINARY branch on grade coverage.** `has_measured` is grade availability
+  (a watch-covered, non-track race with a DEM row) and nothing else. Where it
+  holds, measured grade+footing replace the terrain-scaled flat correction
+  (XC ×1.06 / Offroad ×1.03) and the Downhill hard-exclusion; where it
+  doesn't, the categorical flat is the whole terrain correction. Altitude
+  hypoxia is location physiology, not course terrain — it rides BOTH
+  branches and never flips the switch (an altitude-only race keeps its
+  flat correction).
+- **Race terrain comes from SURFACE, not location** (`SURFACE_TERRAIN`:
+  Track/Road/Downhill ⇒ paved, Offroad ⇒ mixed, XC ⇒ trail). Every race is
+  guaranteed a surface, and the location lookup was wrong at multi-use
+  venues. So a watch-covered XC race earns full trail footing by
+  definition, labeled route or not. Profiles that can't fit footing/altitude
+  betas (no terrain labels in the training corpus) pin them from the shared
+  cross-profile RATIOS artifact (`data/physical_beta_ratios.csv`, fractions
+  of pace written from the max-profile fit by `scripts/calibrate_physical.py`)
+  scaled by their own corpus mean pace.
 - **Sign convention.** A net-DOWNHILL race (e.g. Boston) gets time ADDED, so
   it projects SLOWER and correctly discounts the assisted time for CS.
   Net-uphill / altitude races are credited faster.

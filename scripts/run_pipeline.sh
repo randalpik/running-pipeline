@@ -128,6 +128,13 @@ fi
 if [[ -f data/elevation_splits.csv ]]; then
   quiet_step "calibrate_climb"       python scripts/calibrate_climb.py
 fi
+# Cross-profile physical-beta ratios (footing/altitude as fractions of pace)
+# from this profile's pooled fit — consumed by label-less watch profiles via
+# recovery_model.shared_beta_ratios. After calibrate_climb (the betas consume
+# the fresh grade calibration); refuses to export a non-genuine fit.
+if [[ -f data/bayes_cs_summary.csv ]]; then
+  quiet_step "calibrate_physical"    python scripts/calibrate_physical.py
+fi
 # Per-day altitude + local-time envelopes for the Misc. Trends plot, from the
 # rich detail cache (no network). Same lifecycle as elevation_measured.csv:
 # built wherever the details cache is present, gitignored, and the plot renders

@@ -402,6 +402,11 @@ def main():
             current = races.at[idx, "event"]
             if row.get("event") and (not current or pd.isna(current)):
                 races.at[idx, "event"] = row["event"]
+            # Hardcoded-rule surface chain (e.g. carnation ⇒ Offroad):
+            # apply_autopop set it on the dict copy; mirror it back.
+            if row.get("surface_source") == "location" and row.get("surface"):
+                races.at[idx, "surface"] = row["surface"]
+                races.at[idx, "surface_source"] = "location"
         elif status == "flag":
             autopop_flags.append({
                 "date": row.get("date"), "race_seq": row.get("race_seq"),
@@ -413,9 +418,11 @@ def main():
           f"flag={autopop_stats['flag']}  noop={autopop_stats['noop']}")
 
     # ---------- surface refresh after autopop ----------
+    # Adjustment- and addition-sourced surfaces are hand-entered truth; only
+    # rule/location-derived surfaces may be re-derived from the location.
     surface_refreshed = 0
     for idx in races.index:
-        if races.at[idx, "surface_source"] == "adjustment":
+        if races.at[idx, "surface_source"] in ("adjustment", "addition"):
             continue
         loc_surface = surface_from_location(races.at[idx, "location"])
         if loc_surface and races.at[idx, "surface"] != loc_surface:

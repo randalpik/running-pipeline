@@ -43,7 +43,6 @@ from src.shared.plot_window import data_span, first_race_date, axis_pad_entry
 from src.shared.cs_projection import (load_cs_outputs, project_races_to_5k_pace,
                                       admit_best_per_day)
 from src.shared.performance_frontier import standard_demos, build_frontier_band
-from src.shared.recovery_model import race_physical_correction
 from src.plotting import (render_plot, CursorTooltip, apply_default_layout,
                             sec_to_mss, sec_to_mss_prec, time_decimals,
                             SURFACES, rgba, GRID,
@@ -162,20 +161,17 @@ def main():
         elig_plot, summary_plot, beta_long_med, d_thresh_long,
         apply_xc_correction=True, xc_correction=xc_correction)
     # "Before correction" baseline: BOTH corrections off (physical route AND the
-    # categorical XC ×1.08) so the connector shows the TOTAL correction applied —
-    # the §B physical correction on watch races AND the XC terrain factor on
-    # pre-watch XC races (which have no watch data, so the categorical is what
-    # corrects them).
+    # terrain-scaled categorical flat, XC ×1.06 / Offroad ×1.03) so the connector
+    # shows the TOTAL correction applied — the §B physical correction on watch
+    # races AND the categorical terrain factor on pre-watch off-road races
+    # (which have no watch data, so the categorical is what corrects them).
     elig_unc = project_races_to_5k_pace(
         elig_plot, summary_plot, beta_long_med, d_thresh_long,
         apply_xc_correction=False, apply_physical_correction=False)
     elig_proj['pace_norm_min_unc'] = elig_unc['pace_norm_min'].to_numpy()
-    # Tooltip elevation channels: the fused gross totals behind each race's
-    # grade correction (NaN where no measured race row).
-    _phys = race_physical_correction(elig_proj)
-    for c in ('elev_gain_ft', 'elev_loss_ft', 'grade_dt_sec',
-              'climb_dt_sec', 'descent_dt_sec'):
-        elig_proj[f'tt_{c}'] = _phys[c].to_numpy()
+    # Tooltip elevation channels ride along as the phys_* columns the
+    # projection attached — the correction as ACTUALLY applied (recomputing
+    # here on the corrected frame would re-price grade at the corrected pace).
     elig_plot = elig_proj[elig_proj['pace_norm_min'].notna()].copy()
     print(f'Hyperbolic projection (5K-equiv): {len(elig_plot)} race diamonds')
 
@@ -256,7 +252,8 @@ def main():
     # diamond carries a per-race snap-mode tooltip via customdata, and the
     # trace is tagged snap_eligible so the smart-spikeline scaffold treats
     # it as a snap target.
-    surf_colors = {k: rgba(SURFACES[k], 0.7) for k in ('Track', 'Road', 'XC')}
+    surf_colors = {k: rgba(SURFACES[k], 0.7)
+                   for k in ('Track', 'Road', 'Offroad', 'XC')}
 
     def _race_inner(row):
         ev = row.get('event') or '(no event)'
@@ -295,16 +292,16 @@ def main():
         # 30 ft half marathon here is how the North Shore warmup mis-pick would
         # have been caught on day one.
         elev_line = ''
-        g_dt = row.get('tt_grade_dt_sec')
+        g_dt = row.get('phys_grade_dt_sec')
         if (g_dt is not None and not pd.isna(g_dt)
                 and abs(float(g_dt)) >= CORRECTION_MIN_SEC
-                and not pd.isna(row.get('tt_elev_gain_ft'))):
+                and not pd.isna(row.get('phys_elev_gain_ft'))):
             from src.plotting.hover import signed_mss
             elev_line = (
-                f"<div>Elevation: <b>+{float(row['tt_elev_gain_ft']):.0f} ft "
-                f"({signed_mss(float(row['tt_climb_dt_sec']))}) / "
-                f"−{float(row['tt_elev_loss_ft']):.0f} ft "
-                f"({signed_mss(float(row['tt_descent_dt_sec']))})</b></div>")
+                f"<div>Elevation: <b>+{float(row['phys_elev_gain_ft']):.0f} ft "
+                f"({signed_mss(float(row['phys_climb_dt_sec']))}) / "
+                f"−{float(row['phys_elev_loss_ft']):.0f} ft "
+                f"({signed_mss(float(row['phys_descent_dt_sec']))})</b></div>")
 
         # 5K-equiv (the diamond's y). Suppressed for every 5K: the projection
         # is exact identity at 5000m, so the line would only echo the actual
@@ -326,8 +323,9 @@ def main():
     # (>1 s/mi at 5K-equiv), show an open diamond at the UNCORRECTED 5K-equiv
     # plus a connector to the corrected diamond — so the per-race effect (actual
     # time corrected at its own distance, then converted) is visible. Covers BOTH
-    # the §B physical route correction (watch races) and the categorical XC
-    # ×1.08 (pre-watch XC races). Toggleable via its own legend entry; default-on.
+    # the §B physical route correction (watch races) and the terrain-scaled
+    # categorical flat (pre-watch XC/Offroad). Toggleable via its own legend
+    # entry; default-on.
     # Added BEFORE the race diamonds so the solid diamonds draw ON TOP of these
     # connectors/ghosts (Plotly draws later traces above earlier ones).
     moved = elig_plot[(elig_plot['pace_norm_min_unc'].notna()) &
@@ -350,9 +348,10 @@ def main():
                         line=dict(width=1.2, color='rgba(185,185,185,0.83)')),
             legendgroup='precorr', hoverinfo='skip',
             meta={'snap_eligible': False}))
-        n_xc_moved = int((moved['surface'].astype(str).str.upper() == 'XC').sum())
+        n_offroad_moved = int(moved['surface'].astype(str).str.upper()
+                              .isin(('XC', 'OFFROAD')).sum())
         print(f'Before-correction reference: {len(moved)} races moved >1 s/mi '
-              f'({n_xc_moved} XC)')
+              f'({n_offroad_moved} XC/Offroad)')
 
     for surf, col in surf_colors.items():
         sub = elig_plot[elig_plot['surface'] == surf]

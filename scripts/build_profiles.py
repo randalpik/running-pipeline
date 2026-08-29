@@ -217,6 +217,26 @@ def build_coros_data(profile, env, *, rebuild, fit=False):
         print(f"[{profile.id}] elevation: no details cache — skipped")
 
 
+def _render_time_literals(races):
+    """time_sec floats -> entered-precision text literals.
+
+    Precision comes from the sibling time_dec column (decimals as entered,
+    trailing zeros included); rows without one fall back to value inference,
+    which can't recover trailing zeros but never invents one.
+    """
+    from src.plotting.formatters import time_decimals
+
+    td = races["time_dec"] if "time_dec" in races.columns else None
+
+    def render(i, t):
+        t = float(t)
+        d = td.iloc[i] if td is not None else None
+        d = int(d) if d is not None and not pd.isna(d) else time_decimals(t)
+        return f"{t:.{d}f}"
+
+    return [render(i, t) for i, t in enumerate(races["time_sec"])]
+
+
 def _race_additions(cfg):
     """Build the additions DataFrame for a Coros profile.
 
@@ -231,10 +251,19 @@ def _race_additions(cfg):
     if cfg.get("races_sheet"):
         from src.parsers import drive_fetch
         svc = drive_fetch.get_drive_service()
-        races = drive_fetch.fetch_sheet_as_df(svc, cfg["races_sheet"])
+        # time_sec as text: its entered literal IS the precision (time_dec is
+        # parsed from trailing zeros downstream). Float inference would turn a
+        # whole-second `1001` into `1001.0` and invent a phantom tenth.
+        races = drive_fetch.fetch_sheet_as_df(svc, cfg["races_sheet"],
+                                              dtype={"time_sec": str})
         races["date"] = pd.to_datetime(races["date"])
     elif cfg.get("races_csv"):
         races = pd.read_csv(REPO_ROOT / cfg["races_csv"], parse_dates=["date"])
+        # races.csv stores time_sec as a float (`1729.0`); the entered
+        # precision lives in the sibling time_dec column. Re-render the
+        # literal at that precision so the snapshot round-trips it — handing
+        # the raw float repr to time_literal_decimals would invent a tenth.
+        races["time_sec"] = _render_time_literals(races)
     else:
         return pd.DataFrame(columns=cols)
     since = cfg.get("races_since")

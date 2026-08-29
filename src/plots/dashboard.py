@@ -129,10 +129,17 @@ def fmt_race_time(sec):
 def fmt_pr_time(sec, time_dec):
     """PR display: entered-precision hundredths for sub-10-minute PRs whose
     log entry carried them (Max, July 2026 — a 4:29.47 mile PR must not
-    round to 4:29.5); everything else keeps the fmt_race_time style."""
-    if (sec is not None and not pd.isna(sec) and float(sec) < 600.0
-            and time_dec is not None and not pd.isna(time_dec)
-            and int(time_dec) >= 2):
+    round to 4:29.5); whole-second entries drop the decimal entirely (a
+    0:57.0 was never timed to tenths); everything else keeps the
+    fmt_race_time style — the tenths rounding on 10-minute-plus PRs is
+    deliberate display policy, not lost precision."""
+    if sec is None or pd.isna(sec):
+        return fmt_race_time(sec)
+    td = (int(time_dec) if time_dec is not None and not pd.isna(time_dec)
+          else time_decimals(float(sec)))
+    if td == 0:
+        return sec_to_mss_prec(sec, 0)
+    if float(sec) < 600.0 and td >= 2:
         return sec_to_mss_prec(sec, 2)
     return fmt_race_time(sec)
 

@@ -126,11 +126,11 @@ freely; the physical channels are pinned.
 
 **Channels:**
 
-- **Off-road footing** (`is_offroad`, the mixed+trail binary — bucket every
-  run by its LOCATION `terrain_type`, never by surface): the flat-surface
-  penalty for running on non-paved ground (trail_frac coding: mixed = half
-  the full-trail value; live ≈ +16 at full trail as of Aug 2026). Pinned, not
-  fitted in this model.
+- **Off-road footing** (`is_offroad`, the mixed+trail binary — every training
+  RUN buckets by its LOCATION `terrain_type`; races bucket by SURFACE, see
+  route-normalization-reference.md): the flat-surface penalty for running on
+  non-paved ground (trail_frac coding: mixed = half the full-trail value;
+  live ≈ +16 at full trail as of Aug 2026). Pinned, not fitted in this model.
 - **Altitude** (hypoxia): ≈ **+2 sec/mi per 1000 ft above a ~3000 ft
   threshold** (VO2max is ~flat below the threshold, then declines roughly
   linearly — the shape is science-pinned, only the slope is data-fit).

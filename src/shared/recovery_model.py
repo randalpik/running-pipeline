@@ -57,7 +57,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from src.shared.paths import DATA_DIR
+from src.shared.paths import DATA_DIR, REPO_ROOT
 from src.shared.units import METERS_PER_MILE
 from src.shared.elevation_cost import (climb_cost, descent_benefit,
                                        engine_params, hill_cost)
@@ -246,6 +246,15 @@ ELEV_GUARD_FT_PER_MI = 100.0   # extreme watch-failure floor (see per_run_elevat
 # single fitted parameter (a free trail level is unidentifiable — one route
 # family). track/unknown -> 0 (paved).
 TRAIL_FRAC = {'paved': 0.0, 'mixed': 0.5, 'trail': 1.0}
+
+# Race surface -> terrain (Aug 2026): surface is the ONLY terrain source for
+# RACES — every race is guaranteed a surface, and it beats the location lookup
+# at multi-use venues (Magnuson Park hosts XC, road AND offroad races).
+# Taxonomy: Road = paved for the vast majority of the course; Offroad =
+# unpaved for a significant portion; XC = unpaved for the vast majority.
+# Training runs still bucket by the locations-sheet terrain_type.
+SURFACE_TERRAIN = {'track': 'paved', 'road': 'paved', 'downhill': 'paved',
+                   'offroad': 'mixed', 'xc': 'trail'}
 
 # Fallback weighted descent grades (%) by terrain for rows with no measured
 # shape (pre-watch days on never-watched routes) — the corpus medians.
@@ -683,16 +692,21 @@ def race_physical_correction(races, daily=None):
     haircut was retired Aug 2026; no effort schedule survived the data), on
     the race's own measured pace via the flat-equivalent closed form.
 
-    Gating (the categorical XC ×1.08 / Downhill-exclusion stay as the pre-watch
-    fallback — replaced by the measured correction only WHERE WATCH DATA
-    EXISTS):
-      * ``has_measured`` (full grade+footing applies, and the caller turns OFF
-        the categorical for that race): a watch-covered, non-track race with a
-        DEM row.
+    Gating — a BINARY branch on watch elevation coverage (the terrain-scaled
+    categorical flat correction, XC 6% / Offroad 3%, is the pre-watch
+    fallback; the measured grade+footing replaces it WHERE WATCH DATA EXISTS):
+      * ``has_measured`` == grade coverage (a watch-covered, non-track race
+        with a DEM row). Grade + footing apply, and the caller turns OFF the
+        categorical for that race. Nothing else flips this flag — altitude
+        alone must not, or an altitude-only race would lose the categorical
+        while gaining no terrain correction (neither branch fully applied).
       * Track races: grade gated OFF (flat; the backfill skips them anyway), but
         altitude hypoxia still applies via the per-run altitude chain.
       * Altitude applies wherever a per-run altitude is available (DEM mean for
-        DEM races; the watch/location chain for track-at-altitude).
+        DEM races; the watch/location chain for track-at-altitude) — it is
+        location physiology, not course terrain, so it rides BOTH branches.
+      * Footing terrain comes from the race's SURFACE (SURFACE_TERRAIN),
+        never the location lookup.
 
     Returns a DataFrame aligned to ``races.index``:
         grade_s_per_mi, footing_s_per_mi, alt_s_per_mi, total_s_per_mi
@@ -704,12 +718,13 @@ def race_physical_correction(races, daily=None):
         df['surface'] = ''
     if daily is None:
         daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
-    # Join location metadata (terrain/altitude) from the daily race rows —
+    # Join location metadata (altitude/elevation) from the daily race rows —
     # races.csv carries none. One daily row per race day (race_seq=1 back-prop).
     # A watch-only profile (Coros) has no location-metadata join, so daily
     # carries none of these columns; select only what's present and let the
-    # downstream defaults (terrain -> 'paved', altitude -> per-run/0) apply.
-    meta_cols = [c for c in ('terrain_type', 'altitude', 'elev_per_mile', 'location')
+    # downstream defaults (altitude -> per-run/0) apply. terrain_type is NOT
+    # joined: race terrain comes from the surface (SURFACE_TERRAIN).
+    meta_cols = [c for c in ('altitude', 'elev_per_mile', 'location')
                  if c in daily.columns]
     meta = (daily[daily['run_type'] == 'race']
             [['date'] + meta_cols]
@@ -722,18 +737,16 @@ def race_physical_correction(races, daily=None):
     df['_dk'] = pd.to_datetime(df['date']).dt.date
     meta['_dk'] = pd.to_datetime(meta['date']).dt.date
     df = df.merge(meta.drop(columns=['date']), on='_dk', how='left').drop(columns=['_dk'])
-    # terrain_type is accessed directly below; materialize it as blank when the
-    # profile has no terrain metadata so it maps to the 'paved' (flat) default.
-    if 'terrain_type' not in df.columns:
-        df['terrain_type'] = np.nan
 
     up_pm, g_up, dn_pm, g_dn, gross_gain, gross_loss, dem_mean_kft, \
         grade_avail = _race_fused_elevation(df)
     is_track = df['surface'].fillna('').astype(str).str.lower() == 'track'
     grade_avail = grade_avail & ~is_track
 
-    terr = (df['terrain_type'].astype(str).str.strip().str.lower())
-    terr = terr.where(terr.isin(('paved', 'mixed', 'trail')), 'paved')
+    # Race terrain from surface — the only source (unknown surfaces read as
+    # paved, i.e. no footing).
+    terr = (df['surface'].fillna('').astype(str).str.strip().str.lower()
+            .map(SURFACE_TERRAIN).fillna('paved'))
     # Grade: the two-channel engine on the race's own pace — race-scoped hill
     # segments on the fused substrate (course geometry only).
     pace = (df['pace_sec_per_mi'].astype(float)
@@ -753,9 +766,11 @@ def race_physical_correction(races, daily=None):
     # Altitude: DEM mean where present, else the per-run altitude chain (covers
     # track-at-altitude, whose grade is off but hypoxia is real — Boulder track).
     # Through the science-pinned threshold regressor: a sub-3000 ft race (sea
-    # level, Nashville's 400 ft constant) gets no hypoxia term, so it neither
-    # fabricates a phantom correction nor flips has_measured (which had wrongly
-    # admitted the pre-watch Downhill TT). Boulder/Magnolia get the real effect.
+    # level, Nashville's 400 ft constant) gets no hypoxia term (no phantom
+    # corrections). Boulder/Magnolia get the real effect. Altitude never flips
+    # has_measured — that flag is grade coverage alone, so an altitude-only
+    # race keeps its categorical flat correction (and the threshold keeps the
+    # pre-watch Downhill TT from being admitted on a phantom altitude term).
     alt_eff = altitude_regressor(dem_mean_kft.fillna(per_run_altitude(df)))
     alt_cost = pb['alt_kft'] * alt_eff
 
@@ -767,7 +782,7 @@ def race_physical_correction(races, daily=None):
         'alt_s_per_mi': alt_cost,
         'total_s_per_mi': total,
         'dt_sec': total * dist_mi,
-        'has_measured': grade_avail.to_numpy() | (alt_eff > 0),
+        'has_measured': grade_avail.to_numpy(),
         # Display channels (tooltips): the race-scoped hill quantities and
         # the two decomposed terms behind the grade correction. NaN where the
         # race has no measured row. (Positional numpy like every column above —
@@ -903,6 +918,49 @@ def _degrade_warn(what, exc):
 
 
 _PHYS_BETAS_CACHE: dict = {}
+# Per-data-dir fit metadata: mean pace of the pooled fit rows (the ratio
+# normalizer) and whether the physical channels were pinned from the shared
+# ratios rather than fitted.
+_PHYS_BETAS_META: dict = {}
+
+# Cross-profile physical-beta ratios — a SHARED artifact anchored to the
+# repo-root data dir (like dem_cache.json), NOT the RP_DATA_DIR-routed
+# DATA_DIR: it's written once from the max-profile fit
+# (scripts/calibrate_physical.py) and read by every profile whose own corpus
+# can't identify the physical channels.
+BETA_RATIOS_PATH = REPO_ROOT / 'data' / 'physical_beta_ratios.csv'
+
+
+def shared_beta_ratios():
+    """The cross-profile footing/altitude ratios (fractions of pace) from
+    ``BETA_RATIOS_PATH``, or None when absent/unreadable. Ratios, not s/mi:
+    a flat s/mi constant doesn't transfer physiologically between runners of
+    different speeds; the consumer rescales by its own corpus's mean pace."""
+    try:
+        if BETA_RATIOS_PATH.exists():
+            df = pd.read_csv(BETA_RATIOS_PATH)
+            if len(df):
+                return {'footing_frac': float(df['footing_frac'].iloc[0]),
+                        'alt_frac_per_kft': float(df['alt_frac_per_kft'].iloc[0])}
+    except Exception as exc:
+        _degrade_warn('shared_beta_ratios', exc)
+    return None
+
+
+def physical_beta_ratios():
+    """This profile's FITTED physical betas as ratios of its mean fit pace —
+    the export side of the cross-profile transfer (scripts/calibrate_physical
+    writes them to ``BETA_RATIOS_PATH`` on the max build). None when the fit
+    didn't produce genuine values (unavailable, footing zero, or itself
+    pinned from the shared ratios — never re-export a borrowed constant)."""
+    pb = physical_route_betas()
+    meta = _PHYS_BETAS_META.get(str(DATA_DIR)) or {}
+    ref = meta.get('ref_pace')
+    if not ref or meta.get('pinned') or pb['trail_frac'] == 0.0:
+        return None
+    return {'footing_frac': pb['trail_frac'] / ref,
+            'alt_frac_per_kft': pb['alt_kft'] / ref,
+            'ref_pace_s_per_mi': ref}
 
 
 def physical_route_betas():
@@ -927,8 +985,13 @@ def physical_route_betas():
     corpora so the shared slopes aren't biased by it.
 
     Cached per data dir. Degrades gracefully: recovery-only when there are no
-    long-run rows, zeros (no correction) for any channel when the recovery fit
-    is unavailable (sparse profiles, CI without a details cache)."""
+    long-run rows; zeros (no correction) for any channel when the recovery fit
+    is unavailable (sparse profiles, CI without a details cache). A profile
+    whose corpus has NO off-road terrain labels can't identify the two
+    physical channels at all — those pin to the shared cross-profile RATIOS
+    (fraction of pace, written from the max-profile fit by
+    scripts/calibrate_physical.py) scaled by this corpus's own mean fit pace;
+    zeros only when that artifact is also absent."""
     key = str(DATA_DIR)
     if key in _PHYS_BETAS_CACHE:
         return _PHYS_BETAS_CACHE[key]
@@ -979,18 +1042,24 @@ def physical_route_betas():
         # is_long only when both corpora are present (else collinear w/ const).
         fit_cols = base + ['trail_frac', 'alt_kft'] + (
             ['is_long'] if len(rows) > 1 else [])
-        rcols = ['date', 'resid', 'elev_cost', 'is_long'] + base + \
-            ['trail_frac', 'alt_kft']
+        rcols = ['date', 'resid', 'elev_cost', 'is_long', 'pace_for_fit'] + \
+            base + ['trail_frac', 'alt_kft']
         pool = pd.concat([r.reindex(columns=rcols, fill_value=0.0)
                           for r in rows], ignore_index=True)
         pool = pool.dropna(subset=['resid', 'elev_cost'] + fit_cols)
+        _PHYS_BETAS_META[key] = {
+            'ref_pace': float(pool['pace_for_fit'].mean()) if len(pool) else None,
+            'pinned': False,
+        }
         # Identifiability guard: with NO off-road terrain labels (watch-only
         # profiles have none), footing can't be separated from altitude — a
         # slow trail run has nowhere to load but altitude, skewing it wildly.
-        # Drop both terrain channels; a zero physical cost is just no
-        # correction. (The run/walk ceiling on long-run rows has already
-        # removed the hikes that made this acute.)
-        if pool['trail_frac'].abs().sum() == 0:
+        # Drop both terrain channels from the fit; they're pinned from the
+        # shared cross-profile ratios below instead (zeros — no correction —
+        # only when that artifact is absent). (The run/walk ceiling on
+        # long-run rows has already removed the hikes that made this acute.)
+        pin_shared = pool['trail_frac'].abs().sum() == 0
+        if pin_shared:
             fit_cols = [c for c in fit_cols if c not in ('trail_frac', 'alt_kft')]
         if len(pool) > len(fit_cols) + 1:
             X = np.hstack([np.ones((len(pool), 1)),
@@ -1014,6 +1083,25 @@ def physical_route_betas():
                    'temp_centered': float(cmap.get('temp_centered', 0.0))}
             for c in QUALITY_CATS:
                 out[f'fat_{c}'] = float(cmap.get(f'fat_{c}', 0.0))
+            if pin_shared:
+                # Cross-profile transfer is by RATIO (fraction of pace) — a
+                # flat s/mi doesn't carry between runners of different speeds
+                # — converted back to this corpus's s/mi via its own mean fit
+                # pace, so every downstream consumer stays s/mi-valued.
+                ratios = shared_beta_ratios()
+                ref = _PHYS_BETAS_META[key]['ref_pace']
+                if ratios is not None and ref:
+                    out['trail_frac'] = ratios['footing_frac'] * ref
+                    out['alt_kft'] = ratios['alt_frac_per_kft'] * ref
+                    _PHYS_BETAS_META[key]['pinned'] = True
+                    print('  physical betas: no off-road terrain labels — '
+                          f"pinned footing {out['trail_frac']:+.2f} s/mi / "
+                          f"altitude {out['alt_kft']:+.2f} s/mi/kft from the "
+                          f'shared ratios × mean corpus pace {ref:.0f} s/mi')
+                else:
+                    print('  physical betas: no off-road terrain labels and '
+                          'no shared ratios artifact — footing/altitude stay '
+                          '0 (no correction)')
     except FileNotFoundError:
         pass
     except Exception as exc:

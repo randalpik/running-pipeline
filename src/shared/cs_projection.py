@@ -50,9 +50,10 @@ his own v_max) down to the 5K anchor; down-conversion of a real short race has n
 such problem. Above 5K both directions are WA. Do NOT unify the boundaries.
 See docs/cs-model-reference.md ("Direction matters: down-convert evidence …").
 
-XC pre-correction (dividing time by 1+xc_correction) is OPTIONAL via the
+The terrain-scaled flat pre-correction (dividing time by 1 + xc_correction ×
+terrain_frac: XC full, Offroad half, no-watch races only) is OPTIONAL via the
 `apply_xc_correction` flag. The CS plot applies it (matches the fit). The
-event-focused all-races plot does NOT — we want to see the actual XC pace.
+event-focused all-races plot does NOT — we want to see the actual raced pace.
 
 D′ bridging (CP2 fit → CP3 projection layer)
 --------------------------------------------
@@ -402,7 +403,7 @@ def admit_best_per_day(elig, verbose=False):
     winner is unchanged across a +/-10% perturbation of the whole CS curve
     (verified Aug 2026 on all 13 multi-race days). With no summary to seed from
     (a cold CI cache), it falls back to the WA tables — the fit's own CS-free
-    equivalence, used by ``derive_exclusions``. The two agree at every distance
+    equivalence. The two agree at every distance
     in the corpus except sub-1500 m, where the hybrid's CP3+v_max rates Max's
     800 s better than the population tables do (2022-06-29: 15:47.9 vs 16:16.7).
     """
@@ -477,9 +478,10 @@ def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
     races : DataFrame with at least date, distance_m, time_sec; surface optional.
     daily_summary : output of ``load_cs_outputs`` (must cover the race dates).
     beta_long, d_thresh : long-distance bias parameters from the CS fit.
-    apply_xc_correction : when True, XC race times are divided by
-        (1 + xc_correction) before projection — matches the fit. Set False
-        for event-focused plots that should display actual XC race times.
+    apply_xc_correction : when True, off-road race times are divided by
+        (1 + xc_correction × terrain_frac) before projection — XC (trail)
+        gets the full percent, Offroad (mixed) half — matching the fit. Set
+        False for event-focused plots that should display actual race times.
     xc_correction : the correction factor (only used if apply_xc_correction).
     norm_dist_m : anchor distance in meters (default 5000m).
 
@@ -506,10 +508,11 @@ def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
     # each watch-covered race to its flat / sea-level / smooth-equivalent time
     # so the projection (and the frontier it feeds) matches what informs the CS
     # fit (docs/cs-model-reference.md "Race physical correction"). MUST stay consistent with
-    # the same helper applied in bayes_cs_fit. Where a race has a measured
-    # correction the categorical XC factor is turned OFF for it (measured wins;
-    # categorical is the pre-watch fallback). dt_sec is 0 on unmeasured races,
-    # so this is a no-op there.
+    # the same helper applied in bayes_cs_fit. Binary branch: where a race has
+    # grade coverage (has_measured) the categorical flat correction is turned
+    # OFF for it (measured grade+footing wins; the terrain-scaled categorical
+    # is the pre-watch fallback). dt_sec is 0 on unmeasured races, so this is
+    # a no-op there.
     has_measured = pd.Series(False, index=df.index)
     if apply_physical_correction:
         from src.shared.recovery_model import race_physical_correction
@@ -520,15 +523,30 @@ def project_races_to_5k_pace(races, daily_summary, beta_long, d_thresh,
         if 'pace_sec_per_mi' in df.columns:
             df['pace_sec_per_mi'] = (df['pace_sec_per_mi'].astype(float)
                                      - corr['total_s_per_mi'].to_numpy())
+        # Expose the correction ACTUALLY applied (phys_ prefix) for display —
+        # tooltips must read these rather than re-running the helper on the
+        # corrected frame, where the grade engine would re-price at the
+        # already-corrected pace.
+        for c in ('grade_s_per_mi', 'footing_s_per_mi', 'alt_s_per_mi',
+                  'elev_gain_ft', 'elev_loss_ft',
+                  'climb_dt_sec', 'descent_dt_sec', 'grade_dt_sec'):
+            df[f'phys_{c}'] = corr[c].to_numpy()
 
     if apply_xc_correction and xc_correction > 0 and 'surface' in df.columns:
-        is_xc = (df['surface'].fillna('').astype(str).str.upper() == 'XC') & ~has_measured
-        if is_xc.any():
-            factor = 1.0 / (1.0 + xc_correction)
-            df.loc[is_xc, 'time_sec'] = df.loc[is_xc, 'time_sec'].astype(float) * factor
+        from src.shared.recovery_model import SURFACE_TERRAIN, TRAIL_FRAC
+        # Terrain-scaled categorical flat correction — the no-watch branch of
+        # the binary system: XC (trail) gets the full percent, Offroad (mixed)
+        # half, everything else 0.
+        flat_frac = (df['surface'].fillna('').astype(str).str.strip().str.lower()
+                     .map(SURFACE_TERRAIN).fillna('paved').map(TRAIL_FRAC))
+        flat_mask = (flat_frac > 0) & ~has_measured
+        if flat_mask.any():
+            factor = 1.0 / (1.0 + xc_correction * flat_frac[flat_mask])
+            df.loc[flat_mask, 'time_sec'] = (
+                df.loc[flat_mask, 'time_sec'].astype(float) * factor)
             if 'pace_sec_per_mi' in df.columns:
-                df.loc[is_xc, 'pace_sec_per_mi'] = (
-                    df.loc[is_xc, 'pace_sec_per_mi'].astype(float) * factor)
+                df.loc[flat_mask, 'pace_sec_per_mi'] = (
+                    df.loc[flat_mask, 'pace_sec_per_mi'].astype(float) * factor)
 
     lookup = daily_summary.set_index(daily_summary['date'].dt.date)
     beta_anchor = _beta_long_factor(norm_dist_m, beta_long, d_thresh)

@@ -22,7 +22,7 @@ flat-course equivalent.
 NO outliers are pruned. Every row in races.csv with positive distance and
 time is plotted, including fatigued (race_seq > 1) races — these aren't
 visually de-emphasized; the hover tag flags them as "Nth race of the day."
-Surface controls color (Track/Road/XC/Downhill/Unknown).
+Surface controls color (Track/Road/Offroad/XC/Downhill/Unknown).
 
 Workflow
 --------
@@ -170,7 +170,7 @@ def friendly_distance(d):
 # src.plotting.markers.
 # Canonical surface legend order, identical on both race plots. Downhill is
 # pinned LAST (Unknown, if it ever appears, tucks in just before it).
-SURFACE_LEGEND_ORDER = ['Track', 'Road', 'XC', 'Unknown', 'Downhill']
+SURFACE_LEGEND_ORDER = ['Track', 'Road', 'Offroad', 'XC', 'Unknown', 'Downhill']
 
 
 def compute_pr_mask(df, *, value_col, date_col='date'):

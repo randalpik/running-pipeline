@@ -31,9 +31,9 @@ USAGE (local run):
     python src/models/bayes_cs_fit.py
 
 By default, reads `races.csv` from `data/` and writes outputs there too.
-Override with --races / --out-dir if needed. Exclusions are derived
-automatically from the eligible race set (see derive_exclusions below) —
-no manual exclusion file is consumed.
+Override with --races / --out-dir if needed. There is no exclusion step —
+every hard-eligible race informs the fit through the causal-shortfall
+weighting (see build_eligible); no manual exclusion file is consumed.
 
 Inputs:
     races.csv (or --races PATH)
@@ -67,7 +67,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, DEBUG_DIR
 from src.shared.units import METERS_PER_MILE
 from src.shared.plot_window import pad_range
-from src.shared.recovery_model import race_physical_correction
+from src.shared.recovery_model import (race_physical_correction,
+                                       SURFACE_TERRAIN, TRAIL_FRAC)
 from src.shared.cs_projection import (dprime_fixed, CP3_IAAF_BOUNDARY_M,
                                       admit_best_per_day)
 from src.shared.wa_scoring import wa_5k_equiv_time
@@ -222,14 +223,16 @@ def main():
     p.add_argument('--ell-cs-sigma', type=float, default=0.4,
                    help='LogNormal scale (log-space) for ell_cs (default 0.4)')
     p.add_argument('--xc-correction', type=float, default=0.06,
-                   help='Multiplicative correction applied to XC race times '
-                        'before fitting (default 0.06 = 6%% terrain-effect '
-                        'compensation, literature-supported). Pre-model '
-                        'adjustment: XC time_sec is '
-                        'divided by (1+c) so XC races enter the model as if '
-                        'they were equivalent flat-course times. Set to 0 to '
-                        'disable. Iterate based on visual fall-vs-spring '
-                        'alignment in the chart.')
+                   help='Terrain-scaled flat correction applied to no-watch '
+                        'off-road race times before fitting (default 0.06 = '
+                        '6%% at full trail: XC gets the full percent, Offroad '
+                        'half). Pre-model adjustment: time_sec is divided by '
+                        '(1 + c*terrain_frac) so those races enter the model '
+                        'as if they were equivalent flat-course times; '
+                        'grade-measured races skip it (the physical '
+                        'correction supersedes). Set to 0 to disable. '
+                        'Iterate based on visual fall-vs-spring alignment '
+                        'in the chart.')
     p.add_argument('--tag', default='',
                    help='Suffix for output filenames (e.g. "v4a") to keep '
                         'experiments separate')
@@ -260,8 +263,7 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
 
     # File-naming suffix: append --tag if provided so multiple experiments
-    # don't clobber each other's outputs. Computed early because the
-    # auto-exclusions audit file is the first artifact written.
+    # don't clobber each other's outputs.
     suffix = f"_{args.tag}" if args.tag else ""
 
     # Fixed D' (m): the CP2 (CS,D') decomposition was retired (see module
@@ -270,12 +272,11 @@ def main():
     D_FIXED = dprime_fixed()
     print(f"Fixed D' (nominal bare-CS backout + sprint leg): {D_FIXED:.0f} m")
 
-    # ---------- load + auto-derive exclusions + filter ----------
+    # ---------- load + filter ----------
     elig_full = build_eligible(args.races)
     print(f"Hard-eligible races (post Downhill/<120s/best-per-day filter): {len(elig_full)}")
 
     elig = elig_full.reset_index(drop=True)
-    print(f"Eligible races after auto-exclusion: {len(elig)}")
     print(f"Distinct distances: {sorted(set(int(d) for d in elig['distance_m']))}")
     print(f"Date range: {elig['date'].min()} to {elig['date'].max()}")
 
@@ -301,27 +302,37 @@ def main():
     phys = race_physical_correction(elig)
     elig['phys_dt_sec'] = phys['dt_sec'].to_numpy()
     elig['time_sec'] = elig['time_sec'].astype(float) - elig['phys_dt_sec']
+    if 'pace_sec_per_mi' in elig.columns:
+        # Keep pace consistent with the corrected time — the likelihood reads
+        # only time_sec, but this path and cs_projection must stay identical.
+        elig['pace_sec_per_mi'] = (elig['pace_sec_per_mi'].astype(float)
+                                   - phys['total_s_per_mi'].to_numpy())
     has_measured = phys['has_measured'].to_numpy()
     n_meas = int(has_measured.sum())
     if n_meas:
         moved = elig['phys_dt_sec'][has_measured]
-        print(f"Physical route correction: {n_meas} watch-covered races "
+        print(f"Physical route correction: {n_meas} grade-measured races "
               f"(dt {moved.min():+.0f}..{moved.max():+.0f}s, "
               f"median {moved.median():+.1f}s)")
 
-    # The categorical XC factor applies ONLY where there's no measured
-    # correction (pre-watch fallback; measured grade+footing supersedes it).
-    is_xc_mask = (elig['surface'].fillna('').astype(str).str.upper() == 'XC') & ~has_measured
-    n_xc = int(is_xc_mask.sum())
-    if args.xc_correction > 0 and n_xc > 0:
-        factor = 1.0 / (1.0 + args.xc_correction)
-        elig.loc[is_xc_mask, 'time_sec'] = elig.loc[is_xc_mask, 'time_sec'] * factor
+    # Terrain-scaled categorical flat correction — the no-watch branch of the
+    # binary system (measured grade+footing supersedes it): XC (trail) gets
+    # the full percent, Offroad (mixed) half, everything else nothing.
+    flat_frac = (elig['surface'].fillna('').astype(str).str.strip().str.lower()
+                 .map(SURFACE_TERRAIN).fillna('paved').map(TRAIL_FRAC)).to_numpy()
+    flat_mask = (flat_frac > 0) & ~has_measured
+    n_flat = int(flat_mask.sum())
+    if args.xc_correction > 0 and n_flat > 0:
+        factor = 1.0 / (1.0 + args.xc_correction * flat_frac[flat_mask])
+        elig.loc[flat_mask, 'time_sec'] = elig.loc[flat_mask, 'time_sec'] * factor
         if 'pace_sec_per_mi' in elig.columns:
-            elig.loc[is_xc_mask, 'pace_sec_per_mi'] = elig.loc[is_xc_mask, 'pace_sec_per_mi'] * factor
-        print(f"XC pre-correction: {n_xc} races, factor={factor:.4f} "
-              f"(c={args.xc_correction:.3f} = {args.xc_correction*100:.1f}% terrain penalty)")
-    elif n_xc > 0:
-        print(f"XC pre-correction disabled (--xc-correction 0); {n_xc} XC races kept as-is")
+            elig.loc[flat_mask, 'pace_sec_per_mi'] = elig.loc[flat_mask, 'pace_sec_per_mi'] * factor
+        print(f"Flat terrain pre-correction: {n_flat} races "
+              f"(c={args.xc_correction:.3f} = {args.xc_correction*100:.1f}% at "
+              f"full trail; Offroad scaled ×{TRAIL_FRAC['mixed']:g})")
+    elif n_flat > 0:
+        print(f"Flat terrain pre-correction disabled (--xc-correction 0); "
+              f"{n_flat} off-road races kept as-is")
 
     # ---------- inference grid ----------
     # Span the UNION of eligible-race dates and daily-run dates, padded ~2% on
