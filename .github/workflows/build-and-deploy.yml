@@ -95,12 +95,61 @@ jobs:
             data/profiles/maddy/bayes_cs_summary.csv
             data/profiles/maddy/bayes_cs_params.csv
             data/profiles/maddy/bayes_cs_race_weights.csv
+            data/profiles/maddy/elevation_measured.csv
+            data/profiles/maddy/elevation_splits.csv
+            data/profiles/maddy/elevation_hills.csv
+            data/profiles/maddy/altitude_daily.csv
+            data/profiles/maddy/time_daily.csv
+          key: pipeline-state-v1-${{ github.run_id }}
+          restore-keys: |
+            pipeline-state-v1-
+
+      # One-time transition fallback (Aug 2026): the path list above gained
+      # maddy's per-day artifacts, which changes the actions/cache VERSION
+      # hash — archives saved under the old list are invisible to the primary
+      # restore. This step retries with the exact OLD list, so the first run
+      # after the change restores warm instead of cold-rebuilding everything.
+      # Once a run has saved under the new list, the primary matches and this
+      # never fires again; safe to delete after one green run.
+      - name: Restore pipeline state (pre-maddy-artifacts fallback)
+        id: state_restore_legacy
+        if: steps.state_restore.outputs.cache-matched-key == ''
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/city_coords.csv
+            data/reverse_coords.csv
+            data/historical_daily.csv
+            data/bayes_cs_summary.csv
+            data/bayes_cs_params.csv
+            data/bayes_cs_race_weights.csv
+            data/watch_activities.csv
+            data/weather_measured.csv
+            data/elevation_measured.csv
+            data/elevation_splits.csv
+            data/elevation_hills.csv
+            data/altitude_daily.csv
+            data/time_daily.csv
+            data/long_run_measured.csv
+            data/recovery_measured.csv
+            data/long_run_calibration.csv
+            data/dem_cache.json
+            data/profiles/coros/details
+            data/profiles/coros/coros_token.json
+            data/profiles/coros/coros_current_log.csv
+            data/profiles/maddy/coros_current_log.csv
+            data/profiles/maddy/coros_token.json
+            data/profiles/maddy/city_coords.csv
+            data/profiles/maddy/details
+            data/profiles/maddy/bayes_cs_summary.csv
+            data/profiles/maddy/bayes_cs_params.csv
+            data/profiles/maddy/bayes_cs_race_weights.csv
           key: pipeline-state-v1-${{ github.run_id }}
           restore-keys: |
             pipeline-state-v1-
 
       - name: Warn on cache miss
-        if: steps.state_restore.outputs.cache-matched-key == ''
+        if: steps.state_restore.outputs.cache-matched-key == '' && steps.state_restore_legacy.outputs.cache-matched-key == ''
         run: |
           echo "::warning::No pipeline-state cache restored (first run or >7d idle). Plots that depend on bayes_cs_* or historical_daily will fail unless this run is dispatched with --fit and --historical set."
 
@@ -232,6 +281,11 @@ jobs:
             data/profiles/maddy/bayes_cs_summary.csv
             data/profiles/maddy/bayes_cs_params.csv
             data/profiles/maddy/bayes_cs_race_weights.csv
+            data/profiles/maddy/elevation_measured.csv
+            data/profiles/maddy/elevation_splits.csv
+            data/profiles/maddy/elevation_hills.csv
+            data/profiles/maddy/altitude_daily.csv
+            data/profiles/maddy/time_daily.csv
           key: pipeline-state-v1-${{ github.run_id }}
 
       - uses: actions/setup-node@v4
