@@ -113,6 +113,9 @@ class CorosClient:
 
     # ---- endpoints ----
     def login(self):
+        # Announce before the request: login is a throttle-prone call, and a
+        # silent stall here is indistinguishable from a hang in CI logs.
+        print("[coros] logging in (password auth)…", flush=True)
         resp = self._request("/account/login", method="POST", json_body={
             "account": self.email,
             "accountType": 2,
@@ -142,9 +145,12 @@ class CorosClient:
             data = self.list_activities(from_day=from_day, to_day=to_day,
                                         size=page_size, page=page)
             items = data.get("dataList") or []
+            total_pages = data.get("totalPage") or 1
+            if total_pages > 1:   # liveness on long (cold-cache) listings;
+                print(f"[coros] activity list page {page}/{total_pages} "
+                      f"({len(items)} items)", flush=True)   # 1-page runs stay quiet
             for it in items:
                 yield it
-            total_pages = data.get("totalPage") or 1
             if page >= total_pages or not items:
                 break
             page += 1

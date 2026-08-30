@@ -76,10 +76,14 @@ HILLS_OUT = DATA_DIR / 'elevation_hills.csv'
 # Day-level failure memo: days that were attempted and legitimately produced
 # nothing (no rich details, watch-invalid, measurement/DEM gated) — without it
 # they are indistinguishable from "never tried" and re-walk on every run
-# (~150 days/run by Aug 2026, growing). stage: 'day' (baro-layer row) or
-# 'dem' (DEM augment). Entries clear when the day later succeeds, when
+# (~150 days/run by Aug 2026, growing). Stored INSIDE elevation_measured.csv
+# as a ``skip_reason`` column ('stage:reason'): day-stage failures get a stub
+# row (all metrics NaN), dem/fuse-stage memos annotate the existing row. In a
+# file already on the GHA state-cache path list DELIBERATELY — adding a new
+# path invalidates the actions/cache version hash and cold-starts CI (learned
+# the hard way, Aug 2026). Entries clear when the day later succeeds, when
 # --fetch retries 'slim' days, or wholesale under --full-regen.
-SKIPS_OUT = DATA_DIR / 'elevation_skips.csv'
+LEGACY_SKIPS_OUT = DATA_DIR / 'elevation_skips.csv'   # pre-column sidecar
 
 # A kept day whose corrected distance no longer matches the current
 # calibration by more than this is re-derived in full (row + splits + hills).
@@ -93,7 +97,7 @@ MEAS_COLS = ['date', 'run_type', 'watch_miles', 'corr_miles', 'elev_gain_ft',
              'n_alt_pts', 'fused',
              'seg_up_ft', 'seg_dn_ft', 'g_up_pct', 'g_dn_pct',
              'dem_gain_ft', 'dem_loss_ft', 'dem_net_ft', 'dem_mean_elev_ft',
-             'dem_n_pts', 'dem_g_gain_pct', 'dem_g_loss_pct']
+             'dem_n_pts', 'dem_g_gain_pct', 'dem_g_loss_pct', 'skip_reason']
 HILL_COLS = ['date', 'act', 'd0', 'd1', 'vert_ft', 'grade_pct', 'kind',
              'lat', 'lon', 'dem_net_ft', 'vetoed']
 SPLIT_COLS = ['date', 'mile', 'pace_s', 'gain_ft', 'loss_ft', 'covered',
@@ -124,19 +128,48 @@ def _flush_cache(cache, prev_size, processed, total, label):
     return n
 
 
-def _load_skips():
-    """{(stage, date): reason} from the sidecar; empty when absent."""
-    if not SKIPS_OUT.exists():
-        return {}
-    df = pd.read_csv(SKIPS_OUT, dtype=str)
-    return {(r['stage'], r['date']): r['reason'] for _, r in df.iterrows()}
+def _parse_skips(em):
+    """{(stage, date): reason} from the skip_reason column ('stage:reason');
+    empty when the column is absent (a pre-memo artifact — the first run with
+    this code rebuilds the memo in one walk)."""
+    skips = {}
+    if 'skip_reason' in em.columns:
+        for r in em[em['skip_reason'].notna()].itertuples():
+            stage, _, reason = str(r.skip_reason).partition(':')
+            skips[(stage, r.date)] = reason
+    # Absorb + retire the short-lived sidecar (Aug 2026, never on GHA) —
+    # before any column check, so a pre-column artifact still gets the memos
+    # without a rebuild walk.
+    if LEGACY_SKIPS_OUT.exists():
+        df = pd.read_csv(LEGACY_SKIPS_OUT, dtype=str)
+        for _, r in df.iterrows():
+            skips.setdefault((r['stage'], r['date']), r['reason'])
+        LEGACY_SKIPS_OUT.unlink()
+        print(f'[elevation] absorbed {len(df)} legacy sidecar memo(s) into '
+              f'the skip_reason column')
+    return skips
 
 
-def _save_skips(skips):
-    rows = [{'stage': s, 'date': d, 'reason': r}
-            for (s, d), r in sorted(skips.items())]
-    pd.DataFrame(rows, columns=['stage', 'date', 'reason']).to_csv(
-        SKIPS_OUT, index=False)
+def _materialize_skips(meas, skips, targets):
+    """Write the memo dict back into the frame: rebuild skip_reason from
+    scratch (stale annotations on kept rows die here), annotate existing rows
+    for dem/fuse stages, and add a stub row (metrics all NaN) for each
+    day-stage memo with no row."""
+    meas['skip_reason'] = pd.Series(pd.NA, index=meas.index, dtype=object)
+    by_date = {d: i for i, d in zip(meas.index, meas['date'])}
+    stubs = []
+    for (stage, d), reason in sorted(skips.items()):
+        i = by_date.get(d)
+        if i is not None:
+            meas.at[i, 'skip_reason'] = f'{stage}:{reason}'
+        elif stage == 'day':
+            rt = targets.get(d, (None, None))[0]
+            stubs.append({'date': d, 'run_type': rt,
+                          'skip_reason': f'{stage}:{reason}'})
+    if stubs:
+        meas = pd.concat([meas, pd.DataFrame(stubs, columns=MEAS_COLS)],
+                         ignore_index=True)
+    return meas
 
 
 def _elev_ids_by_date():
@@ -230,7 +263,8 @@ def augment_race_dem(meas, races, ids_by_date, sleep_s, cache, skips,
     need_idx = []
     for i, row in race_rows.iterrows():
         if pd.isna(row.get('dem_gain_ft')):
-            if ('dem', row['date']) not in skips:
+            if (('dem', row['date']) not in skips
+                    and ('day', row['date']) not in skips):
                 need_idx.append(i)
         elif not DEM.race_dem_covered(row.get('dem_n_pts'),
                                       off_by_date.get(row['date'])):
@@ -287,7 +321,8 @@ def augment_run_dem(meas, ids_by_date, run_type, cache, skips, verbose=False):
     if 'run_type' not in meas.columns:
         return 0
     need = meas[(meas['run_type'] == run_type) & meas['dem_gain_ft'].isna()
-                & ~meas['date'].map(lambda d: ('dem', d) in skips)]
+                & ~meas['date'].map(lambda d: ('dem', d) in skips
+                                    or ('day', d) in skips)]
     if need.empty:
         return 0
     print(f"[elevation] DEM {run_type}: {len(need)} days need lookup "
@@ -546,11 +581,10 @@ def main():
              else [args.run_type])
     targets = _targets(daily, races, types)
 
-    # Day-level failure memo (see SKIPS_OUT). --full-regen wipes it (retry
-    # everything); --fetch retries 'slim' days, which fetching can upgrade.
-    skips = {} if args.full_regen else _load_skips()
-    if args.fetch:
-        skips = {k: v for k, v in skips.items() if v != 'slim'}
+    # Day-level failure memo — persisted in the skip_reason column of
+    # elevation_measured.csv (see the note at LEGACY_SKIPS_OUT). --full-regen
+    # wipes it (retry everything); --fetch retries 'slim' days below.
+    skips = {}
 
     # Existing rows to reuse for days already computed (presence by date).
     # SCHEMA GUARD: artifacts written by the pre-Aug-2026 engine lack the
@@ -567,6 +601,15 @@ def main():
             print('[elevation] stale artifact schema (pre two-channel) — '
                   'recomputing all days')
         else:
+            skips = _parse_skips(em)
+            # --fetch retries 'slim' days (fetching can upgrade them): drop
+            # their memos AND their stub rows so they reprocess.
+            fetch_retry = set()
+            if args.fetch:
+                fetch_retry = {d for (s, d), r in skips.items()
+                               if s == 'day' and r == 'slim'}
+                skips = {k: v for k, v in skips.items()
+                         if k[1] not in fetch_retry}
             # Corr-staleness heal: a kept day whose stored corrected distance
             # no longer matches the current (pinned) calibration is re-derived
             # in full. Empty on ordinary runs; fires once per calibration
@@ -598,7 +641,7 @@ def main():
                 print(f'[elevation] fusion heal: {len(refuse)} pure-baro '
                       f'day(s) now have DEM point coverage — re-deriving '
                       f'their fused substrate')
-            stale |= refuse
+            stale |= refuse | fetch_retry
             done = set(em['date']) - stale
             meas_keep = [r for r in em.to_dict('records')
                          if r['date'] not in stale]
@@ -739,13 +782,13 @@ def main():
                 skips[('fuse', d)] = 'profile-thin'
             else:
                 skips.pop(('fuse', d), None)
-    _save_skips(skips)
     if args.full_regen and len(meas):
         n_clr = regate_dem(meas, ids_by_date)
         if n_clr:
             print(f"[elevation] DEM re-gate: cleared {n_clr} GPS-corrupt "
                   f"long/recovery days (fall back to barometric)")
     if len(meas):
+        meas = _materialize_skips(meas, skips, targets)
         meas = meas.sort_values('date').reset_index(drop=True)
         meas.to_csv(MEAS_OUT, index=False)
     if len(splits):

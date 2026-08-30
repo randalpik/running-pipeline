@@ -95,6 +95,8 @@ def _upgrade_slim_runs(client, details_dir: Path):
         sport = (rec.get("summary") or {}).get("sportType")
         if sport not in (M.SPORT_RUN, M.SPORT_TRAIL_RUN, M.SPORT_TRACK_RUN):
             continue                              # indoor etc. — slim is correct
+        print(f"[coros-sync] upgrading slim record {p.stem} to rich "
+              f"(#{upgraded + 1})…", flush=True)
         new = rich_detail(client.activity_detail(p.stem, sport)) or rec
         if "freq" in new:
             p.write_text(json.dumps(new))
@@ -143,12 +145,21 @@ def sync_current_log(*, email, password, region, current_log_path, details_dir,
             from_day = start_day                   # inclusive: re-list boundary day
         client = CorosClient(email, password, region=region,
                              token_cache=token_cache)
+        # Announce work BEFORE doing it: this loop is otherwise silent until
+        # done, so a cold cache (or a slow Coros API) looks like a hang from
+        # the outside — CI watched it for minutes with no output (Aug 2026).
+        print(f"[coros-sync] listing activities from "
+              f"{from_day or 'beginning'}…", flush=True)
         fetched = 0
         for item in client.iter_activities(from_day=from_day):
             if item.get("sportType") not in M.RUN_SPORTS:
                 continue
             label = str(item.get("labelId"))
             had = (details_dir / f"{label}.json").exists()
+            if not had:
+                print(f"[coros-sync] fetching detail {label} "
+                      f"({item.get('date', '?')}, #{fetched + 1})…",
+                      flush=True)
             _cache_detail(client, item, details_dir)
             fetched += 0 if had else 1
         print(f"[coros-sync] listed from {from_day or 'beginning'}: "
