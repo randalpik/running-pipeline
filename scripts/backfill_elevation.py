@@ -73,6 +73,20 @@ ACTIVITIES = DATA_DIR / 'watch_activities.csv'
 MEAS_OUT = DATA_DIR / 'elevation_measured.csv'
 SPLITS_OUT = DATA_DIR / 'elevation_splits.csv'
 HILLS_OUT = DATA_DIR / 'elevation_hills.csv'
+# Day-level failure memo: days that were attempted and legitimately produced
+# nothing (no rich details, watch-invalid, measurement/DEM gated) — without it
+# they are indistinguishable from "never tried" and re-walk on every run
+# (~150 days/run by Aug 2026, growing). stage: 'day' (baro-layer row) or
+# 'dem' (DEM augment). Entries clear when the day later succeeds, when
+# --fetch retries 'slim' days, or wholesale under --full-regen.
+SKIPS_OUT = DATA_DIR / 'elevation_skips.csv'
+
+# A kept day whose corrected distance no longer matches the current
+# calibration by more than this is re-derived in full (row + splits + hills).
+# With the calibration pinned behind long_runs' adoption deadband this set is
+# empty on every ordinary run; it fires once per adoption (≤ ~1/year) and
+# heals exactly the corrected days, replacing the old fit-run --full-regen.
+CORR_STALE_MI = 0.02
 
 MEAS_COLS = ['date', 'run_type', 'watch_miles', 'corr_miles', 'elev_gain_ft',
              'elev_loss_ft', 'minetti_factor', 'g_gain_pct', 'g_loss_pct',
@@ -108,6 +122,21 @@ def _flush_cache(cache, prev_size, processed, total, label):
           f"(+{n - prev_size:,} fetched) — {processed}/{total} "
           f"{label} days done", flush=True)
     return n
+
+
+def _load_skips():
+    """{(stage, date): reason} from the sidecar; empty when absent."""
+    if not SKIPS_OUT.exists():
+        return {}
+    df = pd.read_csv(SKIPS_OUT, dtype=str)
+    return {(r['stage'], r['date']): r['reason'] for _, r in df.iterrows()}
+
+
+def _save_skips(skips):
+    rows = [{'stage': s, 'date': d, 'reason': r}
+            for (s, d), r in sorted(skips.items())]
+    pd.DataFrame(rows, columns=['stage', 'date', 'reason']).to_csv(
+        SKIPS_OUT, index=False)
 
 
 def _elev_ids_by_date():
@@ -180,14 +209,17 @@ def _race_rec(recs, off_m):
     return best
 
 
-def augment_race_dem(meas, races, ids_by_date, sleep_s, cache, verbose=False):
+def augment_race_dem(meas, races, ids_by_date, sleep_s, cache, skips,
+                     verbose=False):
     """Fill DEM gain/loss/net/mean for race rows from the GPS track (races-only;
     the watch's barometric net is per-race noise — see dem_elevation.py).
     Rows missing dem_gain_ft are computed, and rows whose stored point count
     fails the coverage guard (dem_n_pts far below official_dist / SAMPLE_M —
     the measurement covered the wrong segment, e.g. the pre-fix picker
     measuring a warmup) are cleared and re-measured, so a bad row heals on the
-    next run instead of freezing. Returns the count newly computed."""
+    next run instead of freezing. Days that legitimately yield no DEM are
+    memoized in ``skips`` (stage 'dem') instead of retrying forever. Returns
+    the count newly computed."""
     if 'run_type' not in meas.columns:
         return 0
     off_by_date = {r['date'].date().isoformat(): float(r['distance_m'])
@@ -198,7 +230,8 @@ def augment_race_dem(meas, races, ids_by_date, sleep_s, cache, verbose=False):
     need_idx = []
     for i, row in race_rows.iterrows():
         if pd.isna(row.get('dem_gain_ft')):
-            need_idx.append(i)
+            if ('dem', row['date']) not in skips:
+                need_idx.append(i)
         elif not DEM.race_dem_covered(row.get('dem_n_pts'),
                                       off_by_date.get(row['date'])):
             for c in dem_cols:          # known-bad: clear so a failed
@@ -218,6 +251,7 @@ def augment_race_dem(meas, races, ids_by_date, sleep_s, cache, verbose=False):
         d = row['date']
         off_m = off_by_date.get(d)
         if off_m is None or d not in ids_by_date:
+            skips[('dem', d)] = 'no-ids'
             continue
         recs = []
         for lid in ids_by_date[d]:
@@ -227,28 +261,33 @@ def augment_race_dem(meas, races, ids_by_date, sleep_s, cache, verbose=False):
                 if rec.get('rich') == 2:
                     recs.append(rec)
         if not recs:
+            skips[('dem', d)] = 'no-rich'
             continue
         res = DEM.measure_race_elevation(recs, off_m, cache, verbose=verbose)
         if res is None:
+            skips[('dem', d)] = 'gated-or-none'
             continue
+        skips.pop(('dem', d), None)
         for k, v in res.items():
             meas.at[i, k] = v
         n += 1
     return n
 
 
-def augment_run_dem(meas, ids_by_date, run_type, cache, verbose=False):
+def augment_run_dem(meas, ids_by_date, run_type, cache, skips, verbose=False):
     """Fill DEM gain/loss/net/mean for ``run_type`` (long/recovery) rows from the
     day's pooled GPS track (see dem_elevation.measure_run_elevation). Training
     runs are loops, so the barometric net carries a phantom morning-drift descent
     that DEM removes — same fix as races, applied to the whole-day run rather than
     a single race activity. GPS-corrupt days (false fix / dead-zone) return no DEM
-    via the track-quality gate and stay on barometric. Idempotent: only rows
-    missing dem_gain_ft are computed, so a re-run is a cheap cache-served top-up.
+    via the track-quality gate and stay on barometric — and are memoized in
+    ``skips`` (stage 'dem'), not retried forever. Idempotent: only rows missing
+    dem_gain_ft with no failure memo are computed, so a re-run is a no-op.
     Returns the count newly computed."""
     if 'run_type' not in meas.columns:
         return 0
-    need = meas[(meas['run_type'] == run_type) & meas['dem_gain_ft'].isna()]
+    need = meas[(meas['run_type'] == run_type) & meas['dem_gain_ft'].isna()
+                & ~meas['date'].map(lambda d: ('dem', d) in skips)]
     if need.empty:
         return 0
     print(f"[elevation] DEM {run_type}: {len(need)} days need lookup "
@@ -261,6 +300,7 @@ def augment_run_dem(meas, ids_by_date, run_type, cache, verbose=False):
                                      run_type)
         d = row['date']
         if d not in ids_by_date:
+            skips[('dem', d)] = 'no-ids'
             continue
         recs = []
         for lid in ids_by_date[d]:
@@ -270,10 +310,13 @@ def augment_run_dem(meas, ids_by_date, run_type, cache, verbose=False):
                 if rec.get('rich') == 2:
                     recs.append(rec)
         if not recs:
+            skips[('dem', d)] = 'no-rich'
             continue
         res = DEM.measure_run_elevation(recs, cache, verbose=verbose)
         if res is None:
+            skips[('dem', d)] = 'gated-or-none'
             continue
+        skips.pop(('dem', d), None)
         for k, v in res.items():
             meas.at[i, k] = v
         n += 1
@@ -282,10 +325,13 @@ def augment_run_dem(meas, ids_by_date, run_type, cache, verbose=False):
 
 def regate_dem(meas, ids_by_date):
     """Clear dem_* on non-race days whose pooled GPS track now fails the
-    quality gates (dem_elevation.track_ok) — chiefly rows filled before the gate
-    existed. The day falls back to barometric in per_run_elevation. Cheap:
-    track_ok is stream arithmetic, no DEM recompute. (Races re-gate through
-    augment_race_dem's gated measurement.) Returns the count cleared."""
+    quality gates (dem_elevation.track_ok) — rows filled before the current
+    gate logic existed. The day falls back to barometric in per_run_elevation.
+    (Races re-gate through augment_race_dem's gated measurement.) Runs only
+    under --full-regen (Aug 2026): a day's track never changes, so re-checking
+    every dem-filled day on every run was a full-corpus JSON walk that could
+    only matter after a gate-logic change — which is exactly when a full regen
+    is warranted anyway. Returns the count cleared."""
     if 'dem_gain_ft' not in meas.columns or 'run_type' not in meas.columns:
         return 0
     cols = ['dem_gain_ft', 'dem_loss_ft', 'dem_net_ft', 'dem_mean_elev_ft',
@@ -500,6 +546,12 @@ def main():
              else [args.run_type])
     targets = _targets(daily, races, types)
 
+    # Day-level failure memo (see SKIPS_OUT). --full-regen wipes it (retry
+    # everything); --fetch retries 'slim' days, which fetching can upgrade.
+    skips = {} if args.full_regen else _load_skips()
+    if args.fetch:
+        skips = {k: v for k, v in skips.items() if v != 'slim'}
+
     # Existing rows to reuse for days already computed (presence by date).
     # SCHEMA GUARD: artifacts written by the pre-Aug-2026 engine lack the
     # fused/hill columns (and the hills artifact entirely); reusing them would
@@ -507,6 +559,7 @@ def main():
     # (the exact failure the first CI run after this lands would hit, since
     # the state cache restores the old files). Stale schema -> recompute all.
     done, meas_keep, split_keep, hill_keep = set(), [], [], []
+    refuse = set()
     if MEAS_OUT.exists() and not args.full_regen:
         em = pd.read_csv(MEAS_OUT, dtype={'date': str})
         _need = {'fused', 'seg_up_ft', 'g_up_pct'}
@@ -514,19 +567,55 @@ def main():
             print('[elevation] stale artifact schema (pre two-channel) — '
                   'recomputing all days')
         else:
-            done = set(em['date'])
-            meas_keep = em.to_dict('records')
+            # Corr-staleness heal: a kept day whose stored corrected distance
+            # no longer matches the current (pinned) calibration is re-derived
+            # in full. Empty on ordinary runs; fires once per calibration
+            # adoption (long_runs' deadband) and replaces the old fit-run
+            # --full-regen for elevation.
+            stale = set()
+            for r in em.itertuples():
+                tgt = targets.get(r.date)
+                if (tgt is not None and tgt[1] and pd.notna(r.corr_miles)
+                        and abs(float(r.corr_miles) - float(tgt[1]))
+                        > CORR_STALE_MI):
+                    stale.add(r.date)
+            if stale:
+                print(f'[elevation] corrected-distance change on '
+                      f'{len(stale)} day(s) (calibration adoption?) — '
+                      f're-deriving them')
+                skips = {k: v for k, v in skips.items() if k[1] not in stale}
+            # Fusion heal: a pure-baro row (fused=0) on a day whose track HAS
+            # a DEM measurement (dem_gain_ft present) predates its own cache
+            # cells — the degraded outcome of a first build whose fetch-first
+            # failed (DEM unreachable), or a pre-fetch-first row. Re-derive:
+            # the profile is now cache-served. A day that STILL can't fuse
+            # (genuinely thin/gappy coverage) is memoized ('fuse') rather
+            # than retried forever; --full-regen clears the memo.
+            refuse = {r.date for r in em.itertuples()
+                      if r.fused == 0 and pd.notna(r.dem_gain_ft)
+                      and ('fuse', r.date) not in skips} - stale
+            if refuse:
+                print(f'[elevation] fusion heal: {len(refuse)} pure-baro '
+                      f'day(s) now have DEM point coverage — re-deriving '
+                      f'their fused substrate')
+            stale |= refuse
+            done = set(em['date']) - stale
+            meas_keep = [r for r in em.to_dict('records')
+                         if r['date'] not in stale]
             if SPLITS_OUT.exists():
                 sp = pd.read_csv(SPLITS_OUT, dtype={'date': str})
-                split_keep = sp.to_dict('records')
+                split_keep = [r for r in sp.to_dict('records')
+                              if r['date'] not in stale]
             hp = pd.read_csv(HILLS_OUT, dtype={'date': str})
-            hill_keep = hp.to_dict('records')
+            hill_keep = [r for r in hp.to_dict('records')
+                         if r['date'] not in stale]
 
-    todo = [d for d in sorted(targets) if d in ids_by_date and d not in done]
+    todo = [d for d in sorted(targets)
+            if d in ids_by_date and d not in done and ('day', d) not in skips]
     if args.limit:
         todo = todo[:args.limit]
     print(f"[elevation] targets={len(targets)} pending={len(todo)} "
-          f"reused={len(done)}")
+          f"reused={len(done)} memoized-skips={len(skips)}")
 
     client = None
     meas_rows, split_rows, hill_rows = [], [], []
@@ -560,11 +649,13 @@ def main():
                     print(f"  {d} fetch fail {lid}: {e}")
         if not recs:
             skipped_slim += 1                 # cached slim, no --fetch
+            skips[('day', d)] = 'slim'
             continue
         lg = logged_miles.get(d)
         if lg and watch_m and not (WATCH_VALID_BAND[0] <= watch_m / lg
                                    <= WATCH_VALID_BAND[1]):
             skipped_invalid += 1
+            skips[('day', d)] = 'watch-invalid'
             continue
         # Race days measure the race activity alone (warmup/cooldown vertical
         # and miles stay out of the race's totals and splits); the validity
@@ -576,12 +667,29 @@ def main():
                 meas_recs = [rrec]
                 meas_watch_m = Activity(rrec).distance_m / 1609.344
         eff_corr = corr_mi if (corr_mi and corr_mi > 0) else meas_watch_m
+        # Fetch-first (Aug 2026): seed the DEM point cache for this day's
+        # tracks BEFORE building the fusion profiles, so a brand-new day
+        # fuses on its own first build instead of landing pure-baro until
+        # the augment stage fetches its cells (activity_dem_profile is
+        # deliberately cache-only). Same total network, reordered — the
+        # augment's later lookups become cache-served. Soft-fails like the
+        # augment (unreachable DEM leaves the day barometric; the fusion
+        # heal above converges it on a later build).
+        for rec in meas_recs:
+            if not DEM.track_ok(rec):
+                continue
+            pts = DEM.track_points(rec)
+            if len(pts) >= 5:
+                _, la, lo = DEM._resample(pts)
+                DEM.dem_elevations(la, lo, cache)
         profiles = [DEM.activity_dem_profile(r, dem_cache)
                     for r in meas_recs]
         res = E.measure_day_elevation(meas_recs, eff_corr, meas_watch_m,
                                       dem_profiles=profiles)
         if res is None:
+            skips[('day', d)] = 'no-measure'
             continue
+        skips.pop(('day', d), None)
         meas_rows.append({'date': d, 'run_type': rt,
                           'watch_miles': round(meas_watch_m, 3),
                           'corr_miles': round(eff_corr, 3),
@@ -597,6 +705,10 @@ def main():
         kk = (eff_corr / meas_watch_m) if meas_watch_m else 1.0
         hill_rows.extend(_geo_hills(d, res, meas_recs, profiles, kk))
         computed += 1
+        # Same resume story as the augment: a killed cold-seed run keeps the
+        # points its fetch-first calls already pulled.
+        if computed % FLUSH_EVERY_DAYS == 0:
+            DEM._save_cache(cache)
 
     meas = pd.DataFrame(meas_keep + meas_rows, columns=MEAS_COLS)
     splits = pd.DataFrame(split_keep + split_rows, columns=SPLIT_COLS)
@@ -606,17 +718,29 @@ def main():
           f"of {len(hills)} ({int((meas['fused'] == 1).sum())} fused days)")
     if 'race' in types and len(meas):
         n_dem = augment_race_dem(meas, races, ids_by_date, args.sleep, cache,
-                                 verbose=args.dem_verbose)
+                                 skips, verbose=args.dem_verbose)
         print(f"[elevation] DEM race-elevation: {n_dem} newly computed "
               f"(GPS-track lookup; barometric net is per-race noise)")
     for rt in RUN_TYPES_ELEV:
         if rt in types and len(meas):
-            n_dem = augment_run_dem(meas, ids_by_date, rt, cache,
+            n_dem = augment_run_dem(meas, ids_by_date, rt, cache, skips,
                                     verbose=args.dem_verbose)
             print(f"[elevation] DEM {rt}-run elevation: {n_dem} newly computed "
                   f"(GPS-track lookup; barometric net is morning-drift phantom)")
     DEM._save_cache(cache)
-    if len(meas):
+    # Fusion-heal outcome: a re-derived day that still couldn't fuse has
+    # genuinely thin cache coverage — memoize so it isn't re-walked forever
+    # (--full-regen clears; a later successful fuse pops it).
+    if refuse and len(meas):
+        fused_by_date = meas.drop_duplicates('date').set_index('date')['fused']
+        for d in refuse:
+            v = fused_by_date.get(d)
+            if v is not None and pd.notna(v) and int(v) == 0:
+                skips[('fuse', d)] = 'profile-thin'
+            else:
+                skips.pop(('fuse', d), None)
+    _save_skips(skips)
+    if args.full_regen and len(meas):
         n_clr = regate_dem(meas, ids_by_date)
         if n_clr:
             print(f"[elevation] DEM re-gate: cleared {n_clr} GPS-corrupt "

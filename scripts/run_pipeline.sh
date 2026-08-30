@@ -121,15 +121,18 @@ if [[ -d data/profiles/coros/details && -f data/bayes_cs_summary.csv ]]; then
   quiet_step "reps"                  python src/coros/reps.py --details-dir data/profiles/coros/details "${watch_regen[@]}"
 fi
 # Elevation enrichment (gain/loss, Minetti grade, per-mile splits). Incremental
-# via the watch_activities index. The barometric path needs no network (the sync
-# caches outdoor runs rich), but the DEM augment looks GPS tracks up against the
-# public DEM API — a warm run is cache-served and instant, the one-time cold seed
-# runs for hours at 1 req/s. corr_miles depends on the distance calibration, so
-# --full-regen on a fit run refreshes it too.
+# via the watch_activities index + day-level failure memo. The barometric path
+# needs no network (the sync caches outdoor runs rich), but the DEM augment
+# looks GPS tracks up against the public DEM API — a warm run is cache-served
+# and instant, the one-time cold seed runs for hours at 1 req/s.
+# NO --full-regen on fit runs (Aug 2026): elevation depends on nothing a CS fit
+# changes (verified byte-equivalent under full regen); the pinned distance
+# calibration is its only soft input, and a calibration ADOPTION self-heals via
+# the corrected-distance staleness check inside backfill_elevation.
 # loud_step (not quiet): during the cold seed its incremental-save progress IS
 # the signal, so stream it live; warm runs print only a few summary lines.
 if [[ -f data/watch_activities.csv ]]; then
-  loud_step "elevation"              python scripts/backfill_elevation.py "${watch_regen[@]}"
+  loud_step "elevation"              python scripts/backfill_elevation.py
 fi
 # Live calibration of the fractional grade engine (k_up / refund curve) from
 # the freshly-written mile splits; consumers read data/elevation_calibration.csv

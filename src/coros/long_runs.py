@@ -96,6 +96,30 @@ CAL_PRUNE_SIGMA = 3.0
 CAL_EXCESS_CAP_MI = 2.0   # |excess| beyond this is data corruption, not signal
 CAL_MIN_N = 50            # below this, don't write a calibration at all
 
+# Adoption deadband (Aug 2026): the stored calibration is PINNED — the live
+# refit replaces it only when the curve has genuinely moved. The curve measures
+# a fixed logging behavior (GPS endpoint settle + corner-cutting); at n≈1250 a
+# single new day moves the stored coefficients ≤1 rounding quantum (measured:
+# median 0.0001 mi intercept / 0.00001 slope per day, ≈+0.24 mi across the
+# whole 29.6k-mi corrected lifetime), so per-build adoption is pure noise that
+# silently re-prices all historical mileage. Expected ordinary drift is ~0.5%
+# of the curve value per year (random-walk, σ√300/n); 5% is ~10x that, so only
+# a real regime change — new watch, firmware (cf. the July 2026 pause-format
+# change), logging-habit shift — can trip it, and ordinary accumulation cannot
+# reach it inside a year. Probed at recovery- and long-run-typical distances.
+CAL_ADOPT_REL = 0.05
+CAL_PROBE_MI = (5.0, 15.0)
+
+
+def calibration_drift(stored, live):
+    """Max relative change of the excess curve across the probe distances —
+    the adoption metric: max_x |Δ(c + m·x)| / (stored c + m·x)."""
+    ds = [abs((live['intercept_mi'] + live['slope'] * x)
+              - (stored['intercept_mi'] + stored['slope'] * x))
+          / abs(stored['intercept_mi'] + stored['slope'] * x)
+          for x in CAL_PROBE_MI]
+    return max(ds)
+
 
 def _freq_points(rec):
     """Scaled (t_s, dist_m) from a rich record, glitch zeros dropped (same
@@ -410,12 +434,29 @@ def main():
     if cal is None:
         print(f'calibration: corpus too small (<{CAL_MIN_N} paved gated days), '
               f'not written')
-    else:
-        cal.to_csv(args.out_calibration, index=False)
-        r = cal.iloc[0]
-        print(f'calibration: excess = {r.intercept_mi:+.3f} + {r.slope:.4f}*mi '
-              f'(n={int(r.n_fit)}, pruned {int(r.n_pruned)}, '
-              f'sigma={r.sigma_mi:.3f}) -> {args.out_calibration}')
+        return
+    r = cal.iloc[0]
+    stored = (pd.read_csv(args.out_calibration).iloc[0]
+              if args.out_calibration.exists() else None)
+    if stored is not None:
+        drift = calibration_drift(stored, r)
+        if drift < CAL_ADOPT_REL:
+            # Pinned: keep the stored curve untouched so historical corrected
+            # mileage never silently drifts (see CAL_ADOPT_REL).
+            print(f'calibration: live drift {drift * 100:.2f}% < '
+                  f'{CAL_ADOPT_REL * 100:.0f}% adoption threshold — pinned '
+                  f'curve kept ({stored.intercept_mi:+.3f} + '
+                  f'{stored.slope:.4f}*mi; live {r.intercept_mi:+.3f} + '
+                  f'{r.slope:.4f}*mi, n={int(r.n_fit)})')
+            return
+        print(f'calibration: live drift {drift * 100:.1f}% >= '
+              f'{CAL_ADOPT_REL * 100:.0f}% — ADOPTING the new curve '
+              f'(regime change?); backfill_elevation will re-derive '
+              f'corr-dependent days')
+    cal.to_csv(args.out_calibration, index=False)
+    print(f'calibration: excess = {r.intercept_mi:+.3f} + {r.slope:.4f}*mi '
+          f'(n={int(r.n_fit)}, pruned {int(r.n_pruned)}, '
+          f'sigma={r.sigma_mi:.3f}) -> {args.out_calibration}')
 
 
 if __name__ == '__main__':

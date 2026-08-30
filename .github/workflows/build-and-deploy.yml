@@ -79,6 +79,7 @@ jobs:
             data/elevation_measured.csv
             data/elevation_splits.csv
             data/elevation_hills.csv
+            data/elevation_skips.csv
             data/altitude_daily.csv
             data/time_daily.csv
             data/long_run_measured.csv
@@ -216,6 +217,7 @@ jobs:
             data/elevation_measured.csv
             data/elevation_splits.csv
             data/elevation_hills.csv
+            data/elevation_skips.csv
             data/altitude_daily.csv
             data/time_daily.csv
             data/long_run_measured.csv
