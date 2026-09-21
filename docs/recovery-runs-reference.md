@@ -331,7 +331,12 @@ evidence.** Each entry below documents the test and rationale.
   still null.
 
 - **Recovery distance** — daily mileage doesn't predict daily pace
-  independently of other factors. β ≈ 0.
+  independently of other factors. β ≈ 0. **Re-tested in depth Sept 2026 with a
+  rolling local leave-one-out estimator** — the null holds on the full corpus
+  (−0.028 ± 0.154) but becomes a small positive (+0.429 ± 0.184) on
+  watch-corrected rows alone, and the `maddy` profile carries a large real effect
+  (+5.10 ± 1.25). See "Run length, chronic load and pauses" under Findings before
+  re-opening this.
 
 - **Hill workouts** (continuous + reps) — sub-noise effect on next-day
   recovery pace. The legs may feel it but the residuals don't show it
@@ -742,6 +747,282 @@ This pattern is worth remembering: **a feature can look meaningful in
 isolation but be a proxy for an unmeasured covariate**. Always test
 in joint OLS, not just bivariate.
 
+### Run length, chronic load and pauses (Sept 2026 investigation)
+
+Prompted by the Sept 2026 trend level: normalized recovery pace sat slower than
+at any point since 2017 while CS held within a few s/mi of its all-time best.
+**Nothing was added to the model.** This section records what was tested, what
+the numbers were, and the framing that should govern any future attempt.
+
+#### The governing frame (read this before re-opening the question)
+
+Max's position, Sept 2026, and the reason this investigation closed rather than
+shipped a term:
+
+> The standing hypothesis is that the slowdown is a combination of consistently
+> longer recovery runs, more quality days and races overall (slower recovery
+> before and after more hard days), and decreased pauses. What blocks
+> quantification is that a large portion of the effect — particularly from
+> pauses — is **mental rather than physiological**. By definition that belongs to
+> "my recovery scheme", which is what the trend line is *capturing*, not a
+> per-run effect to be normalized away. No recovery run's pace is limited by
+> capability over its distance; pace is determined indirectly by fitness, the
+> normalization factors, the current scheme, and non-running physical and mental
+> state.
+
+The design consequence: a factor that varies because the *scheme* changed is not
+a normalization candidate. It is the signal the era trend exists to show. Only
+confounds that vary run-to-run *within* a scheme belong in the cross-sectional
+block. Every candidate below failed on exactly this line — they are scheme-level,
+not run-level.
+
+#### The diagnostic (this part is solid and worth keeping)
+
+Late 2024 (Sep 1 – Dec 31) → summer 2026 (Jun 1 – Aug 28), raw residual +25.5
+s/mi. What the existing normalizers absorbed:
+
+```
+temperature   +2.42     grade       -1.71
+race fatigue  +2.33     footing     +1.70
+time of day   -0.27     altitude    -4.36
+wind          -0.09     ----------------
+                        TOTAL       +0.03
+```
+
+They cancel. The model explains **0.03 of 25.5 s/mi**, and the route channel is a
+−4.4 credit (Max left altitude; per-mile vertical roughly halved). Ruled out
+along the way:
+
+- **Not the heat hinge.** Predicted +2.84 / +4.04 / +5.41 against observed
+  +2.42 / +4.14 / +5.12 in the 22–26 / 26–30 / 30+ °C bins. Well calibrated at
+  the top end.
+- **Not the watch corrections.** They moved the wrong way: +10.5 s/mi of added
+  slowness in late 2024 vs +4.3 in summer 2026.
+- **Not CS drift.** Season-controlled (Jun 1 – Aug 28), CS is flat 2024 → 2026
+  (302.9 → 302.4) while the normalized residual moves +47.4 → +68.3.
+
+Season-controlled summers, normalized residual vs mean recovery distance:
+
+```
+2021 +37.4 / 6.13mi   2022 +37.9 / 5.96   2024 +47.4 / 7.04   2019 +47.5 / 7.39
+2020 +48.7 / 7.76     2023 +54.7 / 8.54   2025 +58.2 / 8.38   2026 +68.3 / 8.32
+```
+
+Sorted by residual, the distance column sorts itself. That co-movement is real
+and is what motivated everything below — and nothing below survived it.
+
+#### Per-run distance — the rolling local leave-one-out estimator
+
+The right tool for "is today's longer run slower", and it did not exist in the
+repo before this. For each run, neighbours = clean recovery runs within ±W days
+with itself excluded; regress (its residual − neighbour mean) on (its distance −
+neighbour mean) or its distance percentile in that set. Both sides local, so a
+trend inside the window cannot pose as a distance effect. Prefer it over block
+fixed effects: 28-day blocks put short runs at a block edge and manufacture
+shape (a spurious U appeared in Q2–Q3 2026 under blocking and vanished here).
+
+Max, ±14d, n=2360, decile means of residual-vs-local:
+
+```
+pct    0-10   10-25   25-50   50-75   75-90   90-100
+       +0.15   -0.68   -0.25   +0.30   +1.07   +0.08
+se      0.60    0.55    0.48    0.50    0.77    1.05
+```
+
+β = **−0.028 ± 0.154** s/mi per mile. Flat at ±7/14/21/28d and in 2023+ alone.
+Top tail cut finer: 90–95 +3.86 ±1.66, 95–99 −0.32 ±1.97, 99–100 −3.75 ±1.67 —
+no tail effect. **Yesterday's** distance is also null (+0.018 ± 0.153), jointly
+with own-distance both stay at zero.
+
+**Caveat that matters (Sept 2026):** restricted to watch-corrected rows — the
+only era with honest per-run distances — raw distance is **+0.429 ± 0.184**
+(t=+2.3) locally and +0.399 ± 0.223 within route×28d. The full-corpus null is
+diluted by pre-watch rows, where logged distance is a route constant and carries
+no genuine per-run variation. So the honest statement is *small but positive in
+the watch era* (~+3 s/mi across a 4→11 mi range), not zero.
+
+#### The maddy contrast — a real per-run effect on another profile
+
+maddy, ±14d, n=103, same estimator, percentile bins:
+`−9.09, −2.82, −3.49, +1.23, +6.33, +12.01`. β = **+5.10 ± 1.25**, and +5.18 /
++5.10 / +5.00 / +5.10 at ±7/14/21/28d — timescale-invariant, which is the
+signature of a genuine effect (Max's grows monotonically with the contrast
+window, the signature of confounding). Within-location +5.45 (t=+4.6); survives
+trimming either tail. Roughly +25 s/mi across a 2→7.5 mi range.
+
+Not a pool-boundary artifact: both profiles' recovery pools span ~0.65× to ~2×
+their own median (Max 6.20 median / 11.20 p99; maddy 3.76 / 7.60), so it is not
+that maddy's long runs are hiding in the recovery pool while Max's are not. The
+plain reading is that 4→11 mi is inside Max's aerobic steady state and the same
+relative range is not inside maddy's.
+
+**A per-profile β is therefore the correct shape if this is ever revisited** —
+it fits ≈0 on Max and ≈+5 on maddy. It was not shipped because a box that is a
+visible no-op on the default profile wasn't worth the knob.
+
+#### Watch-derived profiles: the pace–distance slope is measurement-dependent
+
+The `coros` profile (Max's own days, watch-derived pace) returns **−2.4** s/mi
+per mile — opposite sign, same runner, same days. On 1456 shared days the
+recorded *times* agree (minutes gap mean 0.34, slope 0.000/mi) but the miles do
+not: `coros_miles = −0.203 + 0.9518 × max_miles`. A **fixed ~0.2 mi per-run
+shortfall** amortized over the run predicts −pace·c/D² ≈ −2.0 against −2.45
+observed. The `max` profile's GPS gate and `min(estimate, logged)` clamp suppress
+this; a raw watch profile has no such protection. **Any distance-vs-pace result
+on a watch profile must be checked against a fixed per-run distance offset
+before it is believed** — the bias is negative, so it makes maddy's +5.10 if
+anything conservative.
+
+#### Chronic recovery-run length — works 2019+, zero over the whole history
+
+The strongest candidate found, and the one that failed most instructively.
+56-day trailing mean recovery-run length against the normalized residual
+(era NOT removed): univariate +4.78 (t=+12.1, R²=0.057); with weekly recovery
+volume and year fixed effects **+3.544 (t=+6.7)**. Survives hard-day frequency
+(+3.596, t=+6.3, with `n_hard` at −0.189, t=−0.3 — they correlate only −0.275,
+so they genuinely separate), total volume, and volume by type.
+
+Applied to the whole history it does nothing:
+
+```
+window          corr(trend, length track)   trend SD before -> after
+whole history            +0.002                14.98 -> 15.20
+2016-2018                -0.083                21.15 -> 21.19
+2019+                    +0.758                 8.63 ->  7.01
+```
+
+Zero to three decimals over the full span, and subtracting it makes the
+trendline marginally *worse* on both SD and range. Not a beta-choice artifact —
+the within-year (+3.544) and global univariate (+3.893) betas are close and both
+do nothing. 2016–2018 kills it: the residual falls 54 s/mi across three years at
+flat recovery length (5.6–6.0 mi), and the term has nothing to say about any of
+it. Everything it buys is in 2019+ (19% off SD, 21% off range), i.e. it is a knob
+fitted to the window it was found in.
+
+Two further weaknesses, both standing:
+
+- **Forward placebo loads.** Trailing 56d +3.26 (t=+6.1) vs the *next* 56 days
+  +2.32 (t=+5.1), jointly. A future block should not predict today's pace. The
+  effect is regime-level ("which block am I in"), not a lagged response.
+- **It is algebraically `v_rec / n_rec`** (exact identity). "Longer runs" and
+  "fewer recovery days" are the same coefficient — +3.544 per mile of length is
+  −4.861 per recovery day per week — and `n_rec` is 97.7% determined by
+  `n_days − n_hard`. The data cannot tell the two readings apart.
+
+**Divergence search** (the one test that could break the tie): of 42 quarters,
+only 6 have chronic length departing from its volume-implied value by >0.5 mi
+(2016Q1, 2019Q3, 2020Q3, 2021Q2, 2021Q4, 2023Q3). All six move the residual in
+the same direction as length; corr(len_r, y_r) = +0.407 across all quarters.
+Suggestive, but six episodes, max divergence 1.36 mi, and the two largest are the
+COVID volume collapse and rebuild. Per-day, chronic length and total volume
+correlate **0.789** — the log has essentially never varied one without the other,
+and a deliberate divergence is off the table (Max does not alter training to run
+experiments on the graphs).
+
+#### Chronic volume by type, and hard-day frequency — both null
+
+Weekly volume split by run type, year FE: recovery +0.093 (t=+1.3), long −0.052
+(−0.6), quality +0.088 (+0.8), race +0.262 (+2.3). Only race volume is marginal
+and recent races already carry a beta. **Without** year FE these look large
+(v_long −1.09, v_qual +0.64) but flip sign — era structure, not load. Quality
+volume does not hit harder than recovery volume in this data.
+
+Hard *days* per week: +1.211 (t=+1.8) alone, and −0.189 (t=−0.3) once chronic
+recovery length is in. Tested because between late 2024 and summer 2026 hard days
+went 0.52 → 1.65/week (direct counts: 122 running days / 113 recovery days /
+42.7 rec mi per week / 6.58 mi mean run → 89 / 68 / 44.7 / 8.36; Max ran every
+day in both windows). The frequency change is real and large; it does not
+explain the residual.
+
+#### Pauses and stops — real, correctly signed, too small
+
+The one candidate that came back with the hypothesized sign in the local
+estimator. Stop density collapsed, and it is not a firmware artifact — `stall_s`
+stays ≈0 throughout, so auto-pause is still firing and the stops genuinely are
+not there:
+
+```
+year      2021   2022   2023   2024   2025   2026
+stops/mi  1.35   1.71   0.94   0.40   0.35   0.20
+pause s    263    257    200    110     80     35
+```
+
+Local ±14d, watch-corrected rows: **stops/mi −1.71 ± 0.75** (t=−2.3). Total pause
+*seconds* is null (−0.0018 ± 0.0026): it is the **count** of interruptions that
+carries signal, not their duration — consistent with a catch-your-breath
+mechanism. Within route × 28d block: **−2.39 ± 1.26** (t=−1.9); per route
+mccabe −7.75 (t=−2.7, the route with real day-to-day traffic variation),
+east boulder −2.99 (−1.1), centennial −0.46 (−0.2), lakefront +1.24 (+0.2).
+Within-route spread in stops/mi is only 0.25, hence the weak power.
+
+**Magnitude and timing both rule it out as the explanation.** At β=−2.39 the
+2021→2026 stop decline predicts +2.75 s/mi against an actual +22.24 (~12%), and
++0.47 of the 2024→2026 move. The stop density had already collapsed years before
+the June 2026 move — Boulder city routes 2021–22 ran 1.55 stops/mi, the Chicago
+lakefront era was already 0.27, and the move took it 0.27 → 0.07 (worth +0.48
+s/mi against +9.3 actual across that boundary, n=27 post-move). The mechanism
+fired in 2023–24, not 2026.
+
+Per the governing frame above, this one is squarely a *scheme* effect and partly
+mental, so it belongs in the trend line regardless of its size.
+
+#### Pause-adjusted distance — the long-run algorithm does not apply here
+
+`durability.eroded_deff` **cannot run on recovery days**: its segment store holds
+142 dates, all long-run days, zero of 2633 recovery days, so every recovery date
+falls through to `return d_m`. Run at gate=1 across 1134 watch-corrected recovery
+rows the erosion fraction is **1.000 at mean, p10, p90 and min**. Applying it
+would require building the recovery-side segment store first.
+
+The pause-adjusted distance that *does* exist for recovery is the
+connected-fatigue `d_eff_frac` in `recovery_measured.csv` (same `measure_day`
+machinery). It moves the way the hypothesis predicts — by year 0.803, 0.810,
+0.856, 0.906, 0.929, **0.969**, i.e. from ~20% pause-eroded to ~3% — but it adds
+nothing over raw distance:
+
+```
+regressor                    local ±14d        within route x 28d
+raw distance                 +0.429 ± 0.184    +0.399 ± 0.223
+pause-adjusted (connected)   +0.475 ± 0.210    +0.402 ± 0.249
+adjustment fraction alone    -2.53  ± 4.78     --
+longest unbroken segment     +0.537 ± 0.206    +0.556 ± 0.242
+```
+
+**Why it can't work, and it's a genuine design mismatch:** the connected measure
+is duration-weighted through `RECON_TAU_S`, and `eroded_deff` is explicit that
+"pause LENGTH drives erosion, not count — a 20s stop is ~nil… it can't be gamed
+by resuming and re-pausing." That assumption is correct for its own job (a
+credibility penalty on demonstrated long-run capability *should* be ungameable),
+and it is exactly backwards for easy-run physiology, where the data says count
+carries the signal and duration does not. Don't reach for the long-run pause
+machinery on recovery questions.
+
+`longest_seg_mi` (longest unbroken stretch) is the best distance-family
+regressor in the set and is the stoplight hypothesis restated as a distance — an
+unbroken mile costs more than a punctuated one. Still only a couple of s/mi
+across the range.
+
+#### Correction to the April 2026 volume rejection
+
+The "Volume-based normalizers (any form)" entry above tested 11 volume features
+against the **era-detrended** residual. Era trend is a ±182d smoother, so it had
+already absorbed anything moving on the chronic-load timescale — that test could
+not have found or excluded a scheme-level load effect, and its R² ceiling of
+~0.03 is a statement about per-day noise, not about chronic load. The Sept 2026
+work above tested against the era-**inclusive** residual, which is the right
+target for that question. The conclusion (nothing shippable) is unchanged; the
+reasoning in that entry should not be cited as having settled the chronic case.
+
+#### Outcome
+
+Roughly 19–21 s/mi of the Sept 2026 level remains unattributed to anything the
+model measures. Per the governing frame, that is the expected result rather than
+a gap: the residual is scheme plus non-running state, and the trend line is the
+honest place for it. Max's expectation is that the trend over the following
+months answers the question directly. **Re-open only with a genuine divergence in
+the log** (chronic recovery length moving against volume, or a scheme change that
+isolates one channel), not with another functional form.
+
 ## Open questions / future work
 
 ### Potential additions (low priority)
@@ -764,6 +1045,12 @@ in joint OLS, not just bivariate.
 - Tighter era window (would absorb cross-sectional signal)
 - Linear or hard-cutoff fatigue decay (replaced with exponential —
   empirically better-shaped, no arbitrary cutoff)
+- Per-run or chronic run-length normalizers on the Max profile (Sept 2026 —
+  chronic length is zero over the whole history and per-run is sub-noise; a
+  per-profile β remains the right shape if it is ever revisited for `maddy`)
+- The long-run pause-erosion machinery (`durability.eroded_deff`) on recovery
+  questions — its segment store is long-run-only and it is duration-weighted,
+  which is backwards for easy running (Sept 2026)
 - Rejected sleep features without a concrete new hypothesis or data
   improvement (wind and humidity were re-tested with richer watch data
   and adopted June 2026 — see rejected/adopted list above)
