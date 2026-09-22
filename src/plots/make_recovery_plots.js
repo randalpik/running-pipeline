@@ -26,7 +26,9 @@
   var TREND_TRUNC_MS = 4 * TREND_SIGMA_MS;  // truncate kernel at 4σ
   var TREND_STEP_MS = 1 * 86400000;          // daily step
   var TREND_TWO_SIGSQ = 2 * TREND_SIGMA_MS * TREND_SIGMA_MS;
-  var BASE_OPACITY = 0.6;
+  // Restored on every un-hidden point by update(); comes from Python
+  // (MARKER_OPACITY) so the two can't drift.
+  var BASE_OPACITY = window.__PLOT_MARKER_OPACITY;
 
   function getPlot() { return document.querySelector('.plotly-graph-div'); }
 

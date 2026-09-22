@@ -109,6 +109,41 @@ const FIXTURES: Fixture[] = [
       + '<b>Temp:</b> 12°C<br><i>Sammamish River Trail</i></div>',
   },
   {
+    // Post-colour-by shape (Sept 2026): location line, then distance @ pace,
+    // then the shared hover.context_lines block in canonical colour-by order.
+    // The context block is the widest part — Weekly volume / Altitude are new
+    // rows, and Elevation is now inside it rather than right after the pace.
+    name: 'recovery — colour-by context block, all rows present',
+    html: '<div class="tt-date">2025-07-14</div>'
+      + '<div class="tt-section">'
+      + '<i>Sammamish River Trail, Redmond, WA</i><br>'
+      + '8.6 mi @ 5:43/mi <span style="color:#888">[watch-measured]</span><br>'
+      + '<b>Weekly volume:</b> 66 mi<br>'
+      + '<b>Temp:</b> 12°C<br>'
+      + '<b>Wind:</b> 7 mph<br>'
+      + '<b>Elevation:</b> +392 ft (+1:58) / −391 ft (−1:02)<br>'
+      + '<b>Altitude:</b> 5,430 ft<br>'
+      + '<b>Time of day:</b> morning<br>'
+      + '<b>Recent marathon:</b> 3d ago<br>'
+      + '<b>Conditions:</b> dry<br><b>With:</b> solo</div>',
+  },
+  {
+    // Long Runs gained Wind / Altitude / Weekly volume / Recent race / Time of
+    // day from the same shared builder, and lost its 'Long run' title. The
+    // pause suffix keeps the first line long.
+    name: 'long runs — colour-by context block with pause suffix',
+    html: '<div class="tt-date">2024-09-08</div>'
+      + '<div class="tt-section">'
+      + '<i>Tolt Pipeline Trail, Redmond, WA</i><br>'
+      + '21.0 mi @ 6:49/mi · 10:09 paused<br>'
+      + '<b>Weekly volume:</b> 68 mi<br>'
+      + '<b>Temp:</b> 22°C<br>'
+      + '<b>Wind:</b> 1 mph<br>'
+      + '<b>Elevation:</b> +1193 ft (+5:51) / −1208 ft (−1:23)<br>'
+      + '<b>Time of day:</b> morning<br>'
+      + '<b>Recent race:</b> 9d ago</div>',
+  },
+  {
     name: 'pathological — single unbreakable token',
     html: '<b>Workout</b><br>'
       + 'Supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercali',

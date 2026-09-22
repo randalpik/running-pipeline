@@ -1067,3 +1067,57 @@ isolates one channel), not with another functional form.
   replaced by `FATIGUE_TAU_DAYS` (per-category τ dict) +
   `FATIGUE_HOVER_DAYS` (cosmetic threshold for showing recent-race
   line in tooltip; does not affect the model).
+
+## Plot: colour-by dropdown (Sept 2026)
+
+The Recovery scatter's marker colour is selectable from a sidebar dropdown
+rather than hardwired to temperature. Eight encodings, shared with the Long
+Runs tab and specified once in `src/plotting/color_by.py`: distance, weekly
+volume, temperature, wind, elevation gain, altitude, time of day, recent race.
+**Distance is the default** — the Sept 2026 rolling-LOO re-test put its
+recovery β at ~0 (see "Run length, chronic load and pauses"), but the null is a
+statement about *conditional* predictive power, not about whether the variable
+organises the cloud. It is worth looking at.
+
+Three consequences for this plot specifically:
+
+- **The vertical temperature colorbar is gone.** The colour key is now a
+  horizontal gradient strip at the top of `#norm-filter`. That reclaimed ~45 px
+  of right margin, which went into widening the sidebar 240 → 284 px. The
+  sidebar also gained a `max-height: calc(90vh - 85px)` cap so it clears the
+  legend (parked at paper `y=0.10` in the same margin) on short viewports; the
+  pre-existing layout had only 2 px of clearance at 700 px tall.
+- **`marker.color` is a per-point CSS-string array, not a `coloraxis`.** Time of
+  day can't be expressed as a 1-D colorscale — its gradient anchors are each
+  day's solar times. The hide-filters' per-point `marker.opacity` array is a
+  separate key and is untouched by a colour change.
+- **Temperature is the Misc. Trends ramp verbatim** — `-10 #0E7BAA → 22 #5A9E3D
+  → 40 #C82020`, the log's CF colours darkened ~30%. This tab briefly carried
+  the undarkened originals on the argument that markers have no white trendline
+  over them, but two cheaper levers gave the same legibility without a second
+  temperature palette to keep in sync: marker opacity 0.6 → 0.9
+  (`MARKER_OPACITY`, shipped to the sibling JS via `js_globals` because the
+  hide-filter restyles `marker.opacity` per point and must restore it), and
+  `NO_DATA_GRAY` dropped from `#a0a0a0` to `#555555` so unmeasured points
+  recede toward the background instead of glowing brighter than the data.
+
+### Tooltip
+
+The per-run rows are now built by two shared builders in `src/plotting/hover.py`
+so this tab and Long Runs stay in sync on both content and order:
+
+1. `location_line(r)` — italic route/city (was buried mid-tooltip here).
+2. `long_run_lines(r, show_logged=False, show_elevation=False, source_tag=…)` —
+   the Long Runs `{dist} mi @ {pace}/mi` form, replacing this tab's old
+   `Pace: 7:30/mi  (6.2 mi)`. The `[watch-measured]` / `[corrected route]` tag
+   and its `≥ 1 s/mi` gate are unchanged, passed in as `source_tag`.
+3. `context_lines(r, elev_gate_value=row['contrib_elevation'])` — the seven
+   context rows in the same canonical order as the colour-by dropdown.
+
+Gates that did **not** change: elevation still fires on
+`|contrib_elevation| ≥ 1.0` (recovery rows carry no `grade_cost_s_per_mi`, hence
+the `gate_value` override), and recent race still only shows inside
+`FATIGUE_HOVER_DAYS`. New rows: weekly volume (always) and altitude (≥ 1000 ft,
+which keeps Chicago and the lower Nashville runs from carrying a dead row).
+Provenance/exclusion italics — conditions, partners, outlier — stay below the
+context block.

@@ -100,3 +100,38 @@ Range format: `(155.0 to 162.4)` instead of an en-dash, for readability with neg
 
 - `./output/qualitative_trends.html` (~7.5 MB)
 - 123 plotly traces total (40 envelope strips × 3 subplots + 1 trendline × 3 = 123)
+
+## Gradient primitives are shared (Sept 2026)
+
+`gradient_at`, `gradient_ramp`, `hex_to_rgb`/`lerp_rgb`, the four `SOLAR_*`
+control colours and `solar_ramp_from_anchors` moved out of this module into
+**`src/plotting/gradients.py`**; the canonical-timezone helpers
+(`canonical_coords`, `reproject_watch_to_canonical`, `estimate_binned_time`,
+`_zone`, `_offset_min_at`) moved into **`src/shared/day_clock.py`**. This file
+imports both back, and the extraction was verified byte-identical on
+`qualitative_trends.html` plus the `--panel` pages.
+
+The reason for the move is `src/plotting/color_by.py`: the Recovery and Long
+Runs scatters now offer a colour-by dropdown whose temperature, wind, altitude
+and time-of-day encodings must read exactly as the matching panels here do.
+Their anchor ranges come from `color_by.shared_scales()`, which reproduces the
+data-derived ceilings `build_panels` computes (wind `max(wind_mph)`, altitude
+`1.04 × max(max_elev_ft)`), so the two cannot drift.
+
+Two additions live in `gradients.py` and have no consumer here:
+
+- `css_gradient(anchors)` — a `linear-gradient(...)` for the sidebar legend
+  strip, with stop percentages derived from the anchor **values** (temperature's
+  22 °C stop lands at 64%, not 50%).
+- `EQUINOX_ANCHORS` / `solar_css_gradient()` — an idealized day symmetric about
+  solar noon, used **only** to draw the Time-of-day legend strip. Point colours
+  always use the run's own date and city, so the strip carries qualitative
+  "Dawn"/"Dusk" marks at 25% / 75% rather than clock labels that would be wrong
+  for most of the year.
+
+> **Note:** the sections above this one still describe the three-panel
+> strip-stack version of this plot and are materially out of date (the plot is
+> now a 2-page × 4-panel raster build). The module docstring in
+> `plot_qualitative_trends.py` is the accurate summary. Only "Time panel —
+> canonical location & timezone" and "Weight gap discipline" still match the
+> code.

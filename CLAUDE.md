@@ -150,11 +150,16 @@ src/plotting/
   layout.py axes.py markers.py formatters.py smoothing.py
                        Plotly helpers
   render.py            single rendering authority — render_plot()
-  widgets.py           HTML primitives (sidebar, button_row, …)
+  widgets.py           HTML primitives (sidebar, button_row, select,
+                       gradient_strip, …)
+  gradients.py         anchor gradients + the solar ramp — gradient_at(),
+                       css_gradient(), solar_ramp_from_anchors()
+  color_by.py          the 8 selectable marker encodings (Recovery / Long Runs)
   _scaffold/           shared CSS/JS loaded by every plot
     base.css           dark-theme chrome + .rp-* design system
     cursor_tooltip.js  smart spikeline + smooth/snap tooltip
     overlay_anchor.js  positions overlays below the legend
+    color_by.js        generic colour-by dropdown handler (opt-in)
     shell.css shell.js tab shell — loaded by build_shell.py
 
 src/plots/
@@ -167,7 +172,7 @@ src/plots/
 
 **Python ↔ JS handoff:** plots pass values to their sibling JS via `widgets.js_globals({KEY: value})`, which serializes as `window.__PLOT_<KEY>`. The `.js` file reads those globals at startup. Don't interpolate values into JS source — keep `.js` files static.
 
-**Shared CSS classes (`_scaffold/base.css`):** `.rp-sidebar`, `.rp-sidebar-title`, `.rp-sidebar-sub`, `.rp-sidebar-stats`, `.rp-sidebar-noteworthy`, `.rp-sidebar-divider`, `.rp-detail-row`, `.rp-toggle-bar`, `.rp-btn-row`, `.rp-btn`, `.rp-btn-pill`, `.rp-row`, `.rp-row-meta`, `.rp-table` (`.num` for right-align). Active state is the `is-active` modifier. Use `widgets.*` helpers to compose these — don't hand-write the markup.
+**Shared CSS classes (`_scaffold/base.css`):** `.rp-sidebar`, `.rp-sidebar-title`, `.rp-sidebar-sub`, `.rp-sidebar-stats`, `.rp-sidebar-noteworthy`, `.rp-sidebar-divider`, `.rp-detail-row`, `.rp-toggle-bar`, `.rp-btn-row`, `.rp-btn`, `.rp-btn-pill`, `.rp-row`, `.rp-row-meta`, `.rp-select`, `.rp-gradient` (`-bar`, `-ticks`), `.rp-table` (`.num` for right-align). Active state is the `is-active` modifier. Use `widgets.*` helpers to compose these — don't hand-write the markup.
 
 **When to use plot-specific `.css` vs. extending `_scaffold/base.css`:** generalize into `base.css` if two or more plots would share the rule; keep co-located when the rules are inherently plot-specific (geography's nested legend tree, long-runs' gradient strip).
 
@@ -175,6 +180,48 @@ src/plots/
 - `pr_marker(base_size)` — white-ringed diamonds for PR markers (line=1.5px, ring=base+1 tight hug).
 - `PR_EXCLUDED_SURFACES = {'Downhill'}` — plotted but PR-ineligible.
 - `GAP_BREAK_DAYS` — 90 for the TQ smoother; preserves the 2020–21 labrum gap.
+
+## Colour-by dropdown (Recovery, Long Runs)
+
+Both scatters let you re-encode marker colour from a sidebar dropdown over eight
+variables. `src/plotting/color_by.py` owns the whole spec — order, value
+extraction, gradient, legend ticks — so the two tabs can't drift, and the four
+environmental ones (temperature, wind, altitude, time of day) match the Misc.
+Trends panels via `shared_scales()`.
+
+Canonical order, which drives the dropdown **and** `hover.context_lines`:
+`distance, weekly_volume, temp, wind, elev_gain, altitude, time_of_day,
+recent_race`. Both plots default to **distance**.
+
+- **Colours are `#rrggbb` arrays computed in Python**, not a Plotly
+  `colorscale`/`cmin`/`cmax`. Time of day can't be a 1-D colorscale at all (its
+  anchors are that day's solar times, so 6am is night in December and daylight
+  in June), and one evaluation path means the legend strip and the markers can
+  never disagree. Cost is ~206 KB on Recovery's 5.5 MB page.
+- **Opt-in contract:** ship `window.__PLOT_COLOR_BY`, render
+  `widgets.gradient_strip('cb-strip', …)` + `widgets.select('cb-select', …,
+  data_attr='colorby')`, tag marker traces `meta.color_by = True`, and list
+  `color_by.SCAFFOLD_JS` first in `overlay_js_files`. The handler resolves
+  traces by that meta flag, never by index, and restyles **only**
+  `marker.color` — leaving each plot's own handlers (y, `marker.opacity`) alone.
+- **Scale provenance is deliberate:** distance and elevation gain are *per-plot*
+  (magnitudes that scale with the run type — a shared scale parks every recovery
+  run in the dark third of a ramp topped by a 22-mile long run); weekly volume,
+  wind and altitude are *shared* off the full `daily.csv` calendar (properties of
+  the day, not the run); temperature, time of day and recent race are *fixed*.
+- **Gray means "0 or no data"** — `gradients.NO_DATA_GRAY` (`#555555`), the same
+  value `gradient_at` returns for NaN, so negligible and unknown render alike on
+  the one-sided ramps. It sits deliberately close to the `#1a1a1a` background
+  (contrast 2.3) so those ramps run dark → bright rather than light-gray →
+  mid-colour. It never reaches Misc. Trends — that plot's ramps only ever sample
+  finite y values, verified by instrumenting `gradient_at` for NaN hits (0).
+- **Temperature is the Misc. Trends ramp verbatim** (`-10 #0E7BAA → 22 #5A9E3D →
+  40 #C82020`, the log's CF colours darkened ~30%). Recovery previously carried
+  the undarkened originals; marker opacity 0.9 plus the dimmer gray buys the
+  same legibility without a second temperature palette to keep in sync.
+  `make_recovery_plots.MARKER_OPACITY` ships to the sibling JS via `js_globals`
+  because the hide-filter restyles `marker.opacity` per point and must restore
+  that exact value.
 
 **Plotly numeric-array gotcha:** numeric arrays in figure JSON serialize as `{dtype, bdata, _inputArray}`. `_inputArray` is a `Float64Array`, so `Array.isArray(...)` returns false. Use length checks. PR recompute via the `plotly_restyle` listener; skip when `indices == [prIdx]`.
 

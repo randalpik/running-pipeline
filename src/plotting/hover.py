@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.plotting.formatters import route_paren, sec_to_mss
+from src.plotting.formatters import route_label, route_paren, sec_to_mss
 from src.shared.paths import DATA_DIR
 from src.shared.units import METERS_PER_MILE, FT_PER_M
 
@@ -49,12 +49,15 @@ def tt_title(label: str, display_name=None, city_state=None) -> str:
     return f'<b>{label}</b>{route_paren(display_name, city_state)}'
 
 
-def long_run_lines(r, pause_adjusted: bool = False, show_logged: bool = True) -> list:
-    """Canonical Long Runs distance/pace/paused detail lines.
+def long_run_lines(r, pause_adjusted: bool = False, show_logged: bool = True,
+                   *, show_elevation: bool = True, source_tag: str = '',
+                   strides_pace_only: bool = False) -> list:
+    """Canonical distance/pace/paused detail lines for one session.
 
-    Shared by the Long Runs, Training, and Fitness tabs so all three read
-    identically. Returns a list of HTML line strings (NO title — compose that
-    with :func:`tt_title`). Order is plotted → pause-adjusted → original:
+    Shared by the Long Runs, Training, Fitness and Recovery tabs so all four
+    read identically. Returns a list of HTML line strings (NO title — compose
+    that with :func:`tt_title`, or with a location line). Order is plotted →
+    pause-adjusted → original:
 
     1. ``{dist} mi @ {pace}/mi · {pause} paused`` (corrected distance when a
        watch/route correction applies, else the logged distance).
@@ -66,6 +69,19 @@ def long_run_lines(r, pause_adjusted: bool = False, show_logged: bool = True) ->
        descriptive Long Runs tab) AND a correction moved the distance
        materially (≥ 0.2 mi). Training/Fitness suppress it (the corrected and
        pause-adjusted distances already carry the projection story).
+
+    Keyword-only parameters, all defaulting to the historical behaviour so
+    existing callers are untouched:
+
+    * ``show_elevation`` — keep the trailing :func:`elevation_line`. Tabs that
+      render elevation from :func:`context_lines` instead (Recovery, Long Runs)
+      pass ``False`` so it appears once, in the canonical context order.
+    * ``source_tag`` — HTML appended to the main line flagging where a
+      correction came from (Recovery's ``[watch-measured]`` /
+      ``[corrected route]``). The caller owns the gate.
+    * ``strides_pace_only`` — a corrected PACE exists but the distance is
+      unusable (polluted by both a route over-estimate and the strides), so
+      the main line carries pace alone.
     """
     has_corr = pd.notna(r.get('corr_miles'))
     logged = (f"{float(r['miles']):.1f} mi @ "
@@ -80,13 +96,19 @@ def long_run_lines(r, pause_adjusted: bool = False, show_logged: bool = True) ->
           and float(r.get('pause_erosion_gate') or 0) > 0):
         pause = f" · est. {sec_to_mss(float(r['est_pause_s']))} paused"
 
-    if has_corr and abs(float(r['miles']) - float(r['corr_miles'])) < 0.2:
+    if strides_pace_only:
+        p = r.get('corr_pace_sec_per_mi')
+        if pd.isna(p):
+            p = r['recovery_pace_sec_per_mi']
+        main, alt = f"{sec_to_mss(float(p))}/mi · pace only (strides)", ''
+    elif has_corr and abs(float(r['miles']) - float(r['corr_miles'])) < 0.2:
         main, alt = f"{corr}{pause}", ''
     elif has_corr:
         main = f"{corr}{pause}"
         alt = tt_kv('Logged', logged) if show_logged else ''
     else:
         main, alt = f"{logged}{pause}", ''
+    main = f"{main}{source_tag}"
 
     padj = ''
     if pause_adjusted:
@@ -97,7 +119,92 @@ def long_run_lines(r, pause_adjusted: bool = False, show_logged: bool = True) ->
             if abs(padj_mi - shown_mi) > 0.1:
                 padj = tt_kv('Pause-adjusted distance', f"{padj_mi:.1f} mi")
 
-    return [ln for ln in (main, padj, alt, elevation_line(r)) if ln]
+    elev = elevation_line(r) if show_elevation else ''
+    return [ln for ln in (main, padj, alt, elev) if ln]
+
+
+# --- Shared per-run context block --------------------------------------------
+# The rows below are exactly the variables the Recovery / Long Runs colour-by
+# dropdown offers, in the SAME canonical order (plotting.color_by.ORDER), so
+# whatever you colour by can be read off the tooltip in a predictable place.
+# Position 1 of that order, Distance, is carried by the header's
+# distance @ pace line rather than repeated here.
+#
+# Three values are not columns on the plotted frame; the plot attaches them
+# first (see plotting.color_by): ``_wk_vol`` miles, ``_alt_ft`` feet, and the
+# ``dsq_<cat>`` days-since-race columns.
+
+# Altitude is only worth a row once it is meaningfully above sea level —
+# below this, every flat-city run would carry a dead "Altitude: 120 ft".
+# 1000 ft specifically keeps Chicago and the lower Nashville runs quiet.
+ALTITUDE_MIN_FT = 1000.0
+
+# A race further back than this has decayed out of the fatigue window the
+# recovery model models, so the row stops being informative.
+RECENT_RACE_MAX_DAYS = 14
+
+
+def location_line(r) -> str:
+    """Italic route/city line. The Recovery form, adopted as the header of
+    every per-run tooltip that does not need a session-type title (on the Long
+    Runs tab, every point is a long run)."""
+    label = route_label(r.get('display_name'), r.get('city_state'))
+    if not label:
+        loc = r.get('location')
+        label = str(loc) if pd.notna(loc) and str(loc) != 'nan' else ''
+    return f'<i>{label}</i>' if label else ''
+
+
+def context_lines(r, *, elev_gate_value=None) -> list:
+    """Per-run environment/context rows, in canonical colour-by order.
+
+    Returns a list of HTML line strings. Every row is individually gated, so a
+    run with no watch data contributes only what it actually has.
+
+    ``elev_gate_value`` is forwarded to :func:`elevation_line` (Recovery gates
+    on its modelled ``contrib_elevation`` rather than on
+    ``grade_cost_s_per_mi``); the threshold itself is unchanged either way.
+    """
+    out = []
+
+    # A zero is either genuinely no running in the prior week or (before the
+    # daily log begins) no data at all — see color_by.weekly_volume. Neither
+    # earns a row.
+    wk = r.get('_wk_vol')
+    if wk is not None and pd.notna(wk) and float(wk) > 0:
+        out.append(tt_kv('Weekly volume', f'{float(wk):.0f} mi'))
+
+    if pd.notna(r.get('temp_c')):
+        out.append(tt_kv('Temp', f"{float(r['temp_c']):.0f}°C"))
+
+    if pd.notna(r.get('wind_mph')):
+        out.append(tt_kv('Wind', f"{float(r['wind_mph']):.0f} mph"))
+
+    elev = elevation_line(r, gate_value=elev_gate_value)
+    if elev:
+        out.append(elev)
+
+    alt = r.get('_alt_ft')
+    if alt is not None and pd.notna(alt) and float(alt) >= ALTITUDE_MIN_FT:
+        out.append(tt_kv('Altitude', f'{float(alt):,.0f} ft'))
+
+    tod = r.get('time_of_day')
+    if pd.notna(tod) and str(tod).strip():
+        out.append(tt_kv('Time of day', str(tod).strip().lower()))
+
+    # Most recent race, within the fatigue-decay window only. Marathons get
+    # their own label since they carry a distinct decay constant.
+    most_recent = None  # (label, days_ago)
+    for cat, label in (('marathon', 'Recent marathon'),
+                       ('race_short', 'Recent race')):
+        d = r.get(f'dsq_{cat}')
+        if d is not None and pd.notna(d) and d <= RECENT_RACE_MAX_DAYS:
+            if most_recent is None or d < most_recent[1]:
+                most_recent = (label, int(d))
+    if most_recent is not None:
+        out.append(tt_kv(most_recent[0], f'{most_recent[1]}d ago'))
+
+    return out
 
 
 def signed_mss(sec) -> str:
@@ -107,13 +214,18 @@ def signed_mss(sec) -> str:
     return f"{'−' if sec < 0 else '+'}{s // 60}:{s % 60:02d}"
 
 
-def elevation_line(r, gate_s_per_mi: float = 1.0) -> str:
+def elevation_line(r, gate_s_per_mi: float = 1.0, *, gate_value=None) -> str:
     """Elevation detail line for a run row: the measured GROSS gain and loss,
     each with its decomposed time adjustment — ``+538 ft (+0:42) / −542 ft
     (−0:26)`` — shown only when the grade correction is notable
     (|grade_cost_s_per_mi| >= ``gate_s_per_mi``) so flat runs stay clean.
-    Empty string when the row has no grade columns."""
-    gc = r.get('grade_cost_s_per_mi')
+    Empty string when the row has no grade columns.
+
+    ``gate_value`` substitutes a different quantity for the gate test while
+    keeping the same threshold. Recovery gates on ``contrib_elevation`` — the
+    modelled pace contribution, which is what its panel is actually about —
+    and carries no ``grade_cost_s_per_mi`` column at all."""
+    gc = r.get('grade_cost_s_per_mi') if gate_value is None else gate_value
     if gc is None or pd.isna(gc) or abs(float(gc)) < gate_s_per_mi:
         return ''
     if pd.notna(r.get('d_m')):

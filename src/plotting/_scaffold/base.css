@@ -252,8 +252,8 @@ html.rp-mobile-pending .plotly-graph-div { visibility: hidden; }
    Used by every plot's overlay UI (sidebars, toggle bars, filter rows,
    coefficient tables, stats footers). Authored from the patterns in
    make_race_plots / make_recovery_plots / plot_training_quality /
-   make_world_map. Plot-specific overlays (geography legend tree,
-   long-runs gradient strip) live in sibling .css files instead.
+   make_world_map. Plot-specific overlays (e.g. the geography legend
+   tree) live in sibling .css files instead.
 
    Color hex literals match tokens.py — formal sync via CSS custom
    properties is a follow-up. */
@@ -303,6 +303,64 @@ html.rp-mobile-pending .plotly-graph-div { visibility: hidden; }
 .rp-sidebar-divider {
   border-top: 1px solid #333;
   margin: 8px 0 4px;
+}
+
+/* ----- Colour-by legend strip -----
+   A horizontal gradient bar keying the marker colours, with labels placed
+   at arbitrary fractions along it. Absolute positioning (not a
+   space-between flex row) because Time of day marks "Dawn"/"Dusk" at 25%
+   and 75%; the translateX(-50%) centres each label on its mark, and the
+   two end labels are nudged back inside the bar so they never overhang. */
+.rp-gradient {
+  margin-bottom: 8px;
+}
+.rp-gradient-bar {
+  width: 100%;
+  height: 10px;
+  border-radius: 2px;
+  margin-bottom: 3px;
+}
+.rp-gradient-ticks {
+  position: relative;
+  height: 13px;
+  font-size: 10.5px;
+  color: #aaa;
+}
+.rp-gradient-ticks span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.rp-gradient-ticks span[data-at="0"] {
+  transform: none;
+  left: 0;
+}
+.rp-gradient-ticks span[data-at="1"] {
+  transform: none;
+  left: auto;
+  right: 0;
+}
+
+/* ----- Select (dropdown) -----
+   Mirrors the tab shell's profile switcher (shell.css), which is NOT
+   loaded inside plot iframes — hence the duplicate rather than a shared
+   rule. */
+.rp-select {
+  width: 100%;
+  background: #1a1a1a;
+  color: #eee;
+  border: 1px solid #333;
+  border-radius: 4px;
+  font: inherit;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+.rp-select:hover {
+  border-color: #93f;
+}
+.rp-select:focus {
+  outline: none;
+  border-color: #93f;
 }
 .rp-sidebar-stats {
   margin-top: 10px;

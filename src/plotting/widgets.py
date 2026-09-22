@@ -167,6 +167,78 @@ def search_box(
     )
 
 
+def select(
+    select_id: str,
+    options: Sequence[tuple],
+    *,
+    data_attr: str,
+    selected: Optional[str] = None,
+) -> str:
+    """Dropdown (``<select class="rp-select">``).
+
+    ``options`` entries are ``(value, label)``. ``data_attr`` becomes
+    ``data-<data_attr>`` on the element so JS can route the change event
+    without depending on the id. ``selected`` is the initially-chosen
+    value.
+
+    Used where a pill ``toggle_bar`` would be too wide — eight mutually
+    exclusive choices inside a narrow sidebar.
+    """
+    opts = []
+    for value, label in options:
+        sel = ' selected' if value == selected else ''
+        opts.append(f'  <option value="{value}"{sel}>{label}</option>')
+    body = '\n'.join(opts)
+    return (
+        f'<select id="{select_id}" class="rp-select" data-{data_attr}>\n'
+        f'{body}\n'
+        f'</select>'
+    )
+
+
+def gradient_strip(
+    strip_id: str,
+    *,
+    title_text: str,
+    gradient: str,
+    ticks: Sequence[tuple],
+) -> str:
+    """Horizontal colour-gradient legend with labels along it.
+
+    ``gradient`` is a CSS ``linear-gradient(...)`` value (build it with
+    ``plotting.gradients.css_gradient`` so the stop positions come from
+    the anchor values). ``ticks`` are ``(position_fraction, label)``
+    pairs, 0.0 = left edge, 1.0 = right edge; positions between the ends
+    are what lets the solar strip mark Dawn and Dusk at 25% / 75%.
+
+    The ids on the three parts let a plot's JS re-point all of them when
+    the encoded variable changes.
+    """
+    # End labels carry data-at instead of an inline `left`: the CSS pins them
+    # to the bar's edges, and an inline `left: 100%` would win over that
+    # stylesheet rule (inline beats selector) and push the label off the
+    # sidebar's clipped right edge.
+    marks = []
+    for pos, label in ticks:
+        pos = float(pos)
+        if pos <= 0.0:
+            marks.append(f'<span data-at="0">{label}</span>')
+        elif pos >= 1.0:
+            marks.append(f'<span data-at="1">{label}</span>')
+        else:
+            marks.append(f'<span style="left: {100.0 * pos:.4g}%">{label}</span>')
+    return (
+        f'<div id="{strip_id}" class="rp-gradient">\n'
+        f'  <div class="rp-sidebar-title" id="{strip_id}-title"'
+        f' style="font-size:11px; margin-bottom:5px">{title_text}</div>\n'
+        f'  <div class="rp-gradient-bar" id="{strip_id}-bar"'
+        f' style="background: {gradient}"></div>\n'
+        f'  <div class="rp-gradient-ticks" id="{strip_id}-ticks">'
+        f'{"".join(marks)}</div>\n'
+        f'</div>'
+    )
+
+
 def checkbox_rows(
     items: Iterable[tuple],
     *,

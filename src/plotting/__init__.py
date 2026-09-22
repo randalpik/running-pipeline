@@ -12,6 +12,7 @@ from .formatters import (sec_to_mss, sec_to_mss_full, sec_to_mss_prec,
                          time_decimals, signed_sec, fmt_min,
                          route_label, route_paren)
 from .hover import (tt_row, tt_kv, tt_title, long_run_lines,
+                    context_lines, location_line,
                     hill_measured_lines, hill_rep_measured_lines,
                     hill_cont_lines, hill_rep_lines)
 from .tokens import CAT_LABEL
@@ -37,6 +38,7 @@ __all__ = [
     'signed_sec', 'fmt_min',
     'route_label', 'route_paren',
     'tt_row', 'tt_kv', 'tt_title', 'long_run_lines', 'CAT_LABEL',
+    'context_lines', 'location_line',
     'hill_measured_lines', 'hill_rep_measured_lines',
     'hill_cont_lines', 'hill_rep_lines',
     'thin_yearly_ticks', 'yearly_x_axis_kwargs', 'auto_date_x_axis_kwargs',

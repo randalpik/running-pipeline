@@ -41,15 +41,17 @@ from src.shared.recovery_model import transferable_contributions
 from src.shared.long_run_model import (fit_long_run_model, load_quality_dates,
                                        MIN_COV_N)
 from src.plotting import widgets
+from src.plotting import color_by as cb
 from src.plotting import (render_plot, CursorTooltip, MobileLayout,
                             apply_default_layout,
                             right_margin_for_anchored_box, route_paren,
                             sec_to_mss, GRID, CAT_COLORS,
                             FRONTIER_LINE, TAG_COLORS,
                             rgba, yearly_x_axis_kwargs, nice_time_ticks,
-                            marker_half_px, tt_kv, tt_title, long_run_lines)
+                            marker_half_px, long_run_lines,
+                            context_lines, location_line)
 
-# Width of the distance-gradient box (#lr-gradient); also used to size margin.r.
+# Width of the colour-by box (#lr-gradient); also used to size margin.r.
 # Holds a 160px gradient bar with 10px horizontal padding + 1px border per side.
 GRADIENT_BOX_WIDTH = 182
 
@@ -57,14 +59,6 @@ GRADIENT_BOX_WIDTH = 182
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_HTML = str(OUTPUT_DIR / 'long_runs.html')
 _LR_JS = Path(__file__).resolve().parent / 'plot_long_runs.js'
-
-# Distance gradient: 3-stop blue → purple → magenta for high contrast across
-# the long-run distance range. cmin/cmax are computed from the dataset's
-# miles min/max.
-LR_GRAD_BLUE    = '#3498DB'  # bright blue   (short)
-LR_GRAD_PURPLE  = '#8E44AD'  # vivid purple  (mid)
-LR_GRAD_MAGENTA = '#E91E63'  # magenta       (long)
-LR_GRADIENT = [[0.0, LR_GRAD_BLUE], [0.5, LR_GRAD_PURPLE], [1.0, LR_GRAD_MAGENTA]]
 
 # CS reference curve colors. Marathon = full CS_LINE gold (darker because
 # longer-distance fade pushes pace slower); HM = a lighter, semi-transparent
@@ -120,20 +114,23 @@ LR_TAG_NOTE = {
 
 
 def long_run_hover(r):
-    """Tooltip html for one long run. Title + distance/pace/paused lines come
-    from the shared :func:`hover.long_run_lines` builder (the canonical form the
-    Training and Fitness tabs reuse verbatim). Temp is omitted on log-only days
-    (no watch sync → NaN). The descriptive Long Runs tab omits the pause-adjusted
-    line (model-driven tabs add it)."""
-    title = tt_title('Long run', r.get('display_name'), r.get('city_state'))
+    """Tooltip html for one long run: location, then distance/pace/paused from
+    the shared :func:`hover.long_run_lines` builder (the canonical form the
+    Training and Fitness tabs reuse verbatim), then the shared context block.
+
+    No "Long run" title — every point on this tab is one. Elevation comes from
+    :func:`hover.context_lines` so it sits in canonical colour-by order rather
+    than immediately after the pace line. The descriptive Long Runs tab omits
+    the pause-adjusted line (model-driven tabs add it)."""
     tag = lr_tag(r)
     note = ''
     if tag in LR_TAG_NOTE:
         note = (f'<i style="color:{TAG_COLORS[tag]}">'
                 f'{LR_TAG_NOTE[tag]}</i>')
-    temp = (tt_kv('Temp', f"{r['temp_c']:.0f}°C")
-            if pd.notna(r.get('temp_c')) else '')
-    parts = [title, *long_run_lines(r), temp, note]
+    parts = [location_line(r),
+             *long_run_lines(r, show_elevation=False),
+             *context_lines(r),
+             note]
     return "<br>".join(p for p in parts if p)
 
 
@@ -152,6 +149,12 @@ def main():
     lr = lr[lr['recovery_pace_sec_per_mi'].astype(float) <= 12 * 60].copy()
     if lr.empty:
         raise SystemExit('No long runs to plot.')
+
+    # Colour-by: the eight selectable encodings (plotting/color_by.py). This
+    # tab reads neither daily.csv nor races.csv otherwise — weekly volume and
+    # days-since-race need both, so build_color_by loads them itself.
+    colorby = cb.build_color_by(lr, DATA_DIR)
+    lr = cb.attach_hover_columns(lr, DATA_DIR)
 
     # CS reference curves at HM and marathon. cs_line_at_anchor returns total
     # time in seconds; convert to pace (min/mi) for display.
@@ -239,7 +242,8 @@ def main():
         hoverinfo='skip',
     ))
 
-    # Long-run markers: single trace, continuous purple gradient by distance.
+    # Long-run markers: single trace, colour driven by the colour-by dropdown
+    # (distance on load).
     # y/color are the watch-corrected display (the source of truth); meta.disp_y
     # carries that base so plot_long_runs.js can re-derive the Normalize /
     # Adjust-for-pauses toggles without recomputing. Both toggles ship OFF, so
@@ -251,10 +255,10 @@ def main():
         x=lr['date'], y=init_y,
         mode='markers', name=f'Long runs (n={len(lr)})',
         marker=dict(
-            color=disp_miles.values, size=8,
-            colorscale=LR_GRADIENT,
-            cmin=float(disp_miles.min()), cmax=float(disp_miles.max()),
-            showscale=False,
+            # Per-point CSS colours, not a colorscale: the encoding is
+            # switchable and one of the eight (time of day) has a gradient
+            # whose anchors move per day. See plotting/color_by.py.
+            color=cb.default_colors(colorby), size=8,
             line=dict(color='rgba(255,255,255,0.4)', width=0.5),
             opacity=0.9,
         ),
@@ -262,6 +266,7 @@ def main():
         hoverinfo='skip',
         meta={'role': 'long_runs',
               'snap_eligible': True,
+              'color_by': True,
               'disp_y': disp_base_y},
     ))
 
@@ -337,25 +342,11 @@ def main():
                    showgrid=True, gridcolor=GRID, zeroline=False),
     )
 
-    # ---------- distance-gradient legend overlay ----------
-    # No native colorbar (showscale=False) since the encoding is
-    # "intuitive: bigger = darker"; provide a small textual key by the legend
-    # for explicit distance anchors.
-    miles_min_int = int(np.floor(disp_miles.min()))
-    miles_max_int = int(np.ceil(disp_miles.max()))
-    # Distance gradient strip — three plot-specific bits (gradient colors,
-    # min/max labels) are inlined; the panel chrome comes from .rp-sidebar
-    # via widgets.sidebar(compact=True).
-    gradient_bar = (
-        '<div class="rp-sidebar-title" style="font-size:11px;'
-        'margin-bottom:5px">Distance (mi)</div>'
-        '<div style="width:100%;height:10px;border-radius:2px;'
-        'margin-bottom:3px;background:linear-gradient(to right,'
-        f'{LR_GRAD_BLUE},{LR_GRAD_PURPLE},{LR_GRAD_MAGENTA})"></div>'
-        '<div style="display:flex;justify-content:space-between;'
-        f'font-size:10.5px;color:#aaa"><span>{miles_min_int}</span>'
-        f'<span>{miles_max_int}</span></div>'
-    )
+    # ---------- colour-by legend overlay ----------
+    # No native colorbar: the strip + dropdown below key the encoding, and the
+    # dropdown's per-day solar option can't be expressed as a plotly colorbar
+    # anyway. Panel chrome comes from .rp-sidebar via widgets.sidebar(compact).
+    colorby_ui = cb.color_by_ui(colorby)
     tags_section = ''
     if has_tags:
         tags_section = (
@@ -373,12 +364,13 @@ def main():
         )
     overlay_html = widgets.sidebar(
         'lr-gradient',
-        body=gradient_bar + norm_section + tags_section,
+        body=colorby_ui + norm_section + tags_section,
         compact=True, width_px=GRADIENT_BOX_WIDTH,
     )
+    globals_ = {'COLOR_BY': colorby}
     if norm_adj is not None:
-        overlay_html = widgets.js_globals(
-            {'LR_NORM_ADJ': [round(float(v), 2) for v in norm_adj]}) + '\n' + overlay_html
+        globals_['LR_NORM_ADJ'] = [round(float(v), 2) for v in norm_adj]
+    overlay_html = widgets.js_globals(globals_) + '\n' + overlay_html
 
     # ---------- cursor-tooltip payload ----------
     js_epoch = pd.Timestamp('1970-01-01')
@@ -504,7 +496,7 @@ function buildTooltip(day, isSnap, pointHtml) {
             last_day=last_day,
         ),
         overlay_html=overlay_html,
-        overlay_js_files=[_LR_JS],
+        overlay_js_files=[cb.SCAFFOLD_JS, _LR_JS],
         axis_pad=axis_pad_lr,
         # Mobile: cap the legend at half the plot height (internal scrollbar)
         # so the legend-anchored #lr-gradient box below splits the short

@@ -39,7 +39,7 @@ The repo's truth sources are checked-in CSVs in `data/` (flat — no raw/process
 | `additions` | races not in the daily log (mostly pre-2016) — `date | distance_m | time_sec | surface | location | event`. Also produces stub daily rows for race dates not already in daily |
 | `locations` | `log_location → city_state / display_name / elev_per_mile / altitude / terrain_type` lookup |
 | `hills` | hill-loop metadata used by parser and TQ — `abbrev | location | type | distance_m | elev_gain_up | elev_gain_down | elev_net | elev_per_min` |
-| `coordinates` | `city_state → (latitude, longitude)` overrides on top of the Nominatim cache for the world map. The cache (`data/city_coords.csv`) also stores an IANA `tz` per city — auto-resolved from lat/lon via Open-Meteo at geocode time — which drives the Misc. Trends Time panel's canonical-timezone solar gradient (see `qualitative-trends-reference.md`) |
+| `coordinates` | `city_state → (latitude, longitude)` overrides on top of the Nominatim cache for the world map. The cache (`data/city_coords.csv`) also stores an IANA `tz` per city — auto-resolved from lat/lon via Open-Meteo at geocode time — which drives the Misc. Trends Time panel's canonical-timezone solar gradient AND the Recovery / Long Runs "time of day" colour encoding. Shared owner: `src/shared/day_clock.py` (see `qualitative-trends-reference.md`) |
 | `historical` | `city_state | min_hist | max_hist | log_location` — surfaces remembered-but-unlogged cities on the world map AND date-range-overrides non-race daily rows. Replaces the legacy 2016-17 `infer_2016_2017_location` date branches |
 
 2018+ is converged: across eight years there's only one location change and four surface changes. New work focuses on pre-2018 rough edges and on 2026+ ongoing data.
@@ -89,9 +89,9 @@ The volume / temperature / weight panel: three stacked subplots with moving-aver
 | `cs-model-reference.md` | 1 | PyMC HSGP fit, causal-shortfall race weighting (no exclusion step), why the combined model was rejected, run flow (`bayes_cs_fit.py --tag vN` then `bayes_cs_plot.py --tag vN`, ~8min). |
 | `training-quality-reference.md` | 2 | tau decay (210), distance thresholds, long-run binning, ONE shared CS predictor for quality workouts (per-category offsets removed June 2026 — era effort policy is signal), hill correction (pinned Minetti net cost + fitted trail term, `hill_model.csv`), continuous-fartlek 500/300 reconstruction (float:hard pinned 1.25), watch-measured hill-block time (GPS loop-point detection in `reps.py`, surveyed distance authoritative), long-run watch reconciliation (June 2026 — log/watch distance calibration in `long_runs.py`, watch moving times, Nashville mislogged-route rules pinned at 1.05, **long-run pause-uncertainty erosion** — see its own doc below), track-relative iterative outlier prune, rep/hill scatter weights, smoother bandwidth, ESS gates, gap-break logic. |
 | `long-run-pause-uncertainty-reference.md` | 2 | The long-run pause model: why pauses are treated as **uncertainty** (effective-distance erosion by pause length × lateness, uncapped effort gate, global-P90 pre-watch imputation) rather than physically modelled; the rejected physical attempts (W′-balance redline penalty, crossover gate, longest-segment cap); the monotone WA-conversion fix (PCHIP through 5K/10K/HM/marathon); knobs and the 2020-11-06 hard case. **Read before touching long-run pauses.** |
-| `recovery-runs-reference.md` | 3 | Era window (±182d), OLS features, route inclusion threshold, rejected normalizers (volume, bodyweight). |
+| `recovery-runs-reference.md` | 3 | Era window (±182d), OLS features, route inclusion threshold, rejected normalizers (volume, bodyweight), the Sept 2026 run-length/chronic-load investigation (tested, **nothing shipped** — read its governing frame before re-opening), and the Recovery scatter's colour-by dropdown + consolidated tooltip. |
 | `route-normalization-reference.md` | cross | Locations-sheet schema/dataflow + the **physical elevation engine** (June 2026, watch enrichment): grade cost model (`elevation_cost.py`, terrain×effort refund), threshold+linear altitude curve, pinned footing/altitude betas (`physical_route_betas`, the single source shared by recovery/long/race), per-run features (`per_run_elevation`/`per_run_altitude`), and the race DEM (`dem_elevation.py`). |
-| `qualitative-trends-reference.md` | diagnostic | Window sizes (56/28/56-day MA, 14d min-max with 7d smoothing), gradient-strip rendering, weight gap-align before+after smoothing. |
+| `qualitative-trends-reference.md` | diagnostic | Window sizes (56/28/56-day MA, 14d min-max with 7d smoothing), gradient-strip rendering, weight gap-align before+after smoothing, and the canonical-city timezone rule behind the Time panel's solar gradient (now shared via `src/shared/day_clock.py`). **Sections predating the 2-page × 4-panel raster rebuild are stale — the module docstring is the accurate summary.** |
 | `watch-derived-cache-spec.md` | cross | Data-layer spec for the watch-derived cache (corrected mileage, per-run elevation/altitude, weather) consumed by the elevation engine and the recovery/long-run/race models. |
 
 ## Pre-2016 race data
@@ -125,11 +125,17 @@ src/plotting/
   layout.py axes.py     Plotly helpers
   markers.py formatters.py smoothing.py
   render.py             render_plot() — writes HTML, injects CSS/JS
-  widgets.py            HTML primitives (sidebar, button_row, …)
+  widgets.py            HTML primitives (sidebar, button_row, select,
+                        gradient_strip, …)
+  gradients.py          anchor gradients + the per-day solar ramp
+  color_by.py           the 8 selectable marker encodings (see below)
+  hover.py              shared tooltip line builders
+  raster.py             gradient-raster PNG fill (stdlib-only encoder)
   _scaffold/            shared CSS/JS loaded into every plot
     base.css            dark-theme chrome + .rp-* design system
     cursor_tooltip.js   smart spikeline + smooth/snap tooltip
     overlay_anchor.js   positions overlays below the legend
+    color_by.js         colour-by dropdown handler (opt-in per plot)
     shell.css shell.js  tab shell — loaded by build_shell.py
 
 src/plots/
@@ -137,6 +143,32 @@ src/plots/
   <plot>.js             plot-specific JS (loaded via overlay_js_files)
   <plot>.css            plot-specific CSS (loaded via extra_head_css_files)
 ```
+
+### Colour-by encodings (Recovery, Long Runs)
+
+`src/plotting/color_by.py` owns one spec — order, value extraction, gradient,
+legend ticks — for the eight variables both scatters can colour their markers
+by: `distance, weekly_volume, temp, wind, elev_gain, altitude, time_of_day,
+recent_race`. That single definition is what keeps the two tabs from drifting,
+and it is also the canonical order `hover.context_lines` emits its rows in, so
+whatever you colour by is readable in a predictable place on the tooltip.
+
+The four environmental encodings (temperature, wind, altitude, time of day) are
+the *same gradients the Misc. Trends panels draw*. To make that literally true
+rather than a copied constant, three things moved out of
+`plot_qualitative_trends.py` into shared modules:
+
+| Moved to | What | Why it had to be shared |
+|---|---|---|
+| `src/plotting/gradients.py` | `gradient_at`, `gradient_ramp`, the `SOLAR_*` colours, `solar_ramp_from_anchors` | one definition of "what colour is this value" |
+| `src/shared/day_clock.py` | `canonical_coords`, `reproject_watch_to_canonical`, `estimate_binned_time` | time-of-day needs the canonical-city timezone layer, not just a clock reading — see `qualitative-trends-reference.md` |
+| `color_by.shared_scales()` | the data-derived anchor ceilings (wind `max(wind_mph)`, altitude `1.04 × max(max_elev_ft)`) | a shared *colour* is meaningless without the shared *range* |
+
+Scale provenance is deliberate and differs per variable: **per-plot** for
+distance and elevation gain (magnitudes that scale with the run type being
+plotted), **shared** off the full `daily.csv` calendar for weekly volume, wind
+and altitude (properties of the day, not the run), **fixed** for temperature,
+time of day and recent race.
 
 Two outliers bypass `render_plot()`: `dashboard.py` (text-only stats — no Plotly bundle needed) and `build_shell.py` (the tab shell itself, not a plot). Both still consume the shared scaffold (`_scaffold/base.css`, `_scaffold/shell.{css,js}`, `_TAB_KEY_FORWARDER_JS`).
 

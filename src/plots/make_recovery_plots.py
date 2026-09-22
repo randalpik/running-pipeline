@@ -124,8 +124,10 @@ from src.plotting import (render_plot, CursorTooltip, MobileLayout,
                             CS_LINE, CS_LINE_WIDTH, TREND_LINE, TREND_WIDTH,
                             GRID, gaussian_rolling_trend,
                             yearly_x_axis_kwargs, nice_time_ticks,
-                            nice_time_interval, time_ticks_at_interval, tt_kv)
+                            nice_time_interval, time_ticks_at_interval, tt_kv,
+                            long_run_lines, context_lines, location_line)
 from src.plotting import widgets
+from src.plotting import color_by as cb
 from src.shared.paths import DEBUG_DIR
 from src.shared.cs_projection import load_cs_outputs
 from src.shared.recovery_model import (fit_recovery_model, TEMP_HEAT_ONSET_C,
@@ -149,6 +151,11 @@ DEFAULT_OUT    = str(OUTPUT_DIR)
 # Hover threshold — only show the "Recent race" line if within this many
 # days of the most recent race. Cosmetic only; doesn't affect the model.
 FATIGUE_HOVER_DAYS = 14
+
+# Marker opacity. Shipped to make_recovery_plots.js via js_globals because the
+# hide-filter restyles marker.opacity per point (0 to hide) and has to restore
+# this exact value — two copies of the number would drift.
+MARKER_OPACITY = 0.9
 
 TREND_SMOOTH_SIGMA_DAYS = 28  # Gaussian σ; FWHM ≈ 66d, ~95% mass within ±56d
 
@@ -207,6 +214,13 @@ def main():
     global_mean_residual = res.global_mean_residual
     _epoch = pd.Timestamp('1970-01-01')
 
+    # Colour-by: the eight selectable marker encodings (plotting/color_by.py).
+    # Distance on load — the Sept 2026 re-test put its recovery beta at ~0, but
+    # the qualitative structure is still worth seeing. rec already carries
+    # dsq_* from the fit; attach_hover_columns adds weekly volume + altitude.
+    rec = cb.attach_hover_columns(rec, DATA_DIR, daily=daily, races=races)
+    colorby = cb.build_color_by(rec, DATA_DIR, daily=daily, races=races)
+
     # ---------- build figure ----------
     # Daily CS reference series across the full recovery range, hold-last
     # extrapolated past the summary's end (np.interp) so the CS line and the JS
@@ -224,28 +238,27 @@ def main():
         # smooth-mode "Nearest run" section. The cursor scaffold renders the
         # date and the CS-pace/Trend-pace/CS-residual/Trend-residual rows
         # itself, so this content focuses on what's run-specific.
+        #
+        # Header + context come from the shared builders in plotting/hover.py
+        # so this tab and Long Runs stay in sync on both content and order:
+        # location, then distance @ pace, then the context rows in the same
+        # canonical order as the colour-by dropdown. The provenance/exclusion
+        # italics below are recovery-only and stay at the bottom.
+        #
         # Watch/route corrected pace is the displayed source of truth and the
-        # only pace shown (matching the Long Runs tooltip); corr_pace_sec_per_mi
-        # is the value the FIT used and what the marker is plotted at
-        # (pace_for_fit). The originally-logged pace is recoverable from the raw
-        # logs and is intentionally not shown here. A [watch-measured] /
-        # [corrected route] tag flags the source when the correction meaningfully
-        # differs (>= 1 s/mi); the distance bracket pins many under-logged days
-        # to corr_pace ≈ logged, where no tag is warranted. A corrected day on a
-        # strides route carries pace only (corr_miles NaN — distance polluted by
-        # both the route over-estimate and the strides).
+        # only pace shown; corr_pace_sec_per_mi is the value the FIT used and
+        # what the marker is plotted at (pace_for_fit). The originally-logged
+        # pace is recoverable from the raw logs and is intentionally not shown
+        # (show_logged=False). A [watch-measured] / [corrected route] tag flags
+        # the source when the correction meaningfully differs (>= 1 s/mi); the
+        # distance bracket pins many under-logged days to corr_pace ~ logged,
+        # where no tag is warranted. A corrected day on a strides route carries
+        # pace only (corr_miles NaN — distance polluted by both the route
+        # over-estimate and the strides).
         logged_pace = row['recovery_pace_sec_per_mi']
         corr_p = row.get('corr_pace_sec_per_mi')
         has_corr = pd.notna(corr_p)
-        disp_pace = float(corr_p) if has_corr else logged_pace
         meaningful = has_corr and abs(float(corr_p) - logged_pace) >= 1.0
-
-        if has_corr and pd.notna(row.get('corr_miles')):
-            disp_dist = f"  ({row['corr_miles']:.1f} mi)"
-        elif has_corr and row.get('has_strides'):
-            disp_dist = '  (pace only — strides)'
-        else:
-            disp_dist = f"  ({row['miles']:.1f} mi)"
 
         tag = ''
         if meaningful:
@@ -253,39 +266,18 @@ def main():
                 tag = ' <span style="color:#888">[watch-measured]</span>'
             elif row.get('rec_rule'):
                 tag = ' <span style="color:#888">[corrected route]</span>'
-        parts = [tt_kv('Pace', f"{sec_to_mss(disp_pace)}/mi{disp_dist}{tag}")]
 
-        # Measured vertical, shown when the grade contribution moves this
-        # run's adjusted pace notably (>= 1 s/mi).
-        ce = row.get('contrib_elevation')
-        if pd.notna(ce) and abs(float(ce)) >= 1.0:
-            mi = float(row['corr_miles']) if pd.notna(row.get('corr_miles')) \
-                else float(row['miles'])
-            gain = float(row.get('disp_gain_pm')
-                         or row.get('elev_gain_pm') or 0) * mi
-            loss = float(row.get('disp_loss_pm')
-                         or row.get('elev_loss_pm') or 0) * mi
-            if gain or loss:
-                from src.plotting.hover import signed_mss
-                cs, ds = row.get('climb_s_mi'), row.get('desc_s_mi')
-                if pd.notna(cs) and pd.notna(ds):
-                    parts.append(tt_kv(
-                        'Elevation',
-                        f'+{gain:.0f} ft ({signed_mss(float(cs) * mi)}) / '
-                        f'−{loss:.0f} ft ({signed_mss(float(ds) * mi)})'))
-                else:
-                    parts.append(tt_kv('Elevation',
-                                       f'+{gain:.0f}/−{loss:.0f} ft'))
+        strides_only = bool(has_corr and pd.isna(row.get('corr_miles'))
+                            and row.get('has_strides'))
 
-        if pd.notna(row.get('temp_c')):
-            parts.append(tt_kv('Temp', f"{row['temp_c']:.0f}°C"))
-        if pd.notna(row.get('wind_mph')):
-            parts.append(tt_kv('Wind', f"{row['wind_mph']:.0f} mph"))
-        loc = row.get('location')
-        if pd.notna(loc) and str(loc) != 'nan':
-            # Shared dedup formatter (watch profiles: display_name == city_state).
-            label = route_label(row.get('display_name'), row.get('city_state')) or str(loc)
-            parts.append(f"<i>{label}</i>")
+        parts = [location_line(row)]
+        parts += long_run_lines(row, show_logged=False, show_elevation=False,
+                                source_tag=tag, strides_pace_only=strides_only)
+        # Elevation is gated on the modelled pace contribution rather than on
+        # grade_cost_s_per_mi (which recovery rows don't carry) — the same gate
+        # this tab has always used, now applied inside the shared builder.
+        parts += context_lines(row, elev_gate_value=row.get('contrib_elevation'))
+
         if row.get('is_bad_cond'):
             if row.get('workout_snow_only'):
                 parts.append(f"<i>Snow noted in workout (excluded from fit)</i>")
@@ -302,21 +294,7 @@ def main():
             parts.append(tt_kv('With', row['partners']))
         if row.get('is_outlier_loo'):
             parts.append(f"<i>Outlier (excluded from fit)</i>")
-        # Most recent race within fatigue decay window only
-        most_recent = None  # (cat, days_ago)
-        for cat in QUALITY_CATS:
-            d = row.get(f'dsq_{cat}')
-            if pd.notna(d) and d <= FATIGUE_HOVER_DAYS:
-                if most_recent is None or d < most_recent[1]:
-                    most_recent = (cat, int(d))
-        if most_recent is not None:
-            cat, d = most_recent
-            label = "Recent marathon" if cat == 'marathon' else "Recent race"
-            parts.append(tt_kv(label, f"{d}d ago"))
-        tod_raw = row.get('time_of_day')
-        if pd.notna(tod_raw) and str(tod_raw).strip():
-            parts.append(tt_kv('Time of day', str(tod_raw).strip().lower()))
-        return '<br>'.join(parts)
+        return '<br>'.join(p for p in parts if p)
 
     rec['_hover'] = rec.apply(build_hover, axis=1)
 
@@ -394,9 +372,12 @@ def main():
         mode='markers',
         marker=dict(
             size=4.5,
-            color=rec['temp_c'],
-            coloraxis='coloraxis',
-            opacity=0.6,
+            # Per-point CSS colours driven by the colour-by dropdown. No
+            # coloraxis: one of the eight encodings (time of day) has a
+            # gradient whose anchors move per day, which no 1-D colorscale can
+            # express. See plotting/color_by.py.
+            color=cb.default_colors(colorby),
+            opacity=MARKER_OPACITY,
             line=dict(width=0),
         ),
         customdata=contrib_arr,
@@ -406,6 +387,7 @@ def main():
         showlegend=False,
         meta={'role': 'pace',
               'snap_eligible': True,
+              'color_by': True,
               'raw_y': rec['pace_for_fit'].tolist()},
     ), row=1, col=1)
 
@@ -415,9 +397,8 @@ def main():
         mode='markers',
         marker=dict(
             size=4.5,
-            color=rec['temp_c'],
-            coloraxis='coloraxis',
-            opacity=0.6,
+            color=cb.default_colors(colorby),
+            opacity=MARKER_OPACITY,
             line=dict(width=0),
         ),
         customdata=contrib_arr,
@@ -427,6 +408,7 @@ def main():
         showlegend=False,
         meta={'role': 'residual',
               'snap_eligible': True,
+              'color_by': True,
               'raw_y': rec['residual_raw'].tolist(),
               'date_ms': [int(d.value // 10**6) for d in rec['date']],
               'is_bad_cond': rec['is_bad_cond'].astype(bool).tolist(),
@@ -490,38 +472,22 @@ def main():
         showlegend=True,
         legend=dict(
             x=1.005, xanchor='left',
-            y=0.10, yanchor='top',  # just below the colorbar (which ends at y≈0.15)
+            # Bottom of the right margin. The #norm-filter sidebar overlays the
+            # margin from the top down, so the legend stays low to clear it;
+            # the vertical temperature colorbar that used to occupy the middle
+            # of this margin is gone (the colour key now lives in the sidebar).
+            y=0.10, yanchor='top',
             bgcolor='rgba(26,26,26,0)',
             bordercolor='rgba(0,0,0,0)',
             font=dict(color=FG, size=11),
             itemsizing='constant',
-        ),
-        coloraxis=dict(
-            # Match the Running Log conditional formatting rule (column G temp):
-            # -10°C #00B0F0 (light blue) → 22°C #92D050 (green) → 40°C #FF0000 (red)
-            colorscale=[
-                [0.00, 'rgb(0,176,240)'],     # -10°C
-                [0.64, 'rgb(146,208,80)'],    # 22°C  ((22−(−10))/(40−(−10)) = 0.64)
-                [1.00, 'rgb(255,0,0)'],       # 40°C
-            ],
-            cmin=-10, cmax=40,
-            colorbar=dict(
-                title=dict(text='°C', side='right',
-                            font=dict(color=FG, size=11)),
-                orientation='v', x=1.005, xanchor='left',
-                y=0.45, yanchor='top',  # below the toolbar's typical footprint
-                len=0.30, thickness=10,
-                tickvals=[-10, 0, 10, 22, 30, 40],
-                tickfont=dict(color=FG, size=10),
-                outlinewidth=0,
-            ),
         ),
     )
     fig.update_annotations(font=dict(color=FG, size=14))
 
     # Mobile reshape: stack the two panels (2x1) on a scrollable page instead
     # of squeezing them side by side. Traces untouched — same two axis pairs
-    # in the same fill order. Margins, legend, colorbar and the #norm-filter
+    # in the same fill order. Margins, legend and the #norm-filter
     # rail all stay at their desktop spots on the right — panels are narrower
     # for it, by design, so mobile reads like desktop. The scratch fig omits
     # shared_xaxes on purpose: a purely geometric patch, and the top panel's
@@ -695,7 +661,9 @@ function buildTooltip(day, isSnap, pointHtml) {
             last_day=last_day,
         ),
         overlay_html=(
-            widgets.js_globals({'TREND_SIGMA_DAYS': TREND_SMOOTH_SIGMA_DAYS})
+            widgets.js_globals({'TREND_SIGMA_DAYS': TREND_SMOOTH_SIGMA_DAYS,
+                                'MARKER_OPACITY': MARKER_OPACITY,
+                                'COLOR_BY': colorby})
             + '\n'
             + build_normalization_ui(
                 betas, intercept, r2_detrended, r2_raw, res.n_fit,
@@ -705,9 +673,10 @@ function buildTooltip(day, isSnap, pointHtml) {
                 int(rec['is_pruned'].sum()),
                 qualifying_routes, route_col_map, route_counts,
                 global_mean_residual,
-                available_norm=_available_norm_factors(rec, qualifying_routes))
+                available_norm=_available_norm_factors(rec, qualifying_routes),
+                colorby_ui=cb.color_by_ui(colorby))
         ),
-        overlay_js_files=[_RECOVERY_JS],
+        overlay_js_files=[cb.SCAFFOLD_JS, _RECOVERY_JS],
         axis_pad=axis_pad_rec,
         mobile_layout=mobile_rec,
         extra_head_css=(
@@ -716,6 +685,16 @@ function buildTooltip(day, isSnap, pointHtml) {
             # up with the smart spikeline tooltip. NOT global in
             # base.css since world_map relies on native hover.
             '.hovertext { display: none !important; }\n'
+            # Keep the sidebar clear of the legend on short viewports.
+            # The legend is parked at paper y=0.10 in the right margin, which
+            # the sidebar also overlays; its top lands at ~0.9*vh - 25px
+            # (plot area = vh - 60 title - 40/28 margins, legend ~48px tall).
+            # The panel starts at top:48, so capping its height at
+            # 0.9*vh - 85 leaves a ~12px gap at every height and lets the
+            # shared .rp-sidebar overflow-y take over below ~800px. The
+            # global .rp-sidebar max-height is a flat calc(100vh - 100px),
+            # which is too generous here now that the panel is taller.
+            '#norm-filter { max-height: calc(90vh - 85px); }\n'
             # Mobile: the panel's desktop slot (inline top:48) collides with
             # the subtitle line, which runs the full width on a phone.
             # html.rp-mobile is the single mobile signal (see
@@ -774,7 +753,7 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
                             n_bad_cond, n_partner_runs, n_outliers, n_pruned_unique,
                             qualifying_routes, route_col_map,
                             route_counts, global_mean_residual,
-                            available_norm=None):
+                            available_norm=None, colorby_ui=''):
     """Right-sidebar UI. 4 normalization toggles + 3 visibility toggles.
 
     Normalization order MUST match customdata channel order:
@@ -896,8 +875,12 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
             widgets.button_row([('nf-hide-all', 'All'), ('nf-hide-none', 'None')]),
             filter_rows,
         ]
+    # Colour-by strip + dropdown lead the panel: it keys what you're looking
+    # at, so it reads before the things that change what's plotted.
+    head = (colorby_ui + widgets.divider()) if colorby_ui else ''
     body = (
-        ''.join(parts)
+        head
+        + ''.join(parts)
         + '\n<details><summary>Coefficient details</summary>\n'
         + details_body
         + '\n</details>\n'
@@ -913,7 +896,12 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
         'norm-filter',
         body=body,
         anchor='',
-        width_px=240,
+        # 284, not the historical 240: the vertical temperature colorbar used
+        # to occupy ~45px of right margin immediately left of this box, and
+        # the colour key now lives inside the box instead. margin.r is
+        # unchanged, so the reclaimed width goes straight to the panel — which
+        # is where it was tightest.
+        width_px=284,
         top_px=48,
         right_px=12,
     )
