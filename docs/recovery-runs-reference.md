@@ -1101,6 +1101,37 @@ Three consequences for this plot specifically:
   `NO_DATA_GRAY` dropped from `#a0a0a0` to `#555555` so unmeasured points
   recede toward the background instead of glowing brighter than the data.
 
+### Adding the dropdown to a third plot
+
+`src/plotting/color_by.py` owns the whole spec — order, value extraction,
+gradient, legend ticks — so Recovery and Long Runs cannot drift, and the four
+environmental encodings match the Misc. Trends panels via `shared_scales()`.
+The canonical order drives the dropdown **and** `hover.context_lines`:
+`distance, weekly_volume, temp, wind, elev_gain, altitude, time_of_day,
+recent_race`. Both plots default to **distance**.
+
+The contract is opt-in. A plot joins by shipping `window.__PLOT_COLOR_BY`,
+rendering `widgets.gradient_strip('cb-strip', …)` plus
+`widgets.select('cb-select', …, data_attr='colorby')`, tagging its marker
+traces `meta.color_by = True`, and listing `color_by.SCAFFOLD_JS` first in
+`overlay_js_files`. The handler resolves traces by that meta flag, never by
+index, and restyles **only** `marker.color` — leaving each plot's own
+handlers (y, `marker.opacity`) alone.
+
+**Scale provenance is deliberate.** Distance and elevation gain are
+*per-plot*: they scale with the run type, and a shared scale would park every
+recovery run in the dark third of a ramp topped by a 22-mile long run. Weekly
+volume, wind and altitude are *shared*, computed off the full `daily.csv`
+calendar, because they are properties of the day rather than the run.
+Temperature, time of day and recent race are *fixed*.
+
+**Gray means "0 or no data"** — `gradients.NO_DATA_GRAY` (`#555555`), the same
+value `gradient_at` returns for NaN, so negligible and unknown render alike on
+the one-sided ramps. It sits deliberately close to the `#1a1a1a` background
+(contrast 2.3) so those ramps read dark → bright rather than light-gray →
+mid-colour. It never reaches Misc. Trends: that plot's ramps only ever sample
+finite y values, verified by instrumenting `gradient_at` for NaN hits (0).
+
 ### Tooltip
 
 The per-run rows are now built by two shared builders in `src/plotting/hover.py`

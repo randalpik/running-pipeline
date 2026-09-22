@@ -1,8 +1,22 @@
 # CLAUDE.md
 
-Operational guidance for Claude Code working in this repo. For project-level context — what each reference doc covers, how the analysis layers fit together, where the data comes from — see `docs/ARCHITECTURE.md`.
+Operational guidance for Claude Code working in this repo. For project-level context — how the analysis layers fit together, where the data comes from — see `docs/ARCHITECTURE.md`.
 
 This is a personal running-data pipeline: parsers and transformations turning daily training logs into analysis-ready CSVs and HTML plots. Owner: Max.
+
+**Feature detail belongs in `docs/`, not in this file.** This file is read at the start of every session regardless of the task; a reference doc is read when you are working on that feature. If you are about to add more than a few lines here about one plot, model or subsystem, put it in that feature's doc and leave a pointer. Read the relevant doc *before* touching its area:
+
+| doc | read before touching |
+|---|---|
+| `cs-model-reference.md` | the Bayesian CS fit |
+| `training-quality-reference.md` | TQ gates, tau decay, hill/fartlek corrections |
+| `long-run-pause-uncertainty-reference.md` | long-run pauses |
+| `recovery-runs-reference.md` | the recovery model, its colour-by dropdown, its tooltip |
+| `route-normalization-reference.md` | the locations sheet, the elevation/grade engine |
+| `qualitative-trends-reference.md` | Misc. Trends panels |
+| `location-colour-reference.md` | location-group colours (Locations, World Map) |
+| `watch-derived-cache-spec.md` | the watch-derived cache |
+
 
 > **People — pronouns (non-negotiable):** **Maddy uses they/them.** Maddy is Max's partner and the second dashboard runner (the `maddy` profile).
 >
@@ -155,6 +169,8 @@ src/plotting/
   gradients.py         anchor gradients + the solar ramp — gradient_at(),
                        css_gradient(), solar_ramp_from_anchors()
   color_by.py          the 8 selectable marker encodings (Recovery / Long Runs)
+  location_palette.py  location-group colours (Locations + World Map) —
+                       derived, never hand-picked; see below
   _scaffold/           shared CSS/JS loaded by every plot
     base.css           dark-theme chrome + .rp-* design system
     cursor_tooltip.js  smart spikeline + smooth/snap tooltip
@@ -181,53 +197,17 @@ src/plots/
 - `PR_EXCLUDED_SURFACES = {'Downhill'}` — plotted but PR-ineligible.
 - `GAP_BREAK_DAYS` — 90 for the TQ smoother; preserves the 2020–21 labrum gap.
 
-## Colour-by dropdown (Recovery, Long Runs)
-
-Both scatters let you re-encode marker colour from a sidebar dropdown over eight
-variables. `src/plotting/color_by.py` owns the whole spec — order, value
-extraction, gradient, legend ticks — so the two tabs can't drift, and the four
-environmental ones (temperature, wind, altitude, time of day) match the Misc.
-Trends panels via `shared_scales()`.
-
-Canonical order, which drives the dropdown **and** `hover.context_lines`:
-`distance, weekly_volume, temp, wind, elev_gain, altitude, time_of_day,
-recent_race`. Both plots default to **distance**.
-
-- **Colours are `#rrggbb` arrays computed in Python**, not a Plotly
-  `colorscale`/`cmin`/`cmax`. Time of day can't be a 1-D colorscale at all (its
-  anchors are that day's solar times, so 6am is night in December and daylight
-  in June), and one evaluation path means the legend strip and the markers can
-  never disagree. Cost is ~206 KB on Recovery's 5.5 MB page.
-- **Opt-in contract:** ship `window.__PLOT_COLOR_BY`, render
-  `widgets.gradient_strip('cb-strip', …)` + `widgets.select('cb-select', …,
-  data_attr='colorby')`, tag marker traces `meta.color_by = True`, and list
-  `color_by.SCAFFOLD_JS` first in `overlay_js_files`. The handler resolves
-  traces by that meta flag, never by index, and restyles **only**
-  `marker.color` — leaving each plot's own handlers (y, `marker.opacity`) alone.
-- **Scale provenance is deliberate:** distance and elevation gain are *per-plot*
-  (magnitudes that scale with the run type — a shared scale parks every recovery
-  run in the dark third of a ramp topped by a 22-mile long run); weekly volume,
-  wind and altitude are *shared* off the full `daily.csv` calendar (properties of
-  the day, not the run); temperature, time of day and recent race are *fixed*.
-- **Gray means "0 or no data"** — `gradients.NO_DATA_GRAY` (`#555555`), the same
-  value `gradient_at` returns for NaN, so negligible and unknown render alike on
-  the one-sided ramps. It sits deliberately close to the `#1a1a1a` background
-  (contrast 2.3) so those ramps run dark → bright rather than light-gray →
-  mid-colour. It never reaches Misc. Trends — that plot's ramps only ever sample
-  finite y values, verified by instrumenting `gradient_at` for NaN hits (0).
-- **Temperature is the Misc. Trends ramp verbatim** (`-10 #0E7BAA → 22 #5A9E3D →
-  40 #C82020`, the log's CF colours darkened ~30%). Recovery previously carried
-  the undarkened originals; marker opacity 0.9 plus the dimmer gray buys the
-  same legibility without a second temperature palette to keep in sync.
-  `make_recovery_plots.MARKER_OPACITY` ships to the sibling JS via `js_globals`
-  because the hide-filter restyles `marker.opacity` per point and must restore
-  that exact value.
+**Colour has two owners, both documented elsewhere.** Categorical location
+colours (Locations, World Map) → `docs/location-colour-reference.md`. The
+selectable marker encodings (Recovery, Long Runs) → the colour-by section of
+`docs/recovery-runs-reference.md`. Don't restate either here.
 
 **Plotly numeric-array gotcha:** numeric arrays in figure JSON serialize as `{dtype, bdata, _inputArray}`. `_inputArray` is a `Float64Array`, so `Array.isArray(...)` returns false. Use length checks. PR recompute via the `plotly_restyle` listener; skip when `indices == [prIdx]`.
 
 **Plotly hover suppression:** plots with `cursor_tooltip` should set `hoverinfo='skip'` on every trace so Plotly's native hover label never renders. If a plot has `hoverlabel=` on any trace (e.g. recovery), pair it with `extra_head_css='.hovertext { display: none !important; }'`. The rule is **not** in `base.css` because `make_world_map.py` relies on Plotly's native `hovertemplate` hover.
 
 **Tooltip width is content-driven and self-correcting.** `.tt-inner` wraps by default; `cursor_tooltip.js` `measure()` sizes the box to the *actual post-wrap* widest line, so plots never need a `tt-wrap`-style wrapper and the box always hugs its content (no clipped lines, no dead space right of the rows). Label/value pairs stay on one line via `.tt-row` (`white-space: nowrap`). The layout invariants — no clip, box hugs, within min/max — are guarded by `tests/tooltip/` (Playwright): run it after touching tooltip CSS/JS or any hover-builder, and add a fixture for any new tooltip shape.
+
 
 ## Hosting / auth model
 

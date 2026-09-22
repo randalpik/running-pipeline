@@ -9,12 +9,13 @@ miles in any single calendar year (default 26.2 — one marathon's worth).
 A *state* gets a color if either its peak city qualifies, or the cumulative
 state miles in any single year hit the threshold.
 
-Three palette tiers (plus targeted overrides):
-  - ANCHOR states (WA/TN/CO/IL/VA/NY/UK): bold + saturated + medium-dark.
-  - DARK SINGLETON minors: deep, saturated, no need for shading.
-  - STANDARD minors (multi-trace minor states): lighter & less saturated.
-  - STATE_PALETTE_OVERRIDE: per-state explicit (h, l, s) for special cases
-    like MI = royal blue.
+*Which* color it gets is not decided here — src/plotting/location_palette.py
+owns that, and owns it for the World Map too, so the two tabs cannot disagree
+and two profiles cannot give the same place different colors. Each state
+draws from a reserved track of shades: named cities take the darker slots in
+order and the '(other)' bucket always takes the lightest reserved slot, so a
+state gaining a city fills a slot that was already held rather than
+restyling the cities already on screen.
 
 (Other) collapse rule
 ---------------------
@@ -33,7 +34,6 @@ rendered slot width rather than fixed per mode, so it stays consistent
 across modes and zoom levels — see gapForPitch in make_geography_plot.js.
 """
 import argparse
-import colorsys
 import os
 import re
 import sys
@@ -50,6 +50,7 @@ from src.shared.effective_mileage import effective_daily_miles
 from src.plotting import (render_plot, apply_default_layout, GRID,
                           MobileLayout)
 from src.plotting import widgets
+from src.plotting import location_palette
 
 _PLOTS_DIR = Path(__file__).resolve().parent
 _GEO_CSS = _PLOTS_DIR / 'make_geography_plot.css'
@@ -59,50 +60,7 @@ _GEO_JS = _PLOTS_DIR / 'make_geography_plot.js'
 DEFAULT_DAILY = str(DATA_DIR / 'daily.csv')
 DEFAULT_OUT   = str(OUTPUT_DIR)
 
-PEAK_YEAR_THRESHOLD = 26.2
-
-# ---- Palette ----
-ANCHOR_HUES = {
-    'WA': 280,   # purple
-    'TN': 130,   # green
-    'CO':  30,   # orange
-    'IL': 190,   # cyan
-    'VA': 325,   # rose-magenta
-    'NY':  50,   # yellow
-    'UK': 350,   # red
-}
-ANCHOR_BASE_L = 0.42
-ANCHOR_BASE_S = 0.78
-
-# Minor hues (no MI here — see STATE_PALETTE_OVERRIDE).
-MINOR_HUES = {
-    'AB':    165,   # teal-green
-    'LA':    250,   # indigo
-    'MA':     10,   # red-orange (brick)
-    'HI':    110,   # yellow-green
-    'China':   0,   # red
-    'DE':     65,   # gold
-    'FR':    235,   # blue
-    'CH':    215,   # blue (paler)
-    'JP':    300,   # magenta-pink
-}
-
-# Per-state explicit overrides — bypass tier classification entirely.
-# Use for hand-picked colors where tier-based generation doesn't fit.
-STATE_PALETTE_OVERRIDE = {
-    'MI': (220, 0.50, 0.70),   # royal blue (~#265cc4)
-}
-
-DARK_SINGLETON_MINORS = {'AB', 'LA', 'MA', 'China', 'DE', 'CH'}
-DARK_MINOR_L = 0.32
-DARK_MINOR_S = 0.62
-STD_MINOR_L  = 0.55
-STD_MINOR_S  = 0.40
-
-NAMED_LIGHT_TOP_OFFSET   = 0.18
-OTHER_LIGHT_OFFSET_2     = 0.18
-OTHER_LIGHT_OFFSET_3PLUS = 0.30
-OTHER_SAT_FACTOR         = 0.55
+PEAK_YEAR_THRESHOLD = location_palette.QUALIFY_THRESHOLD
 
 GLOBAL_OTHER_LABEL = 'Other'   # was 'Other (travel)'
 GLOBAL_OTHER_KEY   = '__GLOBAL_OTHER__'
@@ -113,16 +71,14 @@ GLOBAL_OTHER_COLOR = '#888888'
 # consistent across both modes and every zoom level.
 
 
-def hsl_to_hex(h_deg, s, l):
-    r, g, b = colorsys.hls_to_rgb(h_deg / 360.0, l, s)
-    return '#{:02x}{:02x}{:02x}'.format(int(r*255), int(g*255), int(b*255))
-
-
 def get_state(city_state):
-    if not isinstance(city_state, str):
-        return None
-    m = re.search(r',\s*([A-Z]{2,3})$', city_state)
-    return m.group(1) if m else city_state.strip()
+    """'Chicago, IL' -> 'IL', 'Osaka, Japan' -> 'JP'.
+
+    Country names are normalized to alpha-2 first, so a watch-sourced
+    profile (which stores 'Osaka, Japan') and a Drive-sourced one (which
+    stores 'Osaka, JP') land on one group, and therefore one color.
+    """
+    return location_palette.group_key(city_state)
 
 
 def split_label_for_singleton(lab):
@@ -144,34 +100,6 @@ def fmt_miles(v):
     if v >= 100:
         return f'{v:,.0f}'
     return f'{v:.1f}'
-
-
-def state_palette_base(state):
-    if state in STATE_PALETTE_OVERRIDE:
-        return STATE_PALETTE_OVERRIDE[state]
-    if state in ANCHOR_HUES:
-        return ANCHOR_HUES[state], ANCHOR_BASE_L, ANCHOR_BASE_S
-    if state in MINOR_HUES:
-        if state in DARK_SINGLETON_MINORS:
-            return MINOR_HUES[state], DARK_MINOR_L, DARK_MINOR_S
-        return MINOR_HUES[state], STD_MINOR_L, STD_MINOR_S
-    return (hash(state) % 360), STD_MINOR_L, STD_MINOR_S
-
-
-def shade_color(state, rank, n_named, is_other, n_total):
-    h, base_l, base_s = state_palette_base(state)
-    if is_other:
-        if n_total == 2:
-            l = base_l + OTHER_LIGHT_OFFSET_2
-        else:
-            l = base_l + OTHER_LIGHT_OFFSET_3PLUS
-        s = base_s * OTHER_SAT_FACTOR
-        return hsl_to_hex(h, max(0.05, min(0.95, s)), max(0.05, min(0.92, l)))
-    if n_named == 1:
-        l = base_l
-    else:
-        l = base_l + rank * (NAMED_LIGHT_TOP_OFFSET / (n_named - 1))
-    return hsl_to_hex(h, base_s, max(0.05, min(0.92, l)))
 
 
 def collapse_singleton_others(label_for):
@@ -279,13 +207,26 @@ def build_categories(df):
         named = sorted([m for m in members if not m.endswith(' (other)')],
                        key=lambda x: -label_total[x])
         has_other = f'{st} (other)' in label_total
-        n_named = len(named)
-        n_total = n_named + (1 if has_other else 0)
+        # Spread the state's traces over the extremes of its reserved
+        # track rather than crowding the dark end: two traces sit 3 steps
+        # apart, not 1. '(other)' always takes the lightest of the chosen
+        # slots, so the residual bucket never reads heavier than a city.
+        n_total = len(named) + (1 if has_other else 0)
+        slots = location_palette.trace_slots(n_total)
+        track = location_palette.shades(st, slots[-1] + 1)
+        if track is None:
+            # Not colored by the shared palette (a non-production profile
+            # can hold a group the canonical union never saw). Gray is the
+            # honest answer; inventing a local color would break the
+            # cross-tab and cross-profile guarantee.
+            print(f'[geography] no palette entry for {st!r}; using gray')
+            for lab in members:
+                label_color[lab] = GLOBAL_OTHER_COLOR
+            continue
         for i, lab in enumerate(named):
-            label_color[lab] = shade_color(st, i, n_named, False, n_total)
+            label_color[lab] = track[slots[i]]
         if has_other:
-            label_color[f'{st} (other)'] = shade_color(
-                st, n_named, n_named, True, n_total)
+            label_color[f'{st} (other)'] = track[slots[-1]]
 
     # Build per-(other) sub-city lists (city, lifetime miles), sorted desc
     other_sublists = {}
@@ -657,6 +598,7 @@ def main():
     p.add_argument('--threshold', type=float, default=PEAK_YEAR_THRESHOLD)
     args = p.parse_args()
     PEAK_YEAR_THRESHOLD = args.threshold
+    location_palette.set_threshold(args.threshold)
 
     df = pd.read_csv(args.daily)
     df['date'] = pd.to_datetime(df['date'])
