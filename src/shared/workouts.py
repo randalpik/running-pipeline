@@ -312,17 +312,20 @@ def _lr_watch_corrections(lr):
                      the honest-log scale (distance = watch through the
                      calibration curve + watch moving time; rule days keep
                      the logged time over the deflated distance)
-      d_eff_m      : pause-aware connected-fatigue effective distance
-                     (watch days only; rule days have no pause structure)
-      watch_miles, watch_moving_s, pause_s, stall_s, n_segs : raw watch
+      lr_pauses_measured : stops come from a complete rich watch record —
+                     every lr_watch day plus days whose record fails only the
+                     distance gates (GPS lock, trail). Drives erosion
+                     (measured vs imputed stops) and the tooltip's `est.`
+      watch_miles, watch_moving_s, stall_s, n_segs : raw watch
                      measurements for hover lines (watch days only)
+      pause_s      : watch-recorded paused time (lr_pauses_measured days)
 
     The logged columns (miles, recovery_pace_sec_per_mi) are never touched —
     what Max logged stays what the plots show by default."""
     lr = lr.copy()
     lr['lr_watch'] = False
     lr['lr_rule'] = False
-    for col in ('corr_miles', 'corr_time_s', 'corr_pace_sec_per_mi', 'd_eff_m',
+    for col in ('corr_miles', 'corr_time_s', 'corr_pace_sec_per_mi',
                 'watch_miles', 'watch_moving_s', 'pause_s', 'stall_s', 'n_segs'):
         lr[col] = np.nan
 
@@ -334,7 +337,13 @@ def _lr_watch_corrections(lr):
         # Missing gps_ok = pre-schema-5 artifact, treated as passing.
         _ok = meas['complete'].astype(bool)
         if 'gps_ok' in meas.columns:
-            _ok &= meas['gps_ok'].fillna(True).astype(bool)
+            gps = meas['gps_ok'].fillna(True).astype(bool)
+            # A late-lock day that ran <= 60 s before its fix and whose loop
+            # closes passes on its own watch distance (long_runs.gps_recovered).
+            # The calibration fit still uses gps_ok alone.
+            if 'gps_recovered' in meas.columns:
+                gps |= meas['gps_recovered'].fillna(False).astype(bool)
+            _ok &= gps
         meas = meas[_ok].set_index('date')
         # Surface gate (Max, June 2026): terrain_type is purely a SURFACE
         # label (paved / mixed / trail). The calibration curve is fit on
@@ -381,11 +390,27 @@ def _lr_watch_corrections(lr):
             lr.loc[hit, 'corr_miles'] = corr_mi
             lr.loc[hit, 'corr_time_s'] = mov_s
             lr.loc[hit, 'corr_pace_sec_per_mi'] = mov_s / corr_mi
-            lr.loc[hit, 'd_eff_m'] = (sub['d_eff_frac'].to_numpy()
-                                      * corr_mi * METERS_PER_MILE)
             for col in ('watch_miles', 'watch_moving_s', 'pause_s',
                         'stall_s', 'n_segs'):
                 lr.loc[hit, col] = sub[col].to_numpy()
+
+    # Pause provenance (Sept 2026): the erosion model needs the watch's STOPS,
+    # not its distance. Stop durations are button-pause events (timer, not
+    # GPS), so a complete rich record prices its stops from the record even
+    # when the distance gates above reject the day — a late GPS lock (Max:
+    # South Lakefront buildings at the start/finish) or a trail route. Those
+    # days keep the logged distance but no longer inherit the P90 imputation
+    # meant for runs with no record. lr_pauses_measured ⊇ lr_watch.
+    lr['lr_pauses_measured'] = lr['lr_watch'].copy()
+    if LR_MEASURED_PATH.exists():
+        allm = pd.read_csv(LR_MEASURED_PATH, parse_dates=['date'])
+        allm = allm[allm['complete'].astype(bool)
+                    & (allm['status'] == 'rich')].set_index('date')
+        pm = lr['date'].isin(allm.index) & ~lr['lr_watch']
+        if pm.any():
+            lr.loc[pm, 'lr_pauses_measured'] = True
+            lr.loc[pm, 'pause_s'] = (allm.loc[lr.loc[pm, 'date'], 'pause_s']
+                                     .to_numpy())
 
     loc = lr['location'].astype(str).str.strip().str.lower()
     for route, start, end, factor, match_miles in MISLOGGED_ROUTES:
@@ -766,36 +791,31 @@ def project_long_runs(cs, epoch):
     decomposable signal).
 
     The projection treats the run AS IF IT WERE A RACE of that distance
-    (Max's contract, June 2026): time is un-biased by the CS fit's
-    long-distance fade — divide by 1 + β_long·log(d/d_thresh) for
-    d > d_thresh, exactly what cs_projection does for HM/marathon races —
-    then projected through the hyperbola. No fitted offset of any kind:
-    the former long-run model intercept (a constant ~+48 subtracted from
-    every run) claimed a long run predicts a faster 5K than a race at the
-    same distance/pace, which is physically indefensible. With β_long the
-    hardest long runs (true race-effort simulations) project at/near CS on
-    their own, and easy ones honestly slow.
+    (Max's contract, June 2026): the flat-/altitude-corrected time is
+    down-converted to a 5K-equivalent through the World Athletics tables
+    (wa_scoring), scored at `lr_demo_m` — the PAUSE-UNCERTAINTY-eroded
+    demonstrated distance (durability.eroded_deff; full rationale in
+    docs/long-run-pause-uncertainty-reference.md). `lr_demo_m` is also what
+    the Training/Fitness tooltips show as "Pause-adjusted distance". No
+    fitted offset of any kind: the former long-run model intercept (a
+    constant ~+48 subtracted from every run) claimed a long run predicts a
+    faster 5K than a race at the same distance/pace, which is physically
+    indefensible.
 
     Watch-enriched and route-rule-corrected rows (see _lr_watch_corrections)
-    feed the projection their corrected distance/time and, for watch days, a
-    pause-aware connected-fatigue D_eff — so p5k_min/raw_resid (and every
-    downstream consumer: the TQ smoother, the dashboard's long-run
-    prediction) are correction-aware. β un-biases at D_eff, the connected-
-    fatigue distance, NOT the full distance: a substantial pause the
-    connected-fatigue model already counts as recovery (d_eff << d_m) is not a
-    full-distance glycogen-depletion effort, so it earns only the smaller fade
-    its connected effort justifies — conservative, and self-consistent with the
-    distance the CP3 inference uses. Short stoplight pauses leave d_eff ~ d_m so
-    they're unaffected. (Prior logic un-biased at the full distance on a
-    glycogen-depletion argument, but that contradicts d_eff treating the same
-    pauses as recovery — it took the generous side of both.) The slice gate
-    stays on LOGGED values:
+    feed the projection their corrected distance/time, so p5k_min/raw_resid
+    (and every downstream consumer: the TQ smoother, the dashboard's
+    long-run prediction) are correction-aware. Watch days erode on their
+    measured stops, every other row on the imputed pre-watch structure. (The
+    connected-fatigue `d_eff_frac` still carried in the watch caches scored
+    long runs before the 2026-06-18 erosion model and is no longer read.)
+    The slice gate stays on LOGGED values:
     the 26.2 ceiling is a logging convention (training marathons are logged
     as exactly 26.2) and corrections never move a run across either bound.
 
     PHYSICAL ROUTE COST (June 2026, watch-stream-enrichment §A): grade,
     off-road footing, and altitude are all removed from the run's TIME
-    *before* the β un-bias and the hyperbola, yielding the flat /
+    *before* the effort gate and the WA conversion, yielding the flat /
     sea-level-equivalent time the run's fitness actually earned. Grade is each
     run's measured per-mile gain/loss (per_run_elevation) priced through the
     shared elevation engine (src/shared/elevation_cost.py); footing and
@@ -893,19 +913,23 @@ def project_long_runs(cs, epoch):
     # rationale in docs/long-run-pause-uncertainty-reference.md).
     from src.shared.wa_scoring import wa_5k_equiv_time, wa_equiv_time_at
     from src.shared.durability import imputed_pause_total_s, eroded_deff
-    is_watch = lr['lr_watch'].to_numpy()
-    # est_pause_s — imputed pause time for the Long Runs tooltip on pre-watch days
-    # (watch days carry the measured `pause_s`); distance-scaled via
+    # Stops are measured wherever a complete rich record exists — including days
+    # whose watch DISTANCE is gated out (see _lr_watch_corrections); only runs
+    # with no record erode on the imputed structure.
+    measured = lr['lr_pauses_measured'].to_numpy()
+    # est_pause_s — imputed pause time for the Long Runs tooltip on days with no
+    # record (measured days carry `pause_s`); distance-scaled via
     # durability.imputed_pause_total_s.
     _est = np.array([imputed_pause_total_s(dm) or np.nan
                      for dm in lr['d_m'].to_numpy(float)])
-    lr['est_pause_s'] = np.where(is_watch, np.nan, _est)
+    lr['est_pause_s'] = np.where(measured, np.nan, _est)
     # ---- 5K-equivalent projection with PAUSE-UNCERTAINTY erosion ----
-    # Effort = CS-predicted race pace at the run's distance ÷ its flat pace; the
-    # per-pause erosion f ramps from 0 (easy) up to LR_EROSION_MAX as effort nears
-    # 1 (run pace approaching race pace). eroded_deff then shrinks the post-pause
-    # tail by (1-f) per stop, so a heavily-paused frontier run loses distance
-    # while the cloud and near-continuous runs are untouched. No hard cap — the
+    # Effort = CS-predicted race pace at the run's distance ÷ its FLAT pace (so
+    # route credits raise effort too); the gate is 0 below LR_EFFORT_E0 and rises
+    # linearly, uncapped, above it. eroded_deff then discounts everything after
+    # a pause of P s at run-fraction L by exp(−gate·LR_EROSION_RATE·P·L), so a
+    # heavily-paused frontier run loses distance while the cloud and
+    # near-continuous runs are untouched. No hard cap — the
     # erosion alone places long runs; how far below the frontier they fall is the
     # model's verdict, not a clamp.
     v_flat = lr['d_m'].to_numpy(float) / t_run_flat.to_numpy(float)
@@ -919,7 +943,7 @@ def project_long_runs(cs, epoch):
     lr['pause_erosion_gate'] = gate
     demo = np.array([eroded_deff(d.strftime('%Y-%m-%d'), dm, gg, LR_EROSION_RATE, bool(wt))
                      for d, dm, gg, wt in zip(
-                         lr['date'], lr['d_m'].to_numpy(float), gate, is_watch)])
+                         lr['date'], lr['d_m'].to_numpy(float), gate, measured)])
     lr['lr_demo_m'] = demo
     t_demo = t_run_flat.to_numpy() * (demo / lr['d_m'].to_numpy(float))  # flat time over demo dist
     lr['t_5k_hyp'] = [wa_5k_equiv_time(float(de), float(t)) for de, t in zip(demo, t_demo)]

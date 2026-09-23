@@ -33,7 +33,8 @@ from src.shared.paths import DATA_DIR
 
 # Bump when the set of derived columns / their derivation changes — forces a
 # full rebuild on the next run (mtimes can't see a code change).
-SCHEMA_VERSION = 5   # 5: gps_lag_s / gps_coverage (late-lock distance gate)
+SCHEMA_VERSION = 6   # 6: gps_prefix_moving_s / gps_loop_excess_m (late-lock recovery)
+                     # 5: gps_lag_s / gps_coverage (late-lock distance gate)
                      # 4: wind_ms -> wind_mph (raw/10 is km/h, displayed in mph)
 
 WATCH_DAILY_COLUMNS = [
@@ -41,7 +42,7 @@ WATCH_DAILY_COLUMNS = [
     "temp_c", "weather_bin", "wind_mph", "humidity_pct", "time_of_day",
     "any_indoor", "watch_miles", "watch_moving_s", "watch_total_s",
     "pause_s", "stall_s", "n_segs", "d_eff_frac", "longest_seg_mi",
-    "gps_lag_s", "gps_coverage",
+    "gps_lag_s", "gps_coverage", "gps_prefix_moving_s", "gps_loop_excess_m",
     "label_ids", "schema_version",
 ]
 
@@ -103,6 +104,8 @@ def _build_rows(targets):
             "longest_seg_mi": m["longest_seg_mi"],
             "gps_lag_s": m["gps_lag_s"],
             "gps_coverage": m["gps_coverage"],
+            "gps_prefix_moving_s": m["gps_prefix_moving_s"],
+            "gps_loop_excess_m": m["gps_loop_excess_m"],
             # all present labelIds that day (run + non-run) so they're marked
             # consumed and not re-parsed next build:
             "label_ids": " ".join(lid for (lid, _d) in items),

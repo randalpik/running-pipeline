@@ -10,6 +10,8 @@ artifacts — the long-run pair consumed by
 long-run (resp. recovery) day with watch activities:
     date, n_acts, status (rich|slim), complete (time gate, below),
     gps_ok (space gate — see GPS_LAG_CEIL_S), gps_lag_s, gps_coverage,
+    gps_recovered, gps_prefix_moving_s (late-lock recovery — see
+    PREFIX_MOVING_CEIL_S),
     watch_miles, watch_moving_s, watch_total_s, pause_s, stall_s,
     n_segs, d_eff_frac, longest_seg_mi
 
@@ -86,10 +88,35 @@ TIME_COMPLETE_FRAC = 0.10
 #     loop, 1.3 mi of a 10 mi run untracked).
 #   * mid-run dead-zone (dem_elevation.COVERAGE_FLOOR) — orthogonal; catches a
 #     track that dies in the middle rather than at the start.
-# A day failing either keeps its LOGGED distance and pace, and drops out of the
-# calibration corpus. See docs/recovery-runs-reference.md.
+# A day failing either drops out of the calibration corpus and keeps its LOGGED
+# distance and pace, unless a short late lock is admitted by gps_recovered
+# (below). See docs/recovery-runs-reference.md.
 GPS_LAG_CEIL_S = DEM.LAG_CEIL_S
 GPS_COVERAGE_FLOOR = DEM.COVERAGE_FLOOR
+
+# Late-lock RECOVERY (Sept 2026). The lag is wall-clock, but standing paused
+# costs no distance. What matters is how long Max RAN before the first fix, and
+# the watch dead-reckons that stretch. On the seven Aug–Nov 2025 South
+# Lakefront long runs the lag was 82–147 s, of which 46–110 s was paused and
+# 34–54 s was run, and the watch estimated 107–165 m of the opening itself.
+# Validated against route peers: on lag-rejected days, compare the watch
+# distance with the median of clean-lock days on the same route at the same
+# logged distance. With 30–45 s run before the fix, the device matches its
+# peers (n=27, median 30 m long; peer IQR ~190 m). It starts reading short
+# beyond 45 s (n=5, ~100 m) and is 285 m short past 2 min (n=10). Extrapolating
+# the opening (moving s × early pace) over-added 50–70 m on short openings, so
+# the watch's own distance is used as-is.
+# A late-lock day is therefore admitted when every late activity ran at most
+# PREFIX_MOVING_CEIL_S before its fix AND its loop closes. The loop check: the
+# start-to-finish gap may exceed the unfixed arc (moving s × early fixed pace)
+# by at most LOOP_CLOSE_TOL_M. Clean-lock loops close within 100 m 86% of the
+# time, the lakefront 98%. A larger gap means distance is missing beyond the
+# opening (2026-03-14 mccabe: 925 m), or the route isn't a loop, and the day
+# stays rejected. gps_recovered is consumed by the long-run AND recovery
+# corrections. The calibration fit still uses gps_ok alone.
+PREFIX_MOVING_CEIL_S = 60.0
+LOOP_CLOSE_TOL_M = 100.0
+EARLY_PACE_WINDOW_S = 600.0   # moving seconds after the fix that set the pace
 
 # Calibration fit knobs (match the house MAD-prune style).
 CAL_PRUNE_SIGMA = 3.0
@@ -220,6 +247,45 @@ def _connected_d_eff(segs):
     return d_eff
 
 
+def prefix_recovery(rec):
+    """``(moving_s, loop_excess_m)`` for one activity whose first GPS fix
+    landed late (see PREFIX_MOVING_CEIL_S), or None when the stream can't
+    support the loop check (no fix, too short, no movement after the fix).
+    ``moving_s`` is the time run before the fix, with pause windows subtracted
+    from wall-clock time, so pre- and post-V3.1708.0 recordings, stripped or
+    raw, agree. ``loop_excess_m`` is the start-to-finish gap beyond the unfixed
+    arc. It is negative on a curved opening, whose chord is shorter than its
+    arc."""
+    rows = [f for f in rec.get('freq') or [] if f and f[0] is not None]
+    if len(rows) < 10:
+        return None
+    t = np.array([f[0] / 100.0 for f in rows])
+    d = np.maximum.accumulate(np.array([(f[1] or 0) / 100.0 for f in rows]))
+    fixed = np.array([len(f) >= 6 and bool(f[3]) and bool(f[4]) for f in rows])
+    if not fixed.any():
+        return None
+    pauses = [(p[0] / 100.0, p[1] / 100.0) for p in rec.get('pauses') or []
+              if p[0] is not None and p[1] is not None]
+
+    def moving(a, b):
+        return (b - a) - sum(max(0.0, min(b, pe) - max(a, ps))
+                             for ps, pe in pauses)
+
+    i0 = int(np.argmax(fixed))
+    i1 = len(fixed) - 1 - int(np.argmax(fixed[::-1]))
+    j = i0
+    while j < len(t) - 1 and moving(t[i0], t[j]) < EARLY_PACE_WINDOW_S:
+        j += 1
+    run_s = moving(t[i0], t[j])
+    if run_s <= 0 or d[j] <= d[i0]:
+        return None
+    pre_s = moving(t[0], t[i0])
+    arc = pre_s * (d[j] - d[i0]) / run_s
+    gap = DEM._hav(DEM._sc(rows[i0][3]), DEM._sc(rows[i0][4]),
+                   DEM._sc(rows[i1][3]), DEM._sc(rows[i1][4]))
+    return pre_s, gap - arc
+
+
 def measure_day(acts):
     """Pure-watch per-day measurement for a day's time-ordered run activities
     ``[(rec, Activity), ...]``. Independent of the hand log — the ``run_type``
@@ -229,6 +295,7 @@ def measure_day(acts):
     per activity, but the distance/moving-time fields are exact either way."""
     day_segs, stall_s = [], 0.0
     lags, covs = [], []
+    prefix_s, loop_excess = [], []
     for i, (rec, act) in enumerate(acts):
         # GPS track quality (see GPS_LAG_CEIL_S). Activities with no GPS at all
         # — indoor runs — are skipped, not treated as an infinite lag; the
@@ -239,6 +306,16 @@ def measure_day(acts):
             q = DEM.track_quality(rec)
             if q is not None:
                 covs.append(q[1])
+            # Late-lock recovery (see PREFIX_MOVING_CEIL_S), per late
+            # activity; one that can't be checked blocks the whole day.
+            if lag > GPS_LAG_CEIL_S:
+                pr = prefix_recovery(rec)
+                if pr is None:
+                    prefix_s.append(np.inf)
+                    loop_excess.append(np.inf)
+                else:
+                    prefix_s.append(pr[0])
+                    loop_excess.append(pr[1])
         segs, st = _activity_segments(rec, act)
         stall_s += st
         if i + 1 < len(acts):
@@ -265,6 +342,13 @@ def measure_day(acts):
         # is enough to make the day's summed distance untrustworthy.
         'gps_lag_s': round(max(lags), 1) if lags else np.nan,
         'gps_coverage': round(min(covs), 4) if covs else np.nan,
+        # Late-lock recovery (schema 6): the worst late-lock activity's
+        # moving seconds before its fix and loop excess (NaN when no
+        # activity locked late).
+        'gps_prefix_moving_s': (round(max(prefix_s), 1) if prefix_s
+                                else np.nan),
+        'gps_loop_excess_m': (round(max(loop_excess), 1) if loop_excess
+                              else np.nan),
     }
 
 
@@ -292,6 +376,23 @@ def gps_ok(m):
     return True
 
 
+def gps_recovered(m):
+    """Whether a day that fails gps_ok ONLY on the lag arm can use its watch
+    distance anyway: every late-lock activity ran at most
+    PREFIX_MOVING_CEIL_S before its fix, and its loop closes to within
+    LOOP_CLOSE_TOL_M of the unfixed arc (see prefix_recovery). Pre-schema-6
+    rows have neither value and don't recover."""
+    if gps_ok(m):
+        return False
+    cov = _f(m.get('gps_coverage'))
+    if cov == cov and cov < GPS_COVERAGE_FLOOR:
+        return False
+    pre = _f(m.get('gps_prefix_moving_s'))
+    ex = _f(m.get('gps_loop_excess_m'))
+    return (pre == pre and pre <= PREFIX_MOVING_CEIL_S
+            and ex == ex and ex <= LOOP_CLOSE_TOL_M)
+
+
 def measure_runs(daily, wd, run_type='long'):
     """``run_type`` measured rows: the cached watch_daily measurement joined by
     date, plus the ``complete`` time-gate (watch moving time vs logged minutes).
@@ -315,6 +416,8 @@ def measure_runs(daily, wd, run_type='long'):
             'gps_ok': gps_ok(m),
             'gps_lag_s': _f(m.get('gps_lag_s')),
             'gps_coverage': _f(m.get('gps_coverage')),
+            'gps_recovered': gps_recovered(m),
+            'gps_prefix_moving_s': _f(m.get('gps_prefix_moving_s')),
             'watch_miles': float(m['watch_miles']),
             'watch_moving_s': moving_s,
             'watch_total_s': float(m['watch_total_s']),

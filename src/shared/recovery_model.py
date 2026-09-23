@@ -427,10 +427,16 @@ def add_watch_corrections(rec):
         # distance is short by pace x lag, so the day must be gated here.
         # `gps_ok` is absent on artifacts written before schema 5 — treat a
         # missing verdict as passing, matching long_runs.gps_ok.
+        # A late-lock day that ran <= 60 s before its fix and whose loop closes
+        # passes on its own watch distance (long_runs.gps_recovered, validated
+        # against same-route peers). The calibration fit still uses gps_ok alone.
         if len(meas):
             ok = meas['complete'].astype(bool)
             if 'gps_ok' in meas.columns:
-                ok &= meas['gps_ok'].fillna(True).astype(bool)
+                gps = meas['gps_ok'].fillna(True).astype(bool)
+                if 'gps_recovered' in meas.columns:
+                    gps |= meas['gps_recovered'].fillna(False).astype(bool)
+                ok &= gps
             meas = meas[ok]
         meas = meas.set_index('date')
         paved = (rec.get('terrain_type', pd.Series(np.nan, index=rec.index))

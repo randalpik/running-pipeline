@@ -61,10 +61,14 @@ def long_run_lines(r, pause_adjusted: bool = False, show_logged: bool = True,
 
     1. ``{dist} mi @ {pace}/mi · {pause} paused`` (corrected distance when a
        watch/route correction applies, else the logged distance).
-    2. ``Pause-adjusted distance: {d_eff} mi`` — only when ``pause_adjusted``
-       is set (the model-driven Training/Fitness tabs) AND the pause-aware
-       effective distance projected onto the plot differs from the shown
-       distance by > 0.1 mi. The descriptive Long Runs tab omits it.
+    2. ``Pause-adjusted distance: {demo} mi`` — only when ``pause_adjusted``
+       is set (the model-driven Training/Fitness tabs) AND ``lr_demo_m``, the
+       pause-uncertainty-eroded distance the 5K-equivalent is scored at
+       (``durability.eroded_deff`` via ``project_long_runs``), differs from
+       the shown distance by > 0.1 mi. Prefixed ``est.`` on runs with no
+       watch record (``lr_pauses_measured`` false), whose erosion runs on
+       imputed pauses (as their paused time does). The
+       descriptive Long Runs tab omits it.
     3. ``Logged: {dist} mi @ {pace}/mi`` — only when ``show_logged`` (the
        descriptive Long Runs tab) AND a correction moved the distance
        materially (≥ 0.2 mi). Training/Fitness suppress it (the corrected and
@@ -89,10 +93,13 @@ def long_run_lines(r, pause_adjusted: bool = False, show_logged: bool = True,
     corr = (f"{float(r['corr_miles']):.1f} mi @ "
             f"{sec_to_mss(float(r['corr_pace_sec_per_mi']))}/mi"
             if has_corr else '')
+    # Stops are measured on any complete rich record (lr_pauses_measured ⊇
+    # lr_watch — a gated-out watch DISTANCE still has trustworthy stops).
+    measured = r.get('lr_pauses_measured')
     pause = ''
-    if r.get('lr_watch') and pd.notna(r.get('pause_s')) and float(r['pause_s']) >= 30:
+    if measured and pd.notna(r.get('pause_s')) and float(r['pause_s']) >= 30:
         pause = f" · {sec_to_mss(float(r['pause_s']))} paused"
-    elif (not r.get('lr_watch') and pd.notna(r.get('est_pause_s'))
+    elif (not measured and pd.notna(r.get('est_pause_s'))
           and float(r.get('pause_erosion_gate') or 0) > 0):
         pause = f" · est. {sec_to_mss(float(r['est_pause_s']))} paused"
 
@@ -113,11 +120,12 @@ def long_run_lines(r, pause_adjusted: bool = False, show_logged: bool = True,
     padj = ''
     if pause_adjusted:
         shown_mi = float(r['corr_miles']) if has_corr else float(r['miles'])
-        d_eff = r.get('d_eff_m')
-        if pd.notna(d_eff):
-            padj_mi = float(d_eff) / METERS_PER_MILE
+        demo = r.get('lr_demo_m')
+        if pd.notna(demo):
+            padj_mi = float(demo) / METERS_PER_MILE
             if abs(padj_mi - shown_mi) > 0.1:
-                padj = tt_kv('Pause-adjusted distance', f"{padj_mi:.1f} mi")
+                est = '' if measured else 'est. '
+                padj = tt_kv('Pause-adjusted distance', f"{est}{padj_mi:.1f} mi")
 
     elev = elevation_line(r) if show_elevation else ''
     return [ln for ln in (main, padj, alt, elev) if ln]

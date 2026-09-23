@@ -10,6 +10,11 @@ Code: `workouts.project_long_runs` (effort, gate, projection), `durability.erode
 (the erosion law), `durability._pre_watch_profile` / `_impute_segments` (pre-watch
 imputation), `wa_scoring.py` (the 5K-equivalent conversion).
 
+The eroded distance (`lr_demo_m`) is what the Training/Fitness tooltips show as
+**"Pause-adjusted distance"** (`est.` on runs with no watch record). The connected-fatigue
+`d_eff_frac` in the watch caches is the pre-2026-06-18 scoring distance; nothing
+reads it now. From 2026-06-20 to 2026-09-23 the tooltip wrongly displayed it.
+
 ## What it's for
 
 Long runs are projected to a **5K-equivalent pace** so they can sit on the
@@ -123,8 +128,22 @@ Pre-watch runs have no measured stops, so we **impute** them: the global **P90**
 per-mile pause structure (`durability._pre_watch_profile` → `_impute_segments`),
 scaled to the run's distance and late-loaded by the watch-corpus median thirds.
 P90 is aggressive *on purpose* — it is where the uncertainty of an unobserved run
-is injected (see thesis point 2). Watch runs use their real measured stops
-(`load_segments`).
+is injected (see thesis point 2). Any run with a complete rich watch record uses
+its real measured stops (`load_segments`), **even when the watch's distance is
+gated out**. The flag is `lr_pauses_measured`, a superset of `lr_watch`. Stop
+durations are button-pause events, which don't depend on GPS. Imputation is only
+for runs with no record. The two gated-distance cases are handled differently,
+so a run never gets real stops on an inflated distance near the frontier:
+- **Trail routes** keep the logged distance by contract; Max measures them
+  carefully.
+- **Late GPS locks** are admitted on their own watch distance when they ran
+  ≤ 60 s before the fix and the loop closes (`long_runs.gps_recovered`, see
+  `recovery-runs-reference.md`). They become full watch days: calibrated
+  distance, watch time, measured stops. The seven Aug–Nov 2025 South Lakefront
+  long runs are the case in point.
+
+Before 2026-09-23 those days wrongly got P90 stops, around 30 min on a 20-miler.
+2025-08-14 was eroded as if it paused 30:53 when it actually paused 2:44.
 
 ### 6. The WA conversion (companion fix — `wa_scoring.py`)
 The erosion feeds the WA 5K-equivalent conversion, which was **rebuilt** alongside

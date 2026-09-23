@@ -75,6 +75,7 @@ watch_miles, watch_moving_s, watch_total_s, pause_s, stall_s,
 n_segs, d_eff_frac, longest_seg_mi,
 # --- GPS track quality (schema 5) ---
 gps_lag_s, gps_coverage,        # worst activity of the day on each axis
+gps_prefix_moving_s, gps_loop_excess_m,  # late-lock recovery (schema 6)
 # --- elevation ---
 gain_ft, loss_ft, corr_miles,
 # --- provenance ---
@@ -91,6 +92,12 @@ calibration fit). Rationale, thresholds and the loop-closure validation live in
 `recovery-runs-reference.md`; the constants themselves are
 `dem_elevation.LAG_CEIL_S` / `COVERAGE_FLOOR`, shared with the elevation layer.
 Rows written before schema 5 have no verdict, and a missing verdict passes.
+`gps_prefix_moving_s` / `gps_loop_excess_m` (schema 6, Sept 2026) come from
+`long_runs.prefix_recovery` on each late-lock activity. They are the worst late
+activity's seconds run before its first fix (pauses excluded) and its loop gap
+beyond the unfixed arc. `measure_runs` turns them into `gps_recovered`, which
+admits a late-lock day on its own watch distance to both correction paths. The
+calibration fit still uses `gps_ok` alone.
 
 - **`run_type` is deliberately absent.** Consumers join it from `daily.csv`.
 - **`weather_bin`** is carried for completeness but the daily pipeline still

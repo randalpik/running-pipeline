@@ -259,6 +259,38 @@ recovery+long corpus).
   Coverage alone would have missed it (0.88 > the 0.80 floor); it is
   centred at ~1.02 because GPS jitter inflates the point-to-point sum, so
   it masks a missing arc.
+  **Late-lock recovery (Sept 2026, long AND recovery runs).** The lag is
+  wall-clock, but standing paused costs no distance, and the watch
+  dead-reckons the stretch it runs without a fix. So the lag is re-measured
+  in MOVING seconds before the fix (`gps_prefix_moving_s`). A late-lock day
+  is admitted on its own watch distance, with nothing added, when both hold:
+  - every late activity ran at most `PREFIX_MOVING_CEIL_S = 60 s` before its
+    fix;
+  - its loop closes, meaning the start-to-finish gap exceeds the unfixed arc
+    by no more than `LOOP_CLOSE_TOL_M = 100 m` (`gps_loop_excess_m`).
+
+  The verdict is `gps_recovered`. `gps_ok` still gates the calibration fit,
+  so the curve stays clean-lock only.
+
+  Validation used route peers: each lag-rejected day's watch distance was
+  compared with the median of clean-lock days on the same route at the same
+  logged distance (50 days had ≥ 5 peers; peer IQR ~140–190 m).
+  | run before the fix | n | watch vs peers |
+  |---|---|---|
+  | 30–45 s | 27 | median 30 m long (matches) |
+  | 45–60 s | 5 | ~100 m short |
+  | 60–120 s | 8 | 73 m short |
+  | > 2 min | 10 | 285 m short |
+  Extrapolating the opening instead (moving s × early pace) over-added 50–70
+  m on short openings, so it was dropped.
+
+  The loop check still catches real problems, e.g. 2026-03-14 mccabe with
+  925 m unexplained, and point-to-point runs like kona. Recovery-run
+  late-lock days differ from the long-run case. Pauses are a median 9% of
+  the lag (vs over half on the seven Aug–Nov 2025 South Lakefront long runs,
+  which ran 34–54 s before the fix), and 29 of 107 ran over 2 min before it.
+  Those stay rejected. Admitted: all 7 late-lock long runs, and 61 of the 143
+  gps-rejected recovery days.
 - **Watch correction** (paved + time-complete days): corrected distance
   = `watch_mi·(1+slope) + intercept`, corrected time = watch moving
   seconds, corrected pace = their ratio. ~1,190 of ~2,550 recovery days
