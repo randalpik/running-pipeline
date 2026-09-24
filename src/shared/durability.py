@@ -152,10 +152,11 @@ def eroded_deff(date_str, d_m, gate, rate, is_watch=True):
       • a LATE pause (high L) bites far harder per mile than an early one (the
         factor is linear in run-fraction-before-the-pause);
       • no lower bound — every second contributes, infinitesimally.
-    `gate` is the effort-gated scale (0 for easy runs → full distance, rising to 1
-    as the run pace nears the CS-predicted race pace at its distance), `rate` the
-    per-(second·lateness) erosion rate. Watch runs use measured stops; pre-watch
-    the imputed structure."""
+    `gate` is the effort-gated scale (0 for easy runs → full distance, reaching 1
+    at the CS-predicted race pace for the run's distance and UNCAPPED above it),
+    `rate` the per-(second·lateness) erosion rate. Measured runs (a complete rich
+    watch record) use their recorded stops; runs with no record use the imputed
+    structure."""
     if not (gate > 0 and rate > 0 and d_m > 0):
         return d_m
     segs = load_segments().get(date_str) if is_watch else _impute_segments(d_m)
@@ -187,8 +188,9 @@ def imputed_pause_total_s(d_m):
 def _impute_segments(d_m):
     """Synthesize [(seg_dist_m, rest_after_s)] for a PRE-WATCH run by scaling the
     per-mile profile to the run's distance: stop count and total pause both grow
-    with length, distributed across thirds (late-loaded, so the heavy late stops
-    land where they carry W' leverage). Returns None when no profile exists."""
+    with length, distributed across thirds (late-loaded, matching the watch
+    corpus, where the lateness weighting in eroded_deff bites hardest). Returns
+    None when no profile exists."""
     p = _pre_watch_profile()
     if not p:
         return None

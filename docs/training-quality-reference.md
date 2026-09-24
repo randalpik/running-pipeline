@@ -97,7 +97,12 @@ sits next to CS without feeding back into it.
   effort policy still stays visible in the corrected residuals — the
   smoother track reading reverts to "fitness/effort vs CS", no longer
   "within-route trend".
-- **Temperature + race-fatigue covariates in the long-run fit; fatigue
+- *(Superseded 2026-06-18: temperature and race fatigue are no longer fit on
+  long runs — both were pinned from the pooled recovery+long-run fit. Since
+  Sept 2026, race fatigue is not applied to long runs at all, and temperature
+  is applied on the 5K-equivalent scale and feeds the effort gate; see
+  Stage 5b. The history below is kept for its evidence.)*
+  **Temperature + race-fatigue covariates in the long-run fit; fatigue
   is one fitted scale with the marathon/short contrast pinned from the
   recovery fit (June 2026).** Stage 5b adds `temp_centered` (fit fresh on
   long runs) and a combined race-fatigue regressor
@@ -160,11 +165,12 @@ sits next to CS without feeding back into it.
   PCHIP through the real race anchors (5K/10K/HM/marathon), dropping the
   inconsistent 15/20/25/30 k tabs. **See `long-run-pause-uncertainty-reference.md`
   for the full model, the rejected alternatives, and the calibration (incl. the
-  2020-11-06 hard case).** The model's PHYSICAL + STATE terms ARE always applied (Max,
-  June 2026): resid = raw − (elev + temp + race-fatigue contributions) —
-  verified, physically grounded effects, the same family as the hills'
-  Minetti term. Only the INTERCEPT (the long-run effort level,
-  ~+23 on the race-equivalent scale) is never subtracted — that's the
+  2020-11-06 hard case).** The PHYSICAL + STATE terms ARE always applied (Max,
+  June 2026): physical route costs (grade, footing, altitude) come off the
+  run's time inside `project_long_runs`, and resid = raw − temp_adj
+  (temperature, converted to the 5K-equivalent scale; race fatigue is not
+  applied to long runs — Stage 5b). Only the
+  INTERCEPT (the long-run effort level) is never subtracted — that's the
   class constant that claimed long runs out-predict races. ALTITUDE was
   removed from the model (June 2026): on the race-equivalent scale its
   beta flipped sign (−0.47, "altitude makes you faster") — era/route
@@ -596,28 +602,55 @@ the ladder was relogged `4800i`, which the structure gate then handles on its ow
 
 ### Stage 5b — Long-run model (covariates only)
 
-Long runs use an OLS fit on the in-slice set instead of a per-category
-median offset:
+Long runs enter TQ at `resid = raw_resid − temp_adj`. The one state term is
+temperature, **pinned** from the pooled recovery+long-run fit
+(`recovery_model.physical_route_betas`, since 2026-06-18), not fit on long
+runs:
 
 ```
-raw_resid ~ temp_centered
-            + fat_race  (= fat_race_short + ratio·fat_marathon,
-                         ratio pinned from the recovery fit)
+run-pace contribution (s/mi) = β_temp·(max(0, T − 6 °C) − temp_ref)
 ```
+
+`long_run_model.temp_contribution` computes it per run.
+
+- **Scale (Sept 2026):** the pooled beta is s/mi of *run* pace, but
+  `raw_resid` is s/mi of *5K-equivalent* pace, so `project_long_runs` removes
+  the contribution from the run's time over the eroded distance and re-scores
+  it through the same WA conversion, giving `temp_adj` on the 5K-equivalent
+  scale. 1 s/mi of long-run pace ≈ 0.77 s/mi of 5K-equivalent pace for Max
+  (range 0.72–0.81); from the June pinning until Sept 2026 the run-pace
+  seconds were subtracted directly, over-applying the state terms by ~30 %.
+- **Feeds the effort gate (Sept 2026):** the temperature credit is applied to
+  the pace the pause-erosion gate sees, like the physical route credits, so
+  the gate polices the pace the run actually claims. Warm runs erode slightly
+  more; cold runs slightly less. `raw_resid` excludes the temperature time
+  credit, but its erosion already reflects it — so the Training tooltip's
+  "Raw residual" is "before the temperature credit".
+- **Race fatigue is NOT applied to long runs (removed Sept 2026).** The
+  credit keyed on race occurrence, not on fatigue actually incurred: two days
+  after a Wednesday All-Comers 3000, a long run got ~17 s of 5K time, and a
+  downhill mile TT credited the next long run too. The frontier is a max
+  envelope, so a one-directional over-credit moves it while an under-credit
+  is hidden. Races and workouts on the frontier get no fatigue credit either.
+  At removal it decided 5 of the 22 frontier-binding long runs (2018-07-30,
+  2019-06-29, 2019-08-02, 2021-05-14, 2025-06-21). Recovery still uses the
+  pooled fatigue betas.
+
+`fit_long_run_model` fits only the display-dead level on
+`raw_resid − temp_adj`.
 
 - Distance carries no term (June 2026 sweep — see "Decisions locked in");
   the lr_lo/lr_hi labels are fully retired.
 - **Physical route terms no longer live here (June 2026, watch-stream
-  enrichment).** `long_run_model.py` carries only temp/fatigue;
+  enrichment).** `long_run_model.py` carries only temperature;
   `LR_ELEV_SLOPE`/`elev_pm_c` and the fitted altitude term have been
   removed. Grade, off-road footing, and altitude are now applied upstream
   in `workouts.project_long_runs` as flat / sea-level-equivalent time
   corrections — subtracted from the run's time *before* the World Athletics
   5K-equivalent conversion — rather than as residual regressors. Grade is
   each run's per-run measured gain/loss priced through the shared
-  `elevation_cost` engine with an effort-aware paved descent refund
-  (one grade-resolved refund curve at every effort — the effort schedule
-  was retired Aug 2026, see route-normalization-reference.md). Footing
+  two-channel `elevation_cost` engine (climb cost + steepness-dependent
+  descent benefit, Aug 2026 — see route-normalization-reference.md). Footing
   (trail_frac flat penalty) and altitude
   (≈ +2 s/mi per 1000 ft above a ~3000 ft threshold; per-run measured
   via `per_run_altitude`, not per-city) are pinned from
@@ -630,39 +663,34 @@ raw_resid ~ temp_centered
   route-normalization-reference.md (elevation engine) for the
   `elevation_cost` cost formula, the altitude threshold curve, and the
   `physical_route_betas` internals.
-- Covariates reuse the recovery model's encodings —
-  `temp_centered = temp_c − 12`, `fat_<cat> = exp(−days_since/τ)` with
-  τ = 6d (marathon) / 5d (short race). Temperature's beta is fit on the
-  long runs themselves. Race fatigue is a single fitted scale on
-  `fat_race_short + ratio·fat_marathon` with the ratio pinned from the
-  recovery fit (see "Decisions locked in"); `cov_coefs` exposes the
-  ratio-expanded per-category betas so `transferable_contributions`
-  and the sidebar see the familiar two-key shape. Missing temp falls to
-  the reference (contribution 0) so no row drops from the fit.
-- All terms gate on ≥ `MIN_COV_N = 30` in-slice runs; physical terms
-  additionally require variation in the data (watch profiles without
-  route metadata degrade to an intercept-only fit).
-- Iterative MAD-based outlier prune at σ = `PRUNE_SIGMA = 3.0` on the
-  corrected residuals (`raw_resid − model.predict()`). Pruned rows
-  are dropped from the figure entirely; they don't feed the smoother
-  and aren't rendered.
+- Encodings are the recovery model's: the one-sided heat hinge
+  `max(0, air_temp − 6 °C)` (`temp_centered_feature`), centered on
+  `temp_ref` = the median hinge over in-scope long runs that have a
+  reading. A missing temperature contributes exactly 0 (neutral);
+  until Sept 2026 it was filled with the hinge's cold floor before
+  centering, which charged the unmeasured 2014–15 legacy runs the full
+  sub-6 °C penalty (+2.37 s/mi). `cov_coefs` carries the pinned run-pace
+  beta for the TQ sidebar.
+- The temperature term gates on ≥ `MIN_COV_N = 30` in-slice runs (zeros
+  below — sparse watch profiles get no state correction).
+- Iterative MAD-based outlier prune at σ = `PRUNE_SIGMA = 3.0` on
+  `raw_resid − temp_adj − level`. It only robustifies the level: long runs
+  are exempt from the TQ prune and every in-scope run is plotted.
+  `is_outlier` is read only by dashboard.py's `_long_run_residual`, which is
+  currently uncalled.
 - `route` / `qualifying_routes` (locations with ≥ `MIN_ROUTE_N = 5`
-  in-slice runs) are still emitted as descriptive labels — the
-  dashboard's familiar-route bin-residual filter and outlier reporting
-  use them — but carry no coefficients.
+  in-slice runs) are still emitted as descriptive labels, but carry no
+  coefficients.
 
-The Long Runs tab's "Normalize" toggle reuses this fit's covariate betas
-(via `recovery_model.transferable_contributions`) to shift every plotted
-long run — including out-of-slice ones — by its modeled temp + fatigue
-contribution.
+The Long Runs tab's "Normalize" toggle subtracts the same per-run column
+(`temp_s_per_mi`, run pace) plus the physical route costs from every plotted
+long run — including out-of-slice ones — so it never re-derives them.
 
-Caveat to keep in mind: with route dummies gone, era effort variance has
-nowhere to hide, and some of it leaks into whatever correlates with era —
-the race-fatigue betas roughly tripled (race-dense blocks were
-quality-effort blocks) and temperature dropped to ~0. The fatigue terms
-are still day-scale (decay τ ≈ 5–6d) so the damage is bounded, but
-re-examine the betas once more cross-era data accumulates or after
-elev_per_mile gaps are filled.
+*(Historical caveat, from when these betas were fit on long runs, before
+2026-06-18: with route dummies gone, era effort variance leaked into whatever
+correlated with era — the race-fatigue betas roughly tripled, because
+race-dense blocks were quality-effort blocks, and temperature dropped to ~0.
+Pinning to the pooled fit replaced that estimate.)*
 
 ### Fitted constants / diagnostic medians (June 2026)
 

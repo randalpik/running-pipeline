@@ -77,7 +77,11 @@ Per long run, at its flat-corrected constant pace `v`:
 ### 1. Effort
 `effort = (CS-predicted race pace at the run's distance) ÷ (flat pace)`, where the
 CS-predicted race pace is the day's CS-implied 5K up-converted to the run's distance
-through the same WA tables.
+through the same WA tables. "Flat pace" is the run's pace after every credit the
+projection applies: grade, footing, altitude, and (since Sept 2026) temperature. The
+gate therefore judges the pace the run actually claims on the plot. A hot run's
+effort rises and a cold run's falls, both slightly (at the switch, the frontier moved
+−0.41 to +0.35 s/mi from this alone).
 
 - `effort < ~0.95` — easy; far below race effort.
 - `effort = 1.0` — you ran the long run *at* the pace CS says you could **race** that

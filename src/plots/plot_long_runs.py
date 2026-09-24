@@ -37,9 +37,7 @@ from src.shared.workouts import load_cs, project_long_runs, _legacy_verified_dat
 from src.shared.cs_projection import load_cs_outputs
 from src.shared.performance_frontier import (standard_demos, build_frontier,
                                               frontier_at_anchor)
-from src.shared.recovery_model import transferable_contributions
-from src.shared.long_run_model import (fit_long_run_model, load_quality_dates,
-                                       MIN_COV_N)
+from src.shared.long_run_model import MIN_COV_N
 from src.plotting import widgets
 from src.plotting import color_by as cb
 from src.plotting import (render_plot, CursorTooltip, MobileLayout,
@@ -193,14 +191,16 @@ def main():
     # Normalize subtracts EVERYTHING project_long_runs / the TQ long-run model
     # apply to reach a run's flat / sea-level race-equivalent pace, so the
     # toggle on the Long Runs graph matches the Training page's decomposition
-    # exactly (synced — same physical_route_betas + same long-run fit):
+    # exactly (synced — the same per-run columns, one computation):
     #   PHYSICAL ROUTE (per-run, s/mi, computed in project_long_runs):
     #     grade (measured gain/loss through the elevation engine) +
     #     off-road footing + altitude — all pinned, the SAME constants the
     #     recovery model and the Training adjustments box show.
-    #   TRAINING STATE (pooled-pinned betas, transferable_contributions):
-    #     temperature + recent-race fatigue (TOD is dead on long runs) — now the
-    #     SAME pooled constants the recovery model uses, not a separate fit.
+    #   TEMPERATURE (per-run, s/mi of run pace, computed in project_long_runs
+    #     via long_run_model.temp_contribution) at the SAME pooled constant the
+    #     recovery model uses. This tab plots run pace, so it subtracts
+    #     directly; Training re-scores it onto the 5K-equivalent scale first.
+    #     (Race fatigue and TOD are not applied to long runs.)
     # Default is OFF → raw logged pace; the effort-level intercept is NEVER
     # applied. Adjustments cover every plotted run, including out-of-slice
     # ones the fit itself excludes.
@@ -210,12 +210,7 @@ def main():
                 + lr['footing_cost_s_per_mi'].fillna(0).to_numpy()
                 + lr['alt_cost_s_per_mi'].fillna(0).to_numpy())
     if len(lr_in) >= MIN_COV_N:
-        quality_dates = load_quality_dates()
-        _, lr_fit, _ = fit_long_run_model(lr_in.copy(), quality_dates)
-        state_adj = (transferable_contributions(lr, lr_fit.cov_coefs, quality_dates,
-                                                 lr_fit.temp_ref)
-                     if lr_fit.cov_coefs else np.zeros(len(lr)))
-        adj = phys_adj + state_adj
+        adj = phys_adj + lr['temp_s_per_mi'].to_numpy()
         # Omit a dead checkbox (profile where every adjustment is ~0).
         if np.abs(adj).max() > 0.05:
             norm_adj = adj
@@ -360,7 +355,7 @@ def main():
             widgets.divider()
             + widgets.checkbox_rows([('normalize', 'Normalize')],
                                     data_attr='lrnorm', checked=False)
-            + widgets.subtitle('Subtract route and training effects to show the equivalent flat, paved, non-fatigued pace at sea level in good conditions.')
+            + widgets.subtitle('Subtract route and temperature effects to show the equivalent flat, paved pace at sea level on a typical-temperature day.')
         )
     overlay_html = widgets.sidebar(
         'lr-gradient',

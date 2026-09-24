@@ -237,17 +237,19 @@ def main():
                               & hill_reps['excluded_reason'].isna()].copy()
 
     # Long-run model, WITHOUT its intercept (Max, June 2026): the projection
-    # itself is race-equivalent (β_long un-bias + watch/rule corrections in
-    # project_long_runs) and carries no class constant — but the model's
-    # physical terms (elevation, altitude) and covariates (temperature,
-    # race fatigue) are verified, physically grounded effects, the same
-    # family as the hills' Minetti correction, and are ALWAYS applied:
-    # resid = raw − (phys + cov). The intercept — the long-run effort level
-    # — is never subtracted; that constant would claim a long run
-    # out-predicts a race at the same distance/pace. The model's internal
-    # MAD prune only robustifies its betas; exclusion from TQ rides the
-    # shared track-relative prune below, like every other category.
-    print(f'\n--- Long-run model (level NOT applied): temp/fatigue PINNED from '
+    # itself is race-equivalent (WA 5K conversion of the watch/rule-corrected,
+    # route-credited, pause-eroded run in project_long_runs) and carries no
+    # class constant. The temperature term is ALWAYS applied:
+    # resid = raw − (phys + cov), where cov is the projection's `temp_adj` —
+    # the pinned run-pace contribution already converted to the 5K-equivalent
+    # scale (phys is the empty LR_PHYS_FITTED extension point). Race fatigue
+    # is not applied to long runs (removed Sept 2026; see long_run_model).
+    # The intercept — the long-run effort level — is never subtracted; that
+    # constant would claim a long run out-predicts a race at the same
+    # distance/pace. The model's internal MAD prune only robustifies its
+    # level; exclusion from TQ rides the shared track-relative prune below,
+    # like every other category.
+    print(f'\n--- Long-run model (level NOT applied): temperature PINNED from '
           f'the pool, elevation priced upstream ---')
     long_runs, lr_fit, _qualifying_routes = fit_long_run_model(long_runs)
     long_runs['model_adj'] = (long_runs['phys_contrib']
@@ -322,8 +324,8 @@ def main():
         # Workouts tab is the same number — the best attempt at predicting
         # 5K race pace from that session (Max's contract). Workouts enter
         # raw; hills enter Minetti+trail-corrected raw; long runs enter
-        # race-equivalent raw (β_long in project_long_runs) minus the
-        # long-run model's physical+covariate terms, level untouched.
+        # race-equivalent raw (WA conversion in project_long_runs) minus
+        # the temperature offset (temp_adj), level untouched.
         w_keep['resid'] = w_keep['raw_resid']
         h_keep['resid'] = h_keep['corrected']
         lr_keep['resid'] = lr_keep['raw_resid'] - lr_keep['model_adj']
@@ -963,9 +965,10 @@ function buildTooltip(day, isSnap, pointHtml) {
     # run to reach its flat / sea-level race-equivalent. Two groups —
     # PHYSICAL route costs (grade per-run from the watch; footing + altitude
     # pinned from the pooled recovery+long fit; all applied upstream in
-    # project_long_runs, so already in raw_resid) and TRAINING STATE
-    # (temp/fatigue, pinned from the pooled fit, applied via model_adj). The
-    # effort level (intercept) is fit but NEVER subtracted (see main).
+    # project_long_runs, so already in raw_resid) and WEATHER (temperature,
+    # pinned from the pooled fit, applied via model_adj). Race fatigue is not
+    # applied to long runs. The effort level (intercept) is fit but NEVER
+    # subtracted (see main).
     from src.shared.recovery_model import (physical_route_betas,
                                             ALTITUDE_THRESHOLD_KFT)
     from src.shared.elevation_cost import engine_params
@@ -993,12 +996,9 @@ function buildTooltip(day, isSnap, pointHtml) {
         state_rows = [
             ('temp, per °C above 6',
              f'{lr_fit.cov_coefs["temp_centered"]:+.2f}'),
-            ('marathon fatigue, peak',
-             f'{lr_fit.cov_coefs["fat_marathon"]:+.1f}'),
-            ('short-race fatigue, peak',
-             f'{lr_fit.cov_coefs["fat_race_short"]:+.1f}'),
         ]
-    show_box = bool(state_rows) or any(abs(pb[k]) > 1e-9 for k in pb)
+    show_box = bool(state_rows) or any(abs(pb[k]) > 1e-9
+                                       for k in ('trail_frac', 'alt_kft'))
     routes_panel = ''
     if show_box:
         body = (
@@ -1014,7 +1014,7 @@ function buildTooltip(day, isSnap, pointHtml) {
         if state_rows:
             body += (
                 widgets.divider()
-                + widgets.subtitle('Training state')
+                + widgets.subtitle('Weather')
                 + widgets.table(('Term', 'β (s/mi)'), state_rows,
                                 align=('left', 'right'))
             )

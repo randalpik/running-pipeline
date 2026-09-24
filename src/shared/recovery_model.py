@@ -155,9 +155,10 @@ MARATHON_DISTANCE_M    = 42000
 
 QUALITY_CATS = ['marathon', 'race_short']
 
-# Per-day factors whose betas are meaningful beyond recovery runs (applied
-# by the Long Runs plot's normalization toggle and the TQ long-run model
-# experiments). Route and era are intentionally absent — see module docstring.
+# Per-day factors whose betas are meaningful beyond recovery runs (long runs
+# apply temperature only, via long_run_model.temp_contribution — race fatigue
+# was removed from long runs Sept 2026 and TOD is dead there). Route and era
+# are intentionally absent — see module docstring.
 TRANSFERABLE_FEATURES = ['temp_centered', 'fat_marathon', 'fat_race_short',
                          'tod_is_pm']
 
@@ -886,29 +887,6 @@ def tod_is_pm(df):
     return tod_clean.isin(TOD_PM_VALUES).astype(float)
 
 
-def transferable_contributions(df, betas, quality_dates, temp_ref=0.0):
-    """Per-row modeled pace contribution (sec/mi) of the transferable
-    factors — temperature, recent-race fatigue, time of day — for any
-    daily-frame subset (e.g. long runs). Missing temp/TOD contribute 0,
-    as does any factor whose beta key is absent from ``betas`` (the TQ
-    long-run model passes a dict without ``tod_is_pm``, so TOD drops out).
-    Subtracting the result from observed pace normalizes those factors out.
-
-    ``temp_ref`` is the median hinge value the temperature slope was centered
-    on (the fit's ``temp_ref``); subtracting it references the temperature
-    adjustment to a typical day rather than the cold floor of the hinge, so
-    normalizing temp doesn't move every run one way. Pass the corresponding
-    fit's ``temp_ref`` so application matches how the slope was centered.
-    """
-    df = add_quality_features(df, quality_dates)
-    contrib = betas.get('temp_centered', 0.0) * (
-        temp_centered_feature(df).fillna(0.0) - temp_ref)
-    for cat in QUALITY_CATS:
-        contrib = contrib + betas.get(f'fat_{cat}', 0.0) * df[f'fat_{cat}']
-    contrib = contrib + betas.get('tod_is_pm', 0.0) * tod_is_pm(df)
-    return contrib.to_numpy(dtype=float)
-
-
 # ---------- fit ----------
 
 
@@ -977,9 +955,10 @@ def physical_route_betas():
     (flat-footing ``trail_frac`` + altitude ``alt_kft``) and the three
     TRANSFERABLE-STATE channels (``temp_centered`` heat slope, ``fat_marathon``
     + ``fat_race_short`` race-fatigue decays). The recovery model pins all five
-    (``fit_recovery_model``), the long-run model pins all five
-    (``fit_long_run_model``), and the long-run 5K conversion credits the two
-    physical ones (``workouts.project_long_runs``) — so one constant per channel
+    (``fit_recovery_model``); long runs use the two physical channels plus
+    temperature (``workouts.project_long_runs`` via
+    ``long_run_model.temp_contribution`` — race fatigue is deliberately not
+    applied to long runs, Sept 2026) — so one constant per channel
     applies everywhere, fit once on the combined corpus rather than separately
     per model. (The name is historical — it predates temp/fatigue moving in;
     it's the canonical pooled estimator, referenced widely.) Pooling lets the
@@ -1083,7 +1062,8 @@ def physical_route_betas():
             cmap = dict(zip(['const'] + fit_cols, coef))
             # Physical channels (dropped together by the no-offroad guard) plus
             # the transferable-state channels (temp + per-category fatigue),
-            # which are always in fit_cols — both models pin all of these.
+            # which are always in fit_cols (recovery pins all of these; long
+            # runs use the physical channels + temperature).
             out = {'trail_frac': float(cmap.get('trail_frac', 0.0)),
                    'alt_kft': float(cmap.get('alt_kft', 0.0)),
                    'temp_centered': float(cmap.get('temp_centered', 0.0))}
@@ -1589,9 +1569,11 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
     # days move faster and cool days slower, the median day unchanged. This
     # re-references only the displayed/applied contribution — the fitted slope
     # betas['temp_centered'] is untouched (centering shifts the intercept only).
+    # A missing reading contributes 0 (neutral) — centering first, then
+    # filling, so it isn't charged the hinge's cold floor.
     temp_ref = float(rec.loc[~rec['is_pruned'], 'temp_centered'].median())
-    rec['contrib_temp'] = betas['temp_centered'] * (
-        rec['temp_centered'].fillna(0) - temp_ref)
+    rec['contrib_temp'] = (betas['temp_centered'] * (
+        rec['temp_centered'] - temp_ref)).fillna(0)
     rec['contrib_quality'] = sum(
         betas[f'fat_{c}'] * rec[f'fat_{c}'].fillna(0) for c in QUALITY_CATS)
     rec['contrib_tod'] = betas['tod_is_pm'] * rec['tod_is_pm'].fillna(0)

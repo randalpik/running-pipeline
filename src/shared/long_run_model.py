@@ -1,9 +1,11 @@
-"""Long-run residual regression: ``raw_resid ~ physical route + covariates``.
+"""Long-run residual model: the pinned temperature term plus a display-dead
+level fit.
 
-Fits temperature / recent-race-fatigue covariates (and any FITTED physical
-terms in ``LR_PHYS_FITTED``, empty by default) on long-run pace residuals (vs
-CS-implied), with iterative MAD-based outlier prune. Elevation is no longer
-fitted here — it's priced per-run upstream in ``workouts.project_long_runs``
+Supplies the long-run temperature contribution (``temp_contribution``, pinned
+from the pooled recovery+long-run fit) and fits the level (plus any FITTED
+physical terms in ``LR_PHYS_FITTED``, empty by default) on long-run pace
+residuals (vs CS-implied), with iterative MAD-based outlier prune. Elevation is
+not fitted here — it's priced per-run upstream in ``workouts.project_long_runs``
 (physical grade engine) and already lives in ``raw_resid``. Output is a
 SimpleNamespace with ``intercept``, ``phys_coefs``, ``cov_coefs``,
 ``rsquared``, ``resid_sd``, ``n_kept``.
@@ -47,26 +49,48 @@ differs — was abandoned: the pool's ``is_long`` level dummy already absorbs th
 mean-level difference between corpora, leaving a single shared slope per
 channel, and the long-run intercept/level is display-dead anyway. So the
 contrast is identified on the full ~2,300-row combined corpus instead of a
-handful of long runs. ``cov_coefs`` carries the pinned per-category
-``temp_centered`` / ``fat_marathon`` / ``fat_race_short`` keys so downstream
-consumers (``transferable_contributions``, the TQ sidebar) see the familiar
-shape. Time of day, a strong recovery factor, is dead on long runs (t≈0.25) and
-is not in the pool's transferable set, so it never enters here.
+handful of long runs. ``cov_coefs`` carries the pinned ``temp_centered`` key
+for the TQ sidebar. Time of day, a strong recovery factor, is dead on long runs
+(t≈0.25) and is not in the pool's transferable set, so it never enters here.
+
+RACE FATIGUE REMOVED from long runs (Max, Sept 2026). The pooled fatigue betas
+still serve recovery, but long runs no longer apply them. The credit keyed on
+race OCCURRENCE, not on fatigue actually incurred, so a tactical or
+low-cost race (Wednesday All-Comers 3000s, a downhill mile TT) credited the
+next long run ~17 s of 5K time — and the demonstrated-capability frontier is a
+max envelope, so a one-directional over-credit moves it directly while an
+under-credit is hidden. Races and workouts on the same frontier get no
+fatigue credit either. The pooled slope is also recovery-dominated (by-feel
+effort, where fatigue lowers the chosen pace), and the long-run response
+could not be identified on its own (June 2026: ~4 runs with marathon load,
+LOO swing 1.4–8.6; the long-run-only fit read ~2.3× recovery's amplitude but
+was era-confounded). At removal it decided 5 of the 22 long runs that set
+the frontier somewhere.
+
+SCALE (Sept 2026): the pooled betas are s/mi of RUN pace (the pool regresses
+run pace − CS pace), but ``raw_resid`` is s/mi of 5K-EQUIVALENT pace. The
+per-run contribution (``temp_contribution``) is therefore removed from the
+run's time inside ``project_long_runs`` and re-scored through the same WA
+conversion, which yields ``temp_adj`` on the 5K-equivalent scale — that is
+what ``cov_contrib`` carries here. 1 s/mi of long-run pace is ~0.77 s/mi of
+5K-equivalent pace for Max, so subtracting run-pace seconds directly (as the
+code did from the June 2026 pinning until Sept 2026) over-applied the terms
+by ~30 %. The temperature credit also feeds the pause-erosion effort gate
+(Sept 2026), like the physical route credits — the gate polices the pace the
+run actually claims.
 
 ROLE CHANGED (June 2026): the INTERCEPT is display-dead. Long runs enter
-TQ at their race-equivalent raw residual (``project_long_runs`` applies
-the CS fit's β_long un-bias) minus this model's PHYSICAL + COVARIATE
-contributions only (``phys_contrib + cov_contrib`` — verified, physically
-grounded, always applied; Max intends to test the same template on
-workouts). The intercept/level is fit (it centers the regressors and
+TQ at their race-equivalent raw residual (``project_long_runs``: WA 5K
+conversion of the flat-/altitude-corrected, pause-eroded run) minus this
+model's PHYSICAL + COVARIATE contributions only (``phys_contrib +
+cov_contrib`` — always applied). The intercept/level is fit (it
 robustifies the prune) but NEVER subtracted from any 5K-equivalent
 position — a constant subtracted from every long run claims a long run
 out-predicts a race at the same distance/pace, which is physically
 indefensible (Max's no-class-constants contract). Long-run TQ pruning
 rides the shared track-relative prune; this fit's internal MAD prune only
-robustifies its betas. Other consumers: the Long Runs plot's Normalize
-toggle (covariate betas) and the Dashboard's familiar-route
-recency-weighted residual (``route`` labels + ``is_outlier``).
+robustifies its level. ``route`` labels + ``is_outlier`` are also read by
+dashboard.py's ``_long_run_residual``, which is currently uncalled.
 """
 from __future__ import annotations
 
@@ -75,13 +99,8 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from src.shared.paths import DATA_DIR
-from src.shared.plot_window import clip_to_daily_floor
-from src.shared.recovery_model import (quality_category_dates,
-                                       add_quality_features,
-                                       physical_route_betas,
-                                       temp_centered_feature,
-                                       QUALITY_CATS)
+from src.shared.recovery_model import (physical_route_betas,
+                                       temp_centered_feature)
 
 # Min long runs per location for the DESCRIPTIVE 'route' label (locations
 # below this fold into 'other'). No longer a model term — see module
@@ -94,19 +113,18 @@ PRUNE_SIGMA = 3.0
 # (watch profiles with a handful of long runs).
 MIN_COV_N = 30
 
-# Transferable-state covariates (temperature heat slope + per-category
-# race-fatigue decays) are PINNED from the pooled fit (physical_route_betas),
-# no longer fit here — see the module docstring. Kept as a named list so the
-# pinned keys and the contribution loop stay in one place.
-LR_COVARIATES = ['temp_centered'] + [f'fat_{c}' for c in QUALITY_CATS]
+# Transferable-state covariates applied to long runs: the temperature heat
+# slope only, PINNED from the pooled fit (physical_route_betas), not fit here.
+# Race fatigue was removed in Sept 2026 — see the module docstring.
+LR_COVARIATES = ['temp_centered']
 # Physical route terms fitted here. ELEVATION IS NO LONGER ONE OF THEM
 # (June 2026, watch-stream-enrichment §A): the route-constant median-centered
 # slope (0.17·elev_per_mile) that used to live on this residual scale was
 # replaced by the per-run, effort-aware physical grade engine, applied
 # upstream as a TIME correction in workouts.project_long_runs — so raw_resid
 # already carries the flat-equivalent grade correction by the time it reaches
-# this fit. Pricing grade on the run's own pace (before the β un-bias and the
-# hyperbola), from each run's measured hill segments through the two-channel
+# this fit. Pricing grade on the run's own pace (before the WA 5K
+# conversion), from each run's measured hill segments through the two-channel
 # model (climb cost + steepness-dependent descent benefit), is strictly better
 # than a single pinned slope on a balanced-route constant centered at the era
 # median.
@@ -123,39 +141,68 @@ LR_COVARIATES = ['temp_centered'] + [f'fat_{c}' for c in QUALITY_CATS]
 LR_PHYS_FITTED: list = []
 
 
-def load_quality_dates():
-    """Quality-day dates (marathon / short race) from the profile's daily.csv
-    and races.csv — the recovery model's categorization, reused here for the
-    long-run fatigue covariates. Filtered to the logging era so the dates
-    match what the recovery fit sees."""
-    daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
-    daily = clip_to_daily_floor(daily)
-    races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
-    return quality_category_dates(daily, races)
+def state_betas(n_in_scope):
+    """The pinned covariate betas (s/mi of RUN pace) keyed by
+    ``LR_COVARIATES``, from the pooled recovery+long-run fit — or ``{}`` below
+    ``MIN_COV_N`` in-scope long runs (the sparse-profile "no state correction"
+    behavior; the pool returns ~0 for such profiles anyway)."""
+    if n_in_scope < MIN_COV_N:
+        return {}
+    pooled = physical_route_betas()
+    return {c: float(pooled.get(c, 0.0)) for c in LR_COVARIATES}
 
 
-def fit_long_run_model(lr_in, quality_dates=None):
-    """Fit the (display-dead) long-run LEVEL on the in-slice long runs, with
-    the transferable-state covariates (temperature + per-category race-fatigue
-    decay) and any ``LR_PHYS_FITTED`` physical terms PINNED — not fit — from the
-    pooled recovery+long-run estimator (``physical_route_betas``; see module
-    docstring). Only the intercept (+ any ``LR_PHYS_FITTED``, empty by default —
+def _temp_ref(hinge, in_scope):
+    """Median heat hinge over the in-scope rows that HAVE a reading — the
+    typical-day reference the temperature adjustment is centered on."""
+    m = hinge[np.asarray(in_scope, bool)].median()
+    return float(m) if pd.notna(m) else 0.0
+
+
+def temp_contribution(lr, in_scope):
+    """Per-row temperature pace contribution for long runs, in s/mi of RUN
+    pace (positive = the heat slowed the run), a Series aligned to
+    ``lr.index``. Zeros below ``MIN_COV_N`` in-scope rows.
+
+    The one-sided heat hinge max(0, air_temp − 6 °C) times the pinned slope,
+    centered on the in-scope median hinge (``_temp_ref``) so the adjustment is
+    symmetric around a normal day rather than one-directional off the cold
+    floor. A MISSING reading contributes exactly 0 (neutral, like an unlogged
+    wind reading) — filling the hinge with 0 before centering, as the code did
+    until Sept 2026, charged every unmeasured run the full sub-6 °C penalty.
+
+    ``in_scope`` is a boolean mask over ``lr`` (the rows the TQ model admits);
+    it sets both the ``MIN_COV_N`` gate and the temperature reference, so
+    out-of-slice rows get contributions on the same footing as in-scope ones.
+    Consumers on the 5K-equivalent scale must convert (see module docstring,
+    SCALE)."""
+    in_scope = np.asarray(in_scope, bool)
+    coefs = state_betas(int(in_scope.sum()))
+    if not coefs:
+        return pd.Series(0.0, index=lr.index)
+    hinge = temp_centered_feature(lr)
+    return (coefs['temp_centered'] * (hinge - _temp_ref(hinge, in_scope))
+            ).fillna(0.0)
+
+
+def fit_long_run_model(lr_in):
+    """Fit the (display-dead) long-run LEVEL on the in-slice long runs (the
+    in-scope rows of ``workouts.project_long_runs``), with the temperature
+    offset (PINNED from the pooled recovery+long-run estimator; see module
+    docstring) taken from the projection's ``temp_adj`` column — already on
+    the 5K-equivalent scale.
+    Only the intercept (+ any ``LR_PHYS_FITTED``, empty by default —
     elevation is priced upstream in project_long_runs, not here) is fit, via the
-    same iterative MAD-based outlier prune at ``PRUNE_SIGMA``. Covariates enter
-    only when the sample has at least ``MIN_COV_N`` rows (preserving the
-    sparse-profile "no state correction" behavior the Normalize toggle keys
-    off). Distance carries no term — see module docstring.
-
-    ``quality_dates`` is the per-category race-date dict from
-    ``load_quality_dates()`` / ``recovery_model.quality_category_dates``;
-    pass it when the caller already has it, else it's loaded from the
-    profile's data dir.
+    same iterative MAD-based outlier prune at ``PRUNE_SIGMA``. The temperature
+    offset is nonzero only when the sample has at least ``MIN_COV_N`` rows (the
+    sparse-profile "no state correction" behavior). Distance carries no term —
+    see module docstring.
 
     Returns ``(lr_in_augmented, fit, qualifying_routes)``. ``fit`` is a
     SimpleNamespace with ``intercept``, ``phys_coefs`` (dict), ``cov_coefs``
-    (dict of the pinned per-category ``temp_centered`` / ``fat_marathon`` /
-    ``fat_race_short`` keys, empty below ``MIN_COV_N``), ``rsquared``,
-    ``resid_sd``, ``n_kept``, ``temp_ref``.
+    (dict of the pinned run-pace ``temp_centered`` beta for display, empty
+    below ``MIN_COV_N``),
+    ``rsquared``, ``resid_sd``, ``n_kept``, ``temp_ref``.
 
     The augmented frame carries ``route`` (descriptive label only), per-row
     ``phys_contrib``, ``cov_contrib``, ``model_offset``, ``corrected``, and
@@ -163,42 +210,30 @@ def fit_long_run_model(lr_in, quality_dates=None):
     """
     loc_counts = lr_in['location'].value_counts()
     qualifying_routes = sorted(loc_counts[loc_counts >= MIN_ROUTE_N].index)
-    if quality_dates is None:
-        quality_dates = load_quality_dates()
-    lr_in = add_quality_features(lr_in, quality_dates)
-    # One-sided heat hinge max(0, air_temp − 6C), centered on the median hinge
-    # (typical-day reference, like wind and the recovery model) so the
-    # temperature ADJUSTMENT is symmetric around a normal day rather than
-    # one-directional off the cold floor. Missing temp -> 0 so no row drops for
-    # lacking a thermometer reading. Same shape AND slope as recovery now: the
-    # slope is pinned from the pool below, not fit here.
-    lr_in['temp_centered'] = temp_centered_feature(lr_in).fillna(0.0)
-    temp_ref = float(lr_in['temp_centered'].median())
-    lr_in['temp_centered'] = lr_in['temp_centered'] - temp_ref
+    lr_in = lr_in.copy()
+    temp_ref = _temp_ref(temp_centered_feature(lr_in),
+                         np.ones(len(lr_in), bool))
     lr_in['route'] = lr_in['location'].where(
         lr_in['location'].isin(qualifying_routes), 'other')
 
-    # Transferable-state covariates (temp + per-category fatigue) are PINNED
-    # from the pooled recovery+long-run fit — identified on the full corpus, not
-    # re-fit on the handful of in-slice long runs (see module docstring). Gated
-    # by MIN_COV_N only to preserve the sparse-profile "no state correction"
-    # behavior; the pool returns ~0 for such profiles anyway. LR_PHYS_FITTED
-    # (footing/altitude) stays an empty extension point fit here; each such term
-    # additionally requires variation (a constant column can't be fit).
-    if len(lr_in) >= MIN_COV_N:
-        pooled = physical_route_betas()
-        cov_coefs = {c: float(pooled.get(c, 0.0)) for c in LR_COVARIATES}
-        phys_cols = [c for c in LR_PHYS_FITTED if lr_in[c].nunique() > 1]
-    else:
-        cov_coefs, phys_cols = {}, []
+    # Temperature is PINNED from the pooled recovery+long-run fit — identified
+    # on the full corpus, not re-fit on the handful of in-slice long runs (see
+    # module docstring). project_long_runs applies it and converts it to the
+    # 5K-equivalent scale (`temp_adj`); cov_coefs here is the run-pace beta, for
+    # display only. LR_PHYS_FITTED (footing/altitude) stays an empty extension
+    # point fit here; each such term additionally requires variation (a
+    # constant column can't be fit).
+    cov_coefs = state_betas(len(lr_in))
+    phys_cols = ([c for c in LR_PHYS_FITTED if lr_in[c].nunique() > 1]
+                 if len(lr_in) >= MIN_COV_N else [])
 
-    lr_in['cov_contrib'] = sum((b * lr_in[c] for c, b in cov_coefs.items()),
-                               pd.Series(0.0, index=lr_in.index))
+    lr_in['cov_contrib'] = lr_in['temp_adj'].astype(float)
 
     # The only FITTED term is the (display-dead) level — intercept + any
-    # LR_PHYS_FITTED — on raw_resid with the pinned covariate offset removed
+    # LR_PHYS_FITTED — on raw_resid with the pinned temperature offset removed
     # (the way recovery subtracts its pinned offset). The iterative MAD prune
-    # still runs: it produces is_outlier, used by the Long Runs plot + dashboard.
+    # still runs: it produces is_outlier (read only by dashboard.py's
+    # uncalled _long_run_residual).
     X = pd.concat([
         pd.Series(1.0, index=lr_in.index, name='Intercept'),
         lr_in[phys_cols].astype(float),

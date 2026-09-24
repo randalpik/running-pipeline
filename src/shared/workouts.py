@@ -376,8 +376,11 @@ def _lr_watch_corrections(lr):
             # distance: on days the watch beat its own average error the
             # estimate overshoots the log and the trusted log wins (those
             # days end up effectively uncorrected). TIME is the anchor — it
-            # IS the watch time (the log is just that, rounded to the
-            # nearest minute), known to the second — so corr_time stays the
+            # IS the watch time, known to the second (the log is that time
+            # truncated to the minute: Max paces the end of a run so the
+            # time rounds DOWN for the log, so watch time runs ~30 s longer —
+            # median +32 s, Sept 2026; deliberately not estimated for
+            # pre-watch days) — so corr_time stays the
             # watch time and corr_pace is a pure DERIVATIVE of
             # (corr_time, corr_mi), never clamped on its own. Replaces the
             # old pace-floor "overread clamp", which governed the derivative
@@ -804,8 +807,8 @@ def project_long_runs(cs, epoch):
 
     Watch-enriched and route-rule-corrected rows (see _lr_watch_corrections)
     feed the projection their corrected distance/time, so p5k_min/raw_resid
-    (and every downstream consumer: the TQ smoother, the dashboard's
-    long-run prediction) are correction-aware. Watch days erode on their
+    (and every downstream consumer: the TQ smoother, the Fitness frontier)
+    are correction-aware. Watch days erode on their
     measured stops, every other row on the imputed pre-watch structure. (The
     connected-fatigue `d_eff_frac` still carried in the watch caches scored
     long runs before the 2026-06-18 erosion model and is no longer read.)
@@ -835,6 +838,14 @@ def project_long_runs(cs, epoch):
     back to the route constant + terrain-default grade, then 0 — degrading to
     the prior behavior with no correction, never a crash (GHA has no
     details cache).
+
+    TEMPERATURE (Sept 2026): the pinned heat term is credited to the pace the
+    effort gate sees (like the route credits), and removed from the time over
+    the eroded distance and re-scored through WA into `temp_adj`
+    (5K-equivalent s/mi) — the offset the TQ long-run model subtracts.
+    raw_resid excludes the temperature time credit (its erosion already
+    reflects it). Race fatigue is NOT applied to long runs (removed Sept 2026;
+    see long_run_model).
     """
     d = pd.read_csv(DAILY_PATH, parse_dates=['date'])
     # Legacy hand-verified long runs (snapshot `training`) are injected HERE
@@ -906,6 +917,15 @@ def project_long_runs(cs, epoch):
                    + lr['alt_cost_s_per_mi'].to_numpy())
     t_run_flat = lr['t_run'] - phys_credit * (lr['d_m'] / METERS_PER_MILE)
 
+    # Temperature: pinned heat slope (long_run_model.temp_contribution), s/mi of
+    # RUN pace, centered on a typical day (hot runs positive, cold runs
+    # negative). It feeds the effort gate below, so the gate polices the pace
+    # the run actually claims; its time credit is applied after the erosion
+    # (temp_adj).
+    from src.shared.long_run_model import temp_contribution
+    temp_s = temp_contribution(lr, lr['excluded_reason'].isna()).to_numpy(float)
+    lr['temp_s_per_mi'] = temp_s
+
     # Project each long run's flat-/altitude-corrected time to a 5K-equivalent via
     # the World Athletics tables (down-convert; long runs are all >5K, replacing
     # the old beta_long un-bias) — scored NOT at the full distance but at the
@@ -924,16 +944,17 @@ def project_long_runs(cs, epoch):
                      for dm in lr['d_m'].to_numpy(float)])
     lr['est_pause_s'] = np.where(measured, np.nan, _est)
     # ---- 5K-equivalent projection with PAUSE-UNCERTAINTY erosion ----
-    # Effort = CS-predicted race pace at the run's distance ÷ its FLAT pace (so
-    # route credits raise effort too); the gate is 0 below LR_EFFORT_E0 and rises
+    # Effort = CS-predicted race pace at the run's distance ÷ its FLAT,
+    # temperature-credited pace (so route and heat credits raise effort too,
+    # and a cold run's lowers it); the gate is 0 below LR_EFFORT_E0 and rises
     # linearly, uncapped, above it. eroded_deff then discounts everything after
     # a pause of P s at run-fraction L by exp(−gate·LR_EROSION_RATE·P·L), so a
     # heavily-paused frontier run loses distance while the cloud and
     # near-continuous runs are untouched. No hard cap — the
     # erosion alone places long runs; how far below the frontier they fall is the
     # model's verdict, not a clamp.
-    v_flat = lr['d_m'].to_numpy(float) / t_run_flat.to_numpy(float)
-    run_pace = METERS_PER_MILE / v_flat                                  # s/mi, flat
+    run_pace = (t_run_flat.to_numpy(float)
+                / (lr['d_m'].to_numpy(float) / METERS_PER_MILE)) - temp_s  # s/mi, flat, temp-credited
     t5k_cs = lr['p5k_cs_min'].to_numpy(float) * 60.0 * 5000.0 / METERS_PER_MILE
     race_pace_at_d = np.array([wa_equiv_time_at(float(dm), float(t)) / (dm / METERS_PER_MILE)
                                for dm, t in zip(lr['d_m'].to_numpy(float), t5k_cs)])
@@ -949,6 +970,17 @@ def project_long_runs(cs, epoch):
     lr['t_5k_hyp'] = [wa_5k_equiv_time(float(de), float(t)) for de, t in zip(demo, t_demo)]
     lr['p5k_min']  = np.asarray(lr['t_5k_hyp'], float) * METERS_PER_MILE / 5000.0 / 60.0
     lr['raw_resid'] = (lr['p5k_min'] - lr['p5k_cs_min']) * 60
+
+    # ---- temperature time credit ----
+    # Removed from the flat time over the demonstrated distance and re-scored
+    # through the same WA conversion, so `temp_adj` lands on the 5K-equivalent
+    # scale raw_resid lives on (s/mi, positive = credited faster). The TQ
+    # long-run model subtracts temp_adj.
+    t_temp = t_demo - temp_s * demo / METERS_PER_MILE
+    t5k_temp = np.array([wa_5k_equiv_time(float(de), float(t))
+                         for de, t in zip(demo, t_temp)])
+    lr['temp_adj'] = ((np.asarray(lr['t_5k_hyp'], float) - t5k_temp)
+                      * METERS_PER_MILE / 5000.0)
     return lr
 
 

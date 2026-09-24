@@ -6,8 +6,8 @@
 //
 // Normalize (OFF by default) subtracts the full flat / sea-level race-
 // equivalent adjustment via window.__PLOT_LR_NORM_ADJ (sec/mi): physical
-// route (grade, off-road footing, altitude) + training-state (temperature,
-// race fatigue), the same decomposition the Training page applies. It ships
+// route (grade, off-road footing, altitude) + temperature, the same
+// decomposition the Training page applies. It ships
 // off, so the initial trace is the raw corrected base (meta.disp_y); the
 // toggle re-derives y from that base.
 //
