@@ -125,6 +125,7 @@ const FIXTURES: Fixture[] = [
       + '<b>Altitude:</b> 5,430 ft<br>'
       + '<b>Time of day:</b> morning<br>'
       + '<b>Recent marathon:</b> 3d ago<br>'
+      + '<b>Recent long run:</b> 24.5 mi, 1d ago<br>'
       + '<b>Conditions:</b> dry<br><b>With:</b> solo</div>',
   },
   {
@@ -141,7 +142,7 @@ const FIXTURES: Fixture[] = [
       + '<b>Wind:</b> 1 mph<br>'
       + '<b>Elevation:</b> +1193 ft (+5:51) / −1208 ft (−1:23)<br>'
       + '<b>Time of day:</b> morning<br>'
-      + '<b>Recent race:</b> 9d ago</div>',
+      + '<b>Recent race:</b> 2d ago</div>',
   },
   {
     name: 'pathological — single unbreakable token',

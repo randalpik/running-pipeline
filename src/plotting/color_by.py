@@ -37,7 +37,7 @@ from src.shared.day_clock import canonical_run_times
 from src.shared.effective_mileage import effective_daily_miles
 from src.shared.plot_window import daily_floor
 from src.shared.recovery_model import (per_run_altitude, days_since,
-                                       quality_category_dates)
+                                       quality_category_dates, long_run_context)
 from src.plotting.gradients import (gradient_at, rgb_to_hex, css_gradient,
                                     solar_css_gradient, solar_ramp_from_anchors,
                                     NO_DATA_GRAY)
@@ -344,9 +344,10 @@ def default_colors(payload):
 
 
 def attach_hover_columns(df, data_dir, *, daily=None, races=None):
-    """Add the three columns ``hover.context_lines`` needs that are not on the
-    plotted frame: ``_wk_vol`` (mi), ``_alt_ft``, and ``dsq_<cat>`` (days since
-    the last race of each fatigue category). Returns a copy.
+    """Add the columns ``hover.context_lines`` needs that are not on the
+    plotted frame: ``_wk_vol`` (mi), ``_alt_ft``, ``dsq_<cat>`` (days since
+    the last race of each fatigue category) and ``dsq_long`` / ``long_prev_mi``
+    (days since, and canonical miles of, the last long run). Returns a copy.
 
     Recovery already carries ``dsq_*`` from the model fit; re-deriving them
     here is idempotent and keeps the Long Runs call site to one line."""
@@ -364,4 +365,6 @@ def attach_hover_columns(df, data_dir, *, daily=None, races=None):
     cats = quality_category_dates(daily, races)
     for cat, dates in cats.items():
         out[f'dsq_{cat}'] = days_since(out, dates)
+    from src.shared.workouts import long_run_miles
+    out['dsq_long'], out['long_prev_mi'] = long_run_context(out, long_run_miles(daily))
     return out

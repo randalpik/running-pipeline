@@ -132,7 +132,7 @@ from src.shared.paths import DEBUG_DIR
 from src.shared.cs_projection import load_cs_outputs
 from src.shared.recovery_model import (fit_recovery_model, TEMP_HEAT_ONSET_C,
                                        FATIGUE_TAU_DAYS, MIN_ROUTE_N,
-                                       QUALITY_CATS, ALTITUDE_THRESHOLD_KFT)
+                                       LONG_FATIGUE_REF_MI, ALTITUDE_THRESHOLD_KFT)
 
 _PLOTS_DIR = Path(__file__).resolve().parent
 _RECOVERY_JS = _PLOTS_DIR / 'make_recovery_plots.js'
@@ -147,10 +147,6 @@ DEFAULT_OUT    = str(OUTPUT_DIR)
 # Model constants and the fit itself live in src/shared/recovery_model.py
 # (shared with the Long Runs plot's normalization toggle). What stays here
 # is presentation-only.
-
-# Hover threshold — only show the "Recent race" line if within this many
-# days of the most recent race. Cosmetic only; doesn't affect the model.
-FATIGUE_HOVER_DAYS = 14
 
 # Marker opacity. Shipped to make_recovery_plots.js via js_globals because the
 # hide-filter restyles marker.opacity per point (0 to hide) and has to restore
@@ -766,7 +762,6 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
     Hidden points have y set to null on the trace so hover events don't
     fire on them; the rolling-mean trend line ignores hidden points.
     """
-    q_betas = [betas['fat_marathon'], betas['fat_race_short']]
 
     # Only show factors/filters that have data — a checkbox that can't change
     # anything (no partners logged, a single location, no bad-condition days)
@@ -778,7 +773,7 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
         ('elevation',     'Elevation (net)'),
         ('terrain',       'Terrain'),
         ('altitude',      'Altitude'),
-        ('recent_effort', 'Recent race'),
+        ('recent_effort', 'Recent effort'),
         ('time_of_day',   'Time of day'),
         ('wind',          'Wind'),
     ) if av.get(k, True)]
@@ -836,12 +831,15 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
             f': β = {betas.get("alt_kft", 0):+.2f} s/mi per 1000 ft above '
             f'{ALTITUDE_THRESHOLD_KFT:.0f}k'))
     if av.get('recent_effort', True):
+        # Day-after sizes (each term is anchored at day 1), fading by 1/e per τ.
         detail_rows.append(widgets.detail_row(
-            'Recent race ',
-            f'(exponential decay): marathon {q_betas[0]:+.1f} '
-            f'(τ={FATIGUE_TAU_DAYS["marathon"]:.0f}d), '
-            f'short race {q_betas[1]:+.1f} '
-            f'(τ={FATIGUE_TAU_DAYS["race_short"]:.0f}d)'))
+            'Recent effort',
+            f': s/mi the next day, fading over τ: marathon '
+            f'{betas.get("fat_marathon", 0):+.1f} (τ={FATIGUE_TAU_DAYS["marathon"]:.0f}d), '
+            f'short race {betas.get("fat_race_short", 0):+.1f} '
+            f'(τ={FATIGUE_TAU_DAYS["race_short"]:.0f}d), long run '
+            f'{betas.get("fat_long", 0):+.1f} × (mi/{LONG_FATIGUE_REF_MI:.0f})³ '
+            f'(τ={FATIGUE_TAU_DAYS["long"]:.0f}d)'))
     if av.get('time_of_day', True):
         detail_rows.append(widgets.detail_row(
             'Time of day',

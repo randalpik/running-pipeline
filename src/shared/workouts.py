@@ -433,6 +433,22 @@ def _lr_watch_corrections(lr):
         lr.loc[rule, 'corr_pace_sec_per_mi'] = t_log / corr_mi
     return lr
 
+
+def long_run_miles(daily):
+    """date -> canonical long-run distance (mi) for every ``run_type ==
+    'long'`` row: the watch-corrected / route-rule distance where
+    _lr_watch_corrections has one, else the logged miles. No slice, partner or
+    snow gate — the recovery model's next-day long-run fatigue term is about
+    what the run did to the legs, not whether it can place on the frontier.
+    Sorted by date; empty when the profile has no long runs."""
+    lr = daily[daily['run_type'] == 'long'].dropna(subset=['miles'])
+    if lr.empty:
+        return pd.Series(dtype=float)
+    lr = _lr_watch_corrections(lr)
+    mi = lr['corr_miles'].where(lr['corr_miles'].notna(), lr['miles'])
+    return pd.Series(mi.to_numpy(float),
+                     index=pd.DatetimeIndex(lr['date'])).sort_index()
+
 # ---------- CS basis ----------
 def load_cs():
     """Load bayes_cs_summary.csv and derive the CS-implied 5K pace per day.

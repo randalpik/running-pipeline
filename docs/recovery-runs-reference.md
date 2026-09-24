@@ -65,8 +65,9 @@ residual_detrended ~ β_temp     · temp_centered
                    + β_foot     · is_offroad          (pinned, physical)
                    + β_alt      · altitude_regressor  (pinned, physical)
                    +              elev_cost            (pinned, grade-aware)
-                   + β_marathon · fatigue_marathon    (exp(−t/τ_mar))
-                   + β_race     · fatigue_race_short  (exp(−t/τ_rs))
+                   + β_marathon · fat_marathon        (exp(−(t−1)/2), day-1 anchored)
+                   + β_race     · fat_race_short      (exp(−(t−1)/1))
+                   + β_long     · fat_long            ((mi/20)³ · exp(−(t−1)/1))
                    + β_tod      · tod_is_pm
 ```
 
@@ -77,10 +78,10 @@ on the era-detrended residual; the three physical channels (footing,
 altitude, grade) are pinned from `recovery_model.physical_route_betas()` and
 consumed via `fit_recovery_model(pin_physical=True)`.
 
-- **Temperature**: linear, reference 12°C. β ≈ +0.28 sec/mi per °C from
-  reference. Real but small — captures roughly 25% of the seasonal pace
-  pattern; the rest is summer-training-intensity confound that era trend
-  absorbs.
+- **Temperature**: one-sided heat hinge `max(0, T − 6 °C)`, slope pinned from
+  the pooled fit (≈ +0.34 s/mi per °C, Sept 2026). Real but small; most of the
+  seasonal pace pattern is summer-training-intensity confound that the era
+  trend absorbs.
 
 - **Route handling — physical, era-free model** (June 2026): the per-route
   dummies were **removed** and replaced by three physical channels that
@@ -92,20 +93,56 @@ consumed via `fit_recovery_model(pin_physical=True)`.
   with the long-run and race conversions), the third is imported from
   per-mile elevation data.
 
-- **Recent race** (renamed from "Recent effort" in April 2026): two
-  categories — marathon and race_short — using **exponential decay
-  exp(−t/τ)** with τ values empirically derived from the data:
-  `FATIGUE_TAU_DAYS = {marathon: 6, race_short: 5}`. β values around
-  marathon +17, race_short +9 sec/mi for the day-0 contribution. See the
-  "Marathon-fatigue decay shape" finding below for the empirical curve
-  this replaced the old 14d-linear assumption.
+- **Recent effort** (Sept 2026; was "Recent race"): three terms, each
+  **anchored at day 1** — contribution `β · dose · exp(−(t − 1)/τ)` on day
+  t ≥ 1 — so every β reads as the next-day effect. Fades are pinned
+  (`FATIGUE_TAU_DAYS = {marathon: 2, race_short: 1, long: 1}`); sizes are fit
+  live by the pooled estimator (`physical_route_betas`). Evidence came from
+  **clean-chain** event studies: only recovery runs with no other hard session
+  between the event and the run, against a σ = 28 d trend fit on ordinary days
+  (previous day recovery/rest, no race in 7 d, no marathon in 21 d).
+  - **Marathon, 2-day fade.** Per marathon (each counted once): day 1
+    +22.3 ± 4.3 (14), day 2 +15.9 ± 3.4 (16), day 3 +6.7 ± 2.5 (17), days
+    3–8 +4.5 ± 1.8. Best fade 2 d (ΔAIC: 1 d +11.8, 6 d +13.4); a cluster
+    bootstrap over marathons picked 1.5–4 d every time, never 1 or 6. Not a
+    baseline artifact (dropping post-marathon weeks and taper: days 3–8
+    +4.6 ± 1.5). Marathons are categorically a different effort: 24-mile
+    training runs run +11.1 ± 3.1 on day 1 and +3.3 ± 2.0 on day 2, about what
+    the long-run term predicts, while the long-run term at 26.2 mi predicts
+    only +17.3 / +6.4.
+  - **Short race, 1-day fade.** Every race below marathon distance (track,
+    road, XC, half marathon, time trials) in one term. Pooled day 1
+    +8.9 ± 1.5 (106 races), day 2 +3.0 ± 1.6. Track vs road/XC not
+    distinguishable (day 1 Welch p = 0.18, rank p = 0.09; day 2 p = 0.15 /
+    0.37), and a split didn't beat one term on AIC. The old 5-day tail was
+    never fit and had absorbed runs with intervening sessions; the day-1 size
+    (~+9) was already right. Smoothed over (within noise): mile-and-under
+    race days +14.6 ± 3.3, 5Ks +5.4 ± 2.5, two-race days +14.0 ± 2.6.
+  - **Long run, 1-day fade, dosed `(miles / 20)³`.** The most recent
+    `run_type == 'long'` of any kind (no slice/partner/snow gate), at its
+    canonical distance — watch-corrected where available
+    (`workouts.long_run_miles`). Clean-chain day 1 by length: ≤12 mi +0.3,
+    12–14 +1.8, 14–16 +1.7, 16–18 +3.9, 18–20 +9.6, 20–22 +8.8, 22–24 +15.4.
+    Smooth by design (Max: a 14.9 vs 15.0 mi cliff is unacceptable): the cube
+    fit within noise of the best hinge (ΔAIC 0.9) with no knot, duration was
+    ~6.6 AIC worse, linear 12.5 worse, a flat per-run term 26.8 worse.
+  - **Identification guard:** a term enters the pooled fit only with at least
+    `FATIGUE_MIN_EXPOSED = 15` fit rows at ≥ `FATIGUE_EXPOSED_LEVEL = 0.2`,
+    else its β is 0. As of Sept 2026 maddy holds all three at 0 (no marathons,
+    one long run, 13 exposed short-race runs); the short-race term returns
+    once the corpus reaches 15.
+  - **Snapshot (max, Sept 2026):** marathon +23.4, short race +9.9, long run
+    +7.9 at 20 mi. Adopting the three terms moved the pooled physical betas:
+    footing 15.66 → 17.36 (days 2–5 after short races were 59% off-road vs 19%
+    otherwise, so the retired race tail had been soaking up footing) and
+    altitude 2.01 → 1.79 (27% of days after 18+ mi long runs were above
+    3000 ft vs 19%); detrended R² 0.278 → 0.299.
 
 - **Time of day** (`tod_is_pm`): binary indicator, 1 if afternoon/late, 0
-  if early/morning. β ≈ −4.6 sec/mi (afternoon runs are faster). 100% of
-  recovery rows have a TOD value. Adding this feature also collapsed
-  `fat_long` to noise (long runs are predominantly morning, so the
-  morning-slowness signal had been wrongly absorbed by long-run fatigue
-  before TOD was in the model). `fat_long` removed in the same iteration.
+  if early/morning. β ≈ −7.4 sec/mi (afternoon runs are faster; Sept 2026).
+  100% of recovery rows have a TOD value. In April 2026 adding it collapsed
+  the old 14-day linear `fat_long`; that collapse was the feature's shape, not
+  a real absence (see Recent effort).
 
 ### Physical route model (June 2026 — replaced per-route dummies)
 
@@ -370,15 +407,22 @@ evidence.** Each entry below documents the test and rationale.
   (+5.10 ± 1.25). See "Run length, chronic load and pauses" under Findings before
   re-opening this.
 
-- **Hill workouts** (continuous + reps) — sub-noise effect on next-day
-  recovery pace. The legs may feel it but the residuals don't show it
-  beyond what `fat_race_short` already captures (some hill sessions get
-  classified as race-equivalent if they involved hard sustained efforts).
+- **Hill workouts** (continuous + reps) — no term. Sept 2026 re-check: the
+  overall null hides a timing split — an afternoon session followed by a
+  next-morning run is +8.3 ± 1.5 (50), morning → next morning −5.2 ± 1.1 (49).
+  The effect is turnaround, not the session; not modeled.
 
-- **Tempo / interval / fartlek workout fatigue** — only races and long
-  runs leave detectable next-day signature; standard quality workouts
-  don't. (Long runs themselves were removed from the model in April
-  2026 — see TOD feature note above.)
+- **Tempo / interval / fartlek workout fatigue** — still null (Sept 2026
+  re-check against an away-from-workout baseline: day 1 +0.7 ± 1.0, day 2
+  +1.3 ± 1.2, same in both eras; only 6% of workouts are followed by a rest
+  day, so selection doesn't hide it). The one real pattern is turnaround:
+  across all hard sessions, afternoon/evening → next-morning runs are
+  +9.8 ± 1.0 vs +2.3 ± 0.7 morning → next morning (track intervals +6.4 vs
+  −3.8; the 500/300 track fartlek +12.6 ± 1.3). On ordinary days a
+  previous-day afternoon run costs only ~2.8 either way. Not modeled; a
+  turnaround term would have to be fit jointly with the short-race term
+  (most track races are evening → next morning, yet races stay slow
+  evening → next evening, +10.2 ± 1.9).
 
 - **Heavy rain weather** — tested April 2026. n=36 days, mean
   fully-normalized residual −5.3, p=0.002 vs clear weather. Real but
@@ -514,12 +558,12 @@ evidence.** Each entry below documents the test and rationale.
   model — the raw weight signal is dominated by acute hydration loss,
   not bodyweight.
 
-- **Long-run fatigue** (`fat_long`) — kept until TOD was added in April
-  2026. Original linear-decay β ≈ +2 sec/mi peak; after TOD pulled out
-  the morning-slowness component, `fat_long` β collapsed to +0.20
-  (essentially zero — same magnitude as already-rejected features).
-  Long runs are predominantly morning, so prior versions had been
-  wrongly attributing morning-slowness to long-run fatigue. Removed.
+- **Long-run fatigue** (`fat_long`) — **ADOPTED Sept 2026** (see Recent
+  effort). The April 2026 rejection was a feature-shape artifact: a 14-day
+  linear decay on weekly long runs reads 0.93 on day 1 and 0.86 on day 2
+  while the real effect goes +4.3 → −0.3, so the regressor barely varied and
+  TOD absorbed it. The clean effect survives inside each time-of-day stratum
+  (AM +3.6 ± 0.9, PM +5.2 ± 1.4), on every weekday, and scales with length.
 
 - **Super-compensation period** (days 14-50 post-marathon, where pace is
   ~2-3 sec/mi *faster* than baseline — see findings below) — empirically
@@ -583,7 +627,8 @@ Per-run HTML (used by both modes) is built once at fig construction by `build_ho
 - Header: `YYYY-MM-DD (DOW)` — DOW abbreviation matches the TQ tooltip format.
 - Pace + miles, temp, location label
 - Conditions / partners / outlier flags rendered as `<i>... (excluded from fit)</i>` when the run is pruned from the fit
-- Most recent race within `FATIGUE_HOVER_DAYS = 14`: `Recent marathon: Nd ago` or `Recent race: Nd ago` (whichever category is closest)
+- Most recent race while its fatigue term is still ≥ 5% of its next-day size (`recovery_model.fatigue_window_days`: marathon 7 d, short race 4 d): `Recent marathon: Nd ago` or `Recent race: Nd ago` (whichever category is closest)
+- `Recent long run: N mi, Xd ago` while the dosed long-run term is ≥ 5% of a 20-miler's next-day effect (`hover.LONG_RUN_ROW_MIN`): a 22-miler through day 4, a 15-miler through day 3, a 10-miler the day after only, nothing under ~7.4 mi
 - Time of day (raw label)
 
 The scaffold itself owns the date header, the CS-pace / Trend-pace section, and the CS-residual / Trend-residual rows — those come from the `payload` dict (`cs_pace`, `trend_pace`, `trend_resid`, `sessions`, `first_day`, `nearest_window_days`) serialized into `window.__TT_DATA`. `build_hover()`'s output is the run-specific tail appended after that.
@@ -614,7 +659,8 @@ summary.csv ┘
 
 Single-pass:
 1. Load daily.csv, filter to `run_type == 'recovery'`
-2. Compute days-since each quality category (marathon, race_short)
+2. Compute days-since each race category (marathon, race_short) and the most
+   recent long run with its canonical miles
 3. Compute `is_bad_cond`, `is_partner_run`, `tod_is_pm`
 4. Compute `is_outlier_loo` against clean neighbor pool (LOO 28d)
 5. Combine: `is_pruned = is_bad_cond | is_partner_run | is_outlier_loo`
@@ -623,11 +669,12 @@ Single-pass:
    features for the grade-aware `elev_cost`
 7. Compute era trend (centered rolling mean over non-pruned pool), backfit
    against the physical channels
-8. Compute exponential fatigue features (per-category τ)
+8. Compute the day-1-anchored fatigue features (per-category τ; long runs
+   dosed by (miles/20)³; terms below the exposure guard held at 0)
 9. Fit the era-immune confounds (temp/fatigue/TOD) on the era-detrended
    residual using non-pruned, non-NaN rows, with the physical channels pinned
 10. Build per-point contribution channels (temp, route [grade+footing+
-    altitude], recent_race, tod, era — order matches JS `FACTOR_ORDER`)
+    altitude], recent_effort, tod, era — order matches JS `FACTOR_ORDER`)
 11. Render plot with embedded JS for normalization toggles, visibility
     toggles, custom tooltip, and trend recomputation
 
@@ -636,8 +683,10 @@ Single-pass:
 ```
 intercept            +2.53
 temp_centered        +0.31      sec/mi per °C above 6°C (one-sided heat hinge)
-fat_marathon        +17.0       exp(−t/6) decay from marathon
-fat_race_short       +8.7       exp(−t/5) decay from short race
+fat_marathon        +17.0       exp(−t/6) decay from marathon       [superseded Sept 2026]
+fat_race_short       +8.7       exp(−t/5) decay from short race     [superseded Sept 2026]
+  Sept 2026 (day-1 anchored, next-day sizes): fat_marathon +23.4 (τ 2 d),
+  fat_race_short +9.9 (τ 1 d), fat_long +7.9 at 20 mi (τ 1 d)
 tod_is_pm            −4.7       sec/mi for afternoon/late vs early/morning
 
 Physical route channels (pinned, not fitted here — from physical_route_betas):
@@ -658,6 +707,11 @@ values. The footing/altitude constants are pinned from
 ## Findings
 
 ### Marathon-fatigue decay shape (April 2026)
+
+*(Superseded Sept 2026: the per-marathon clean-chain analysis puts the fade at
+about 2 days, not 6.2 — see Recent effort. This curve was smoothed with a
+~5-day Gaussian, which by itself spreads a sharp two-day spike into a slower
+tail, and its windows didn't exclude runs with other hard sessions.)*
 
 Empirical analysis (refit OLS without `fat_marathon`, plot residual vs
 days-since-most-recent-marathon, fit decay shapes):
@@ -773,7 +827,10 @@ Adding `tod_is_pm` cleaned up an earlier confound: long runs are
 predominantly morning, so `fat_long` had been carrying the
 morning-slowness signal. Once TOD pulled out the +4.6 sec/mi
 morning-vs-afternoon shift, `fat_long` collapsed from +0.78 (kept) to
-+0.20 (rejection-threshold-equivalent). Removed.
++0.20 (rejection-threshold-equivalent). Removed. *(Superseded Sept 2026: the
+collapse came from the feature's 14-day linear shape, not from a real
+absence — `fat_long` returned with a 1-day fade and a distance dose; see
+Recent effort. The converse lesson: a badly shaped feature can look null.)*
 
 This pattern is worth remembering: **a feature can look meaningful in
 isolation but be a proxy for an unmeasured covariate**. Always test
@@ -1073,7 +1130,10 @@ isolates one channel), not with another functional form.
 - Adding shoe-pair as a feature (period-confounded, see rejected list)
 - Adding bodyweight as a feature (collinear with era_trend, see
   rejected list — would require restructuring era_trend's role)
-- Re-introducing `fat_long` (collapsed to noise after TOD)
+- Workout fatigue terms (tempo/interval/fartlek/hill) — null once timing is
+  accounted for (Sept 2026); the turnaround effect is the lead if revisited
+- A thresholded long-run dose (Max, Sept 2026: the long-run term must scale
+  smoothly with distance)
 - Tighter era window (would absorb cross-sectional signal)
 - Linear or hard-cutoff fatigue decay (replaced with exponential —
   empirically better-shaped, no arbitrary cutoff)
@@ -1090,7 +1150,8 @@ isolates one channel), not with another functional form.
 ## Naming notes
 
 - "Recent effort" was renamed to "Recent race" in April 2026 after
-  `fat_long` was dropped — only marathon and short-race fatigue remain.
+  `fat_long` was dropped, and back to "Recent effort" in Sept 2026 when
+  `fat_long` returned.
 - Earlier name "Recent quality" (V6 and earlier) was changed to avoid
   confusion with the training-quality framework.
 - "Training quality residual" feature was briefly added in V6 then
@@ -1098,7 +1159,9 @@ isolates one channel), not with another functional form.
 - `FATIGUE_DECAY_DAYS` (single 14d constant for linear feature) was
   replaced by `FATIGUE_TAU_DAYS` (per-category τ dict) +
   `FATIGUE_HOVER_DAYS` (cosmetic threshold for showing recent-race
-  line in tooltip; does not affect the model).
+  line in tooltip; does not affect the model). Sept 2026: the tooltip windows
+  now follow the model (`fatigue_window_days`, `hover.LONG_RUN_ROW_MIN`) and
+  `FATIGUE_HOVER_DAYS` is gone.
 
 ## Plot: colour-by dropdown (Sept 2026)
 
@@ -1179,8 +1242,8 @@ so this tab and Long Runs stay in sync on both content and order:
 
 Gates that did **not** change: elevation still fires on
 `|contrib_elevation| ≥ 1.0` (recovery rows carry no `grade_cost_s_per_mi`, hence
-the `gate_value` override), and recent race still only shows inside
-`FATIGUE_HOVER_DAYS`. New rows: weekly volume (always) and altitude (≥ 1000 ft,
+the `gate_value` override), and recent race still only shows inside its
+fatigue window (`fatigue_window_days` since Sept 2026). New rows: weekly volume (always) and altitude (≥ 1000 ft,
 which keeps Chicago and the lower Nashville runs from carrying a dead row).
 Provenance/exclusion italics — conditions, partners, outlier — stay below the
 context block.

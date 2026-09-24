@@ -23,6 +23,7 @@ import pandas as pd
 
 from src.plotting.formatters import route_label, route_paren, sec_to_mss
 from src.shared.paths import DATA_DIR
+from src.shared.recovery_model import fatigue_window_days, long_fatigue
 from src.shared.units import METERS_PER_MILE, FT_PER_M
 
 
@@ -138,18 +139,21 @@ def long_run_lines(r, pause_adjusted: bool = False, show_logged: bool = True,
 # Position 1 of that order, Distance, is carried by the header's
 # distance @ pace line rather than repeated here.
 #
-# Three values are not columns on the plotted frame; the plot attaches them
+# Some values are not columns on the plotted frame; the plot attaches them
 # first (see plotting.color_by): ``_wk_vol`` miles, ``_alt_ft`` feet, and the
-# ``dsq_<cat>`` days-since-race columns.
+# ``dsq_<cat>`` days-since-race columns (plus ``dsq_long`` / ``long_prev_mi``).
+
+# The recent-long-run row shows only while the model's long-run fatigue term
+# is at least this fraction of a 20-miler's next-day effect: a 22-miler through
+# day 4, a 15-miler through day 3, a 10-miler the day after only, and nothing
+# under about 7.4 miles (their modelled effect is under 5% even on day 1).
+LONG_RUN_ROW_MIN = 0.05
 
 # Altitude is only worth a row once it is meaningfully above sea level —
 # below this, every flat-city run would carry a dead "Altitude: 120 ft".
 # 1000 ft specifically keeps Chicago and the lower Nashville runs quiet.
 ALTITUDE_MIN_FT = 1000.0
 
-# A race further back than this has decayed out of the fatigue window the
-# recovery model models, so the row stops being informative.
-RECENT_RACE_MAX_DAYS = 14
 
 
 def location_line(r) -> str:
@@ -200,17 +204,24 @@ def context_lines(r, *, elev_gate_value=None) -> list:
     if pd.notna(tod) and str(tod).strip():
         out.append(tt_kv('Time of day', str(tod).strip().lower()))
 
-    # Most recent race, within the fatigue-decay window only. Marathons get
-    # their own label since they carry a distinct decay constant.
+    # Most recent race, only while the recovery model's fatigue term for it is
+    # still >= 5% of its next-day size (fatigue_window_days). Marathons get
+    # their own label since they carry a distinct fade. The long run is gated
+    # on its dosed term instead (LONG_RUN_ROW_MIN), since its size scales with
+    # distance.
     most_recent = None  # (label, days_ago)
     for cat, label in (('marathon', 'Recent marathon'),
                        ('race_short', 'Recent race')):
         d = r.get(f'dsq_{cat}')
-        if d is not None and pd.notna(d) and d <= RECENT_RACE_MAX_DAYS:
+        if d is not None and pd.notna(d) and d <= fatigue_window_days(cat):
             if most_recent is None or d < most_recent[1]:
                 most_recent = (label, int(d))
     if most_recent is not None:
         out.append(tt_kv(most_recent[0], f'{most_recent[1]}d ago'))
+    d, mi = r.get('dsq_long'), r.get('long_prev_mi')
+    if (d is not None and pd.notna(d) and mi is not None and pd.notna(mi)
+            and float(long_fatigue(mi, d)) >= LONG_RUN_ROW_MIN):
+        out.append(tt_kv('Recent long run', f'{float(mi):.1f} mi, {int(d)}d ago'))
 
     return out
 

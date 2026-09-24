@@ -143,24 +143,46 @@ TEMP_HEAT_ONSET_C      = 6.0
 # around the MEDIAN observed recovery wind (wind_reference_mph): unlogged days
 # are filled with that median (a neutral, zero-offset assumption — not dead
 # calm), below-median wind is a small credit and above-median a small cost.
-# Recent-race fatigue uses exponential decay: contribution = exp(−t/τ) at
-# day t post-race, fitted via OLS for amplitude. Per-category τ in days,
-# from empirical curve fits on days-since-last-race vs marathon-revealed
-# residual (see April 2026 analysis).
-FATIGUE_TAU_DAYS = {'marathon': 6.0, 'race_short': 5.0}
+# Recent-effort fatigue (Sept 2026 — docs/recovery-runs-reference.md "Recent
+# effort"): three terms, each ANCHORED AT DAY 1 so its fitted beta reads as the
+# next-day effect — contribution = beta · dose · exp(−(t − 1)/τ) on day t ≥ 1
+# after the session (no recovery run shares a day with a race or long run).
+# The fades are pinned from clean-chain event studies; the sizes are fit live
+# by the pooled estimator. Marathon 2 d (per-marathon cluster bootstrap: 1.5–4 d,
+# never 1 or 6); short race and long run 1 d. Long runs are dosed by
+# (canonical miles / 20)^3 — smooth in distance (no threshold), which fit
+# day-after slowdown within noise of the best hinge and far better than
+# duration, linear or a flat per-run term.
+FATIGUE_TAU_DAYS = {'marathon': 2.0, 'race_short': 1.0, 'long': 1.0}
+LONG_FATIGUE_REF_MI = 20.0
+LONG_FATIGUE_POWER = 3
+# Identification guard: a fatigue term enters the fit only when at least
+# FATIGUE_MIN_EXPOSED fit rows carry it at >= FATIGUE_EXPOSED_LEVEL (e.g. a
+# profile with one long run and no marathons); otherwise its beta is 0.
+FATIGUE_MIN_EXPOSED = 15
+FATIGUE_EXPOSED_LEVEL = 0.2
 ERA_WINDOW_HALF_DAYS   = 182
 ERA_WINDOW_MIN_POINTS  = 30
 MIN_ROUTE_N            = 13
 MARATHON_DISTANCE_M    = 42000
 
+# Race categories (dates from quality_category_dates) and the fatigue terms
+# built from them plus long runs.
 QUALITY_CATS = ['marathon', 'race_short']
+FATIGUE_CATS = QUALITY_CATS + ['long']
 
 # Per-day factors whose betas are meaningful beyond recovery runs (long runs
 # apply temperature only, via long_run_model.temp_contribution — race fatigue
 # was removed from long runs Sept 2026 and TOD is dead there). Route and era
 # are intentionally absent — see module docstring.
-TRANSFERABLE_FEATURES = ['temp_centered', 'fat_marathon', 'fat_race_short',
-                         'tod_is_pm']
+TRANSFERABLE_FEATURES = (['temp_centered'] + [f'fat_{c}' for c in FATIGUE_CATS]
+                         + ['tod_is_pm'])
+
+
+def fatigue_window_days(cat):
+    """Days after the session over which a fatigue term is still at least 5% of
+    its day-1 size (1 + 3τ) — the tooltip's recent-session window."""
+    return 1 + 3 * FATIGUE_TAU_DAYS[cat]
 
 
 def apparent_temp_c(temp_c, humidity_pct):
@@ -870,15 +892,57 @@ def quality_category_dates(daily, races):
     return out
 
 
-def add_quality_features(df, quality_dates):
-    """Add ``dsq_<cat>`` (days since most recent <cat> race) and ``fat_<cat>``
-    (exponential fatigue decay, exp(−days/τ)) columns. Returns a copy."""
+def long_run_context(df, long_runs):
+    """(days since, canonical miles of) the most recent long run strictly
+    before each row, from ``long_runs`` (date-indexed miles, see
+    workouts.long_run_miles). NaN where there is none."""
+    if long_runs is None or not len(long_runs):
+        nan = np.full(len(df), np.nan)
+        return nan, nan.copy()
+    dates = list(long_runs.index)
+    ds = days_since(df, dates)
+    sd = np.array([t.value for t in dates])
+    idx = np.searchsorted(sd, np.array([t.value for t in df['date']]), side='left')
+    mi = np.where(idx > 0, long_runs.to_numpy(float)[np.maximum(idx - 1, 0)], np.nan)
+    return ds, mi
+
+
+def _day1_decay(days, tau):
+    """exp(−(t − 1)/τ) for t ≥ 1 (1.0 on the day after), 0 where undefined."""
+    t = np.asarray(days, dtype=float)
+    return np.where(t >= 1, np.exp(-(np.nan_to_num(t, nan=1.0) - 1) / tau), 0.0)
+
+
+def long_fatigue(miles, days):
+    """The long-run fatigue feature: (miles / 20)^3 · exp(−(t − 1)/τ_long) —
+    1.0 on the day after a 20-miler, 0 where there is no prior long run."""
+    mi = np.nan_to_num(np.asarray(miles, dtype=float))
+    return (mi / LONG_FATIGUE_REF_MI) ** LONG_FATIGUE_POWER * _day1_decay(days, FATIGUE_TAU_DAYS['long'])
+
+
+def add_quality_features(df, quality_dates, long_runs=None):
+    """Add the recent-effort fatigue columns (see FATIGUE_TAU_DAYS): per race
+    category ``dsq_<cat>`` (days since the most recent such race) and
+    ``fat_<cat>``, plus ``dsq_long`` / ``long_prev_mi`` / ``fat_long`` from
+    ``long_runs`` (date-indexed canonical miles; ``fat_long`` is 0 when None).
+    Every ``fat_*`` is anchored at day 1. Returns a copy."""
     df = df.copy()
     for cat in QUALITY_CATS:
         df[f'dsq_{cat}'] = days_since(df, quality_dates.get(cat, []))
-        df[f'fat_{cat}'] = np.exp(-df[f'dsq_{cat}'].fillna(np.inf)
-                                  / FATIGUE_TAU_DAYS[cat])
+        df[f'fat_{cat}'] = _day1_decay(df[f'dsq_{cat}'], FATIGUE_TAU_DAYS[cat])
+    ds, mi = long_run_context(df, long_runs)
+    df['dsq_long'] = ds
+    df['long_prev_mi'] = mi
+    df['fat_long'] = long_fatigue(mi, ds)
     return df
+
+
+def identified_fatigue(frame):
+    """The ``fat_*`` columns with enough exposure in ``frame`` to be fit (see
+    FATIGUE_MIN_EXPOSED); the rest are held at 0."""
+    return [f'fat_{c}' for c in FATIGUE_CATS
+            if f'fat_{c}' in frame
+            and int((frame[f'fat_{c}'] >= FATIGUE_EXPOSED_LEVEL).sum()) >= FATIGUE_MIN_EXPOSED]
 
 
 def tod_is_pm(df):
@@ -952,10 +1016,11 @@ def physical_route_betas():
     long runs on a shared run-pace residual scale (``pace − cs_pace``) with a
     corpus level dummy (``is_long``) and the recovery era-backfit. THE single
     source of truth for every cross-corpus constant: the two PHYSICAL channels
-    (flat-footing ``trail_frac`` + altitude ``alt_kft``) and the three
-    TRANSFERABLE-STATE channels (``temp_centered`` heat slope, ``fat_marathon``
-    + ``fat_race_short`` race-fatigue decays). The recovery model pins all five
-    (``fit_recovery_model``); long runs use the two physical channels plus
+    (flat-footing ``trail_frac`` + altitude ``alt_kft``) and the four
+    TRANSFERABLE-STATE channels (``temp_centered`` heat slope and the
+    ``fat_marathon`` / ``fat_race_short`` / ``fat_long`` recent-effort terms).
+    The recovery model pins all six (``fit_recovery_model``); long runs use the
+    two physical channels plus
     temperature (``workouts.project_long_runs`` via
     ``long_run_model.temp_contribution`` — race fatigue is deliberately not
     applied to long runs, Sept 2026) — so one constant per channel
@@ -981,8 +1046,8 @@ def physical_route_betas():
     if key in _PHYS_BETAS_CACHE:
         return _PHYS_BETAS_CACHE[key]
     from src.shared.workouts import long_run_fit_rows
-    out = {'trail_frac': 0.0, 'alt_kft': 0.0,
-           'temp_centered': 0.0, 'fat_marathon': 0.0, 'fat_race_short': 0.0}
+    out = {'trail_frac': 0.0, 'alt_kft': 0.0, 'temp_centered': 0.0,
+           **{f'fat_{c}': 0.0 for c in FATIGUE_CATS}}
     try:
         daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
         races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
@@ -1003,7 +1068,9 @@ def physical_route_betas():
 
         lr = long_run_fit_rows()
         if lr is not None and not lr.empty:
-            lr = add_quality_features(lr, quality_category_dates(daily, races))
+            from src.shared.workouts import long_run_miles
+            lr = add_quality_features(lr, quality_category_dates(daily, races),
+                                      long_run_miles(daily))
             lr['temp_centered'] = temp_centered_feature(lr).fillna(0.0)
             lr['tod_is_pm'] = tod_is_pm(lr)
             _epoch = pd.Timestamp('1970-01-01')
@@ -1023,7 +1090,7 @@ def physical_route_betas():
             lr['is_long'] = 1.0
             rows.append(lr)
 
-        base = ['temp_centered'] + [f'fat_{c}' for c in QUALITY_CATS] + ['tod_is_pm']
+        base = ['temp_centered'] + [f'fat_{c}' for c in FATIGUE_CATS] + ['tod_is_pm']
         # is_long only when both corpora are present (else collinear w/ const).
         fit_cols = base + ['trail_frac', 'alt_kft'] + (
             ['is_long'] if len(rows) > 1 else [])
@@ -1046,6 +1113,14 @@ def physical_route_betas():
         pin_shared = pool['trail_frac'].abs().sum() == 0
         if pin_shared:
             fit_cols = [c for c in fit_cols if c not in ('trail_frac', 'alt_kft')]
+        # Fatigue identification guard (FATIGUE_MIN_EXPOSED): a term the corpus
+        # barely exposes (one long run, no marathons) stays at 0.
+        keep_fat = identified_fatigue(pool)
+        weak = [f'fat_{c}' for c in FATIGUE_CATS if f'fat_{c}' not in keep_fat]
+        if weak:
+            fit_cols = [c for c in fit_cols if c not in weak]
+            print(f'  fatigue terms held at 0 (fewer than {FATIGUE_MIN_EXPOSED} '
+                  f'exposed runs): {", ".join(weak)}')
         if len(pool) > len(fit_cols) + 1:
             X = np.hstack([np.ones((len(pool), 1)),
                            pool[fit_cols].fillna(0.0).to_numpy(float)])
@@ -1067,7 +1142,7 @@ def physical_route_betas():
             out = {'trail_frac': float(cmap.get('trail_frac', 0.0)),
                    'alt_kft': float(cmap.get('alt_kft', 0.0)),
                    'temp_centered': float(cmap.get('temp_centered', 0.0))}
-            for c in QUALITY_CATS:
+            for c in FATIGUE_CATS:
                 out[f'fat_{c}'] = float(cmap.get(f'fat_{c}', 0.0))
             if pin_shared:
                 # Cross-profile transfer is by RATIO (fraction of pace) — a
@@ -1134,8 +1209,8 @@ def wind_beta():
         rec = fr.rec.copy()
         rec['target'] = (rec['residual_raw'] - rec['era_trend']
                          - rec['contrib_route'])
-        base = (['temp_centered'] + [f'fat_{c}' for c in QUALITY_CATS]
-                + ['tod_is_pm'])
+        wsub = rec[(~rec['is_pruned']) & rec['wind_mph'].notna()]
+        base = ['temp_centered'] + identified_fatigue(wsub) + ['tod_is_pm']
         m = (~rec['is_pruned']) & rec['wind_mph'].notna() & rec['target'].notna()
         for c in base:
             m = m & rec[c].notna()
@@ -1206,6 +1281,8 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
         cs_summary['cs_pace_sec'] = cs_summary['cs_pace_med'] * 60.0
 
     quality_dates = quality_category_dates(daily, races)
+    from src.shared.workouts import long_run_miles
+    long_runs = long_run_miles(daily)
 
     # Recovery subset
     rec = daily[daily['run_type'] == 'recovery'].copy()
@@ -1347,7 +1424,7 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
               f'[{n_outlier_clean} clean + {n_outlier_bad} also bad-cond + '
               f'{n_outlier_partner} also partner])')
 
-    rec = add_quality_features(rec, quality_dates)
+    rec = add_quality_features(rec, quality_dates, long_runs)
 
     # Physical route model (June 2026): per-run MEASURED elevation + terrain
     # type REPLACE the per-route dummies entirely. Elevation and terrain are
@@ -1410,7 +1487,7 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
     # (the physical_route_betas bootstrap call that builds the recovery side of
     # the pool), temp/fatigue stay in the free block so that self-fit frame is
     # unchanged; the pool does its own joint regression regardless.
-    fatigue_features = [f'fat_{c}' for c in QUALITY_CATS]
+    fatigue_features = identified_fatigue(rec[~rec['is_pruned']])
     if pin_physical:
         base_features = ['tod_is_pm']
     else:
@@ -1431,7 +1508,7 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
                        + pooled['alt_kft'] * rec['alt_kft'].fillna(0.0)
                        + pooled['temp_centered'] * rec['temp_centered'].fillna(0.0)
                        + sum(pooled[f'fat_{c}'] * rec[f'fat_{c}'].fillna(0.0)
-                             for c in QUALITY_CATS)
+                             for c in FATIGUE_CATS)
                        ).to_numpy(float)
         physical_features = []
     else:
@@ -1501,7 +1578,7 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
         betas['trail_frac'] = float(pooled['trail_frac'])
         betas['alt_kft'] = float(pooled['alt_kft'])
         betas['temp_centered'] = float(pooled['temp_centered'])
-        for c in QUALITY_CATS:
+        for c in FATIGUE_CATS:
             betas[f'fat_{c}'] = float(pooled[f'fat_{c}'])
     betas['wind_mph'] = wind_b
 
@@ -1575,7 +1652,7 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
     rec['contrib_temp'] = (betas['temp_centered'] * (
         rec['temp_centered'] - temp_ref)).fillna(0)
     rec['contrib_quality'] = sum(
-        betas[f'fat_{c}'] * rec[f'fat_{c}'].fillna(0) for c in QUALITY_CATS)
+        betas.get(f'fat_{c}', 0.0) * rec[f'fat_{c}'].fillna(0) for c in FATIGUE_CATS)
     rec['contrib_tod'] = betas['tod_is_pm'] * rec['tod_is_pm'].fillna(0)
     # Wind cost (s/mi); 0 where no watch wind reading exists or on calm days.
     rec['contrib_wind'] = wind_off
