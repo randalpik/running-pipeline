@@ -340,6 +340,20 @@ html.rp-mobile-pending .plotly-graph-div { visibility: hidden; }
   left: auto;
   right: 0;
 }
+/* Stacked ramps under one title (colour-by "Recent effort"): a short label
+   column beside each bar + its own tick scale. */
+.rp-gradient-row {
+  display: grid;
+  grid-template-columns: 62px 1fr;
+  column-gap: 8px;
+  align-items: start;
+}
+.rp-gradient-label {
+  font-size: 10.5px;
+  line-height: 10px;
+  color: #ccc;
+  white-space: nowrap;
+}
 
 /* ----- Select (dropdown) -----
    Mirrors the tab shell's profile switcher (shell.css), which is NOT

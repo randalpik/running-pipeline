@@ -37,7 +37,10 @@ from src.shared.day_clock import canonical_run_times
 from src.shared.effective_mileage import effective_daily_miles
 from src.shared.plot_window import daily_floor
 from src.shared.recovery_model import (per_run_altitude, days_since,
-                                       quality_category_dates, long_run_context)
+                                       quality_category_dates, long_run_context,
+                                       add_quality_features, physical_route_betas,
+                                       FATIGUE_CATS, fatigue_window_days)
+from src.plotting.tokens import FRONTIER_LINE, SURFACES
 from src.plotting.gradients import (gradient_at, rgb_to_hex, css_gradient,
                                     solar_css_gradient, solar_ramp_from_anchors,
                                     NO_DATA_GRAY)
@@ -48,9 +51,9 @@ LR_GRAD_BLUE = '#3498DB'     # bright blue   (short)
 LR_GRAD_PURPLE = '#8E44AD'   # vivid purple  (mid)
 LR_GRAD_MAGENTA = '#E91E63'  # magenta       (long)
 
-# Gray end of the one-sided ramps, as hex (elevation gain at 0 ft, a race
-# 14+ days back). Same value gradient_at returns for a missing input, so
-# "negligible" and "unknown" deliberately render identically.
+# Gray end of the one-sided ramps, as hex (elevation gain at 0 ft, a session
+# past its fatigue window). Same value gradient_at returns for a missing input,
+# so "negligible" and "unknown" deliberately render identically.
 GRAY_HEX = rgb_to_hex(NO_DATA_GRAY)
 
 # Electric purple — the highest-chroma purple available at a luminance that
@@ -60,7 +63,17 @@ GRAY_HEX = rgb_to_hex(NO_DATA_GRAY)
 # gray's luminance and vanishes; a darker one (#8E44AD) loses chroma.
 ELEV_GAIN_MAX_COLOR = '#B026FF'
 RECENT_RACE_COLOR = '#FF3B30'
-RECENT_RACE_FADE_DAYS = 14.0      # fully decayed to gray at/after this
+
+# Recent effort: one ramp per recovery-model fatigue term, full colour the day
+# after the session fading to gray at fatigue_window_days (1 + 3τ — where the
+# term drops below 5% of its next-day size, the same point the tooltip's
+# recent-race / recent-long-run rows disappear). Each run takes the ramp of
+# whichever term has the largest modelled effect that day.
+RECENT_EFFORT_COLORS = {'race_short': RECENT_RACE_COLOR,
+                        'marathon': SURFACES['Road'],
+                        'long': FRONTIER_LINE}
+RECENT_EFFORT_LABELS = {'marathon': 'Marathon', 'race_short': 'Short race',
+                        'long': 'Long run'}
 
 DEFAULT_KEY = 'distance'
 
@@ -126,12 +139,36 @@ def weekly_volume(daily):
     return mi.rolling(7, min_periods=7).sum().shift(1)
 
 
-def days_since_race(df, daily, races):
-    """Days since the most recent race of any distance, per run."""
-    cats = quality_category_dates(daily, races)
-    all_races = sorted(set(cats.get('marathon', []))
-                       | set(cats.get('race_short', [])))
-    return pd.Series(days_since(df, all_races), index=df.index)
+def recent_effort(df, daily, races):
+    """Per run: ``(term, days)`` for the recovery-model fatigue term with the
+    largest modelled effect that day — pooled beta × feature, the same sizes the
+    recovery fit pins (physical_route_betas) — and the days since that session.
+    ``(None, nan)`` where every term is 0 (nothing recent, or a profile whose
+    terms are all held at 0 by the identification guard)."""
+    from src.shared.workouts import long_run_miles
+    f = add_quality_features(df[['date']], quality_category_dates(daily, races),
+                             long_run_miles(daily))
+    pb = physical_route_betas()
+    eff = np.column_stack([pb.get(f'fat_{c}', 0.0) * f[f'fat_{c}'].to_numpy(float)
+                           for c in FATIGUE_CATS])
+    days = np.column_stack([f[f'dsq_{c}'].to_numpy(float) for c in FATIGUE_CATS])
+    win, best = eff.argmax(axis=1), eff.max(axis=1)
+    terms = [FATIGUE_CATS[i] if b > 0 else None for i, b in zip(win, best)]
+    d = np.where(best > 0, days[np.arange(len(df)), win], np.nan)
+    return terms, d
+
+
+def recent_effort_spec(df, daily, races):
+    """Colours plus the three legend strips for the Recent effort variable."""
+    anchors = {c: [(1.0, RECENT_EFFORT_COLORS[c]), (fatigue_window_days(c), GRAY_HEX)]
+               for c in FATIGUE_CATS}
+    terms, days = recent_effort(df, daily, races)
+    colors = [GRAY_HEX if t is None else rgb_to_hex(gradient_at(float(d), anchors[t]))
+              for t, d in zip(terms, days)]
+    strips = [dict(title=RECENT_EFFORT_LABELS[c], gradient=css_gradient(anchors[c]),
+                   ticks=[(0.0, '1d'), (1.0, f'{fatigue_window_days(c):.0f}d+')])
+              for c in FATIGUE_CATS]
+    return colors, strips
 
 
 def solar_colors(df, daily, data_dir):
@@ -220,7 +257,7 @@ def _spec(df, daily, races, data_dir):
     wk = pd.Series(wk.to_numpy(), index=df.index)
 
     alt_ft = per_run_altitude(df) * 1000.0
-    dsr = days_since_race(df, daily, races)
+    re_colors, re_strips = recent_effort_spec(df, daily, races)
 
     return {
         'distance': dict(
@@ -265,11 +302,11 @@ def _spec(df, daily, races, data_dir):
             # for more than a few weeks a year. Two qualitative marks only.
             gradient=solar_css_gradient(),
             ticks=[(0.25, 'Dawn'), (0.75, 'Dusk')]),
+        # Three superimposed ramps (see RECENT_EFFORT_COLORS): colours are
+        # resolved per run, and the legend is a stack of three strips.
         'recent_race': dict(
-            label='Recent race', unit='', values=dsr,
-            anchors=[(1.0, RECENT_RACE_COLOR),
-                     (RECENT_RACE_FADE_DAYS, GRAY_HEX)],
-            ticks=[(0.0, '1d'), (1.0, f'{RECENT_RACE_FADE_DAYS:.0f}d+')]),
+            label='Recent effort', unit='days since', colors=re_colors,
+            strips=re_strips),
     }
 
 
@@ -297,6 +334,9 @@ def build_color_by(df, data_dir, *, daily=None, races=None):
         if key == 'time_of_day':
             colors = solar
             gradient = s['gradient']
+        elif 'strips' in s:
+            colors = s['colors']
+            gradient = s['strips'][0]['gradient']
         else:
             anchors = s['anchors']
             colors = [rgb_to_hex(gradient_at(
@@ -309,8 +349,14 @@ def build_color_by(df, data_dir, *, daily=None, races=None):
             'title': title,
             'colors': colors,
             'gradient': gradient,
-            'ticks': [[float(p), t] for p, t in s['ticks']],
+            'ticks': [[float(p), t] for p, t in
+                      (s['strips'][0]['ticks'] if 'strips' in s else s['ticks'])],
         }
+        if 'strips' in s:
+            out['vars'][key]['strips'] = [
+                {'title': st['title'], 'gradient': st['gradient'],
+                 'ticks': [[float(p), t] for p, t in st['ticks']]}
+                for st in s['strips']]
     return out
 
 
@@ -327,9 +373,14 @@ def color_by_ui(payload):
     colours the figure ships with, so nothing has to run at load."""
     from src.plotting import widgets
     d = payload['vars'][payload['default']]
+    # The stack holds the multi-ramp legend (Recent effort); color_by.js swaps
+    # it with the single bar + ticks when such a variable is selected.
+    stack = widgets.gradient_rows(d.get('strips', []))
     return (
         widgets.gradient_strip('cb-strip', title_text=d['title'],
-                               gradient=d['gradient'], ticks=d['ticks'])
+                               gradient=d['gradient'], ticks=d['ticks'],
+                               stack_id='cb-strip-stack', stack_html=stack,
+                               stacked=bool(d.get('strips')))
         + '\n'
         + widgets.select(
             'cb-select',

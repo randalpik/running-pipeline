@@ -1168,7 +1168,7 @@ isolates one channel), not with another functional form.
 The Recovery scatter's marker colour is selectable from a sidebar dropdown
 rather than hardwired to temperature. Eight encodings, shared with the Long
 Runs tab and specified once in `src/plotting/color_by.py`: distance, weekly
-volume, temperature, wind, elevation gain, altitude, time of day, recent race.
+volume, temperature, wind, elevation gain, altitude, time of day, recent effort.
 **Distance is the default** — the Sept 2026 rolling-LOO re-test put its
 recovery β at ~0 (see "Run length, chronic load and pauses"), but the null is a
 statement about *conditional* predictive power, not about whether the variable
@@ -1203,7 +1203,8 @@ gradient, legend ticks — so Recovery and Long Runs cannot drift, and the four
 environmental encodings match the Misc. Trends panels via `shared_scales()`.
 The canonical order drives the dropdown **and** `hover.context_lines`:
 `distance, weekly_volume, temp, wind, elev_gain, altitude, time_of_day,
-recent_race`. Both plots default to **distance**.
+recent_race` (the key predates the "Recent effort" label). Both plots default
+to **distance**.
 
 The contract is opt-in. A plot joins by shipping `window.__PLOT_COLOR_BY`,
 rendering `widgets.gradient_strip('cb-strip', …)` plus
@@ -1218,7 +1219,24 @@ handlers (y, `marker.opacity`) alone.
 recovery run in the dark third of a ramp topped by a 22-mile long run. Weekly
 volume, wind and altitude are *shared*, computed off the full `daily.csv`
 calendar, because they are properties of the day rather than the run.
-Temperature, time of day and recent race are *fixed*.
+Temperature, time of day and recent effort are *fixed*.
+
+**Recent effort superimposes three ramps (Sept 2026).** One per recovery-model
+fatigue term — short race `#FF3B30` (the old recent-race red), marathon the
+Road race blue (`tokens.SURFACES['Road']`), long run the frontier purple
+(`tokens.FRONTIER_LINE`) — each full colour the day after the session and
+fading linearly to gray at `recovery_model.fatigue_window_days` (1 + 3τ:
+short race and long run 4 d, marathon 7 d), where the term falls below 5% of
+its next-day size and the tooltip's recent-race / recent-long-run rows drop
+off. Each run takes the ramp of whichever term has the **largest modelled
+effect that day** (pooled β × feature, the sizes the recovery fit pins), not
+simply the most recent session: a marathon 2 days back outranks a 10-mile long
+run yesterday. The legend swaps the single bar for three stacked strips, each
+with its own day scale (`widgets.gradient_rows`, the `cb-strip-stack`
+container, mirrored by `renderStack` in `_scaffold/color_by.js`); any variable
+that ships `strips` gets the stack. A profile whose fatigue terms are all held
+at 0 by the identification guard (maddy, Sept 2026) renders every run gray.
+Replaced a single red ramp on days since any race, gray at 14 d.
 
 **Gray means "0 or no data"** — `gradients.NO_DATA_GRAY` (`#555555`), the same
 value `gradient_at` returns for NaN, so negligible and unknown render alike on

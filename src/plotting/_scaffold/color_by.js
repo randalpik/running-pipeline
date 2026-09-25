@@ -27,6 +27,9 @@
   var titleEl = document.getElementById('cb-strip-title');
   var barEl = document.getElementById('cb-strip-bar');
   var ticksEl = document.getElementById('cb-strip-ticks');
+  // Multi-ramp legend (a variable with `strips`, e.g. Recent effort): shown in
+  // place of the single bar + ticks.
+  var stackEl = document.getElementById('cb-strip-stack');
 
   function getPlot() { return document.querySelector('.plotly-graph-div'); }
 
@@ -39,7 +42,7 @@
     return idx;
   }
 
-  function renderTicks(ticks) {
+  function tickHtml(ticks) {
     // Mirrors widgets.gradient_strip: end labels get data-at and NO inline
     // `left`, so base.css can pin them inside the bar's edges (an inline
     // `left: 100%` would beat that rule and clip against the sidebar).
@@ -50,7 +53,33 @@
       else if (pos >= 1) html += '<span data-at="1">' + label + '</span>';
       else html += '<span style="left: ' + (100 * pos) + '%">' + label + '</span>';
     }
-    ticksEl.innerHTML = html;
+    return html;
+  }
+
+  function renderTicks(ticks) { ticksEl.innerHTML = tickHtml(ticks); }
+
+  function renderStack(strips) {
+    // Mirrors widgets.gradient_rows.
+    stackEl.innerHTML = '';
+    for (var i = 0; i < strips.length; i++) {
+      var row = document.createElement('div');
+      row.className = 'rp-gradient-row';
+      var label = document.createElement('span');
+      label.className = 'rp-gradient-label';
+      label.textContent = strips[i].title;
+      var body = document.createElement('div');
+      var bar = document.createElement('div');
+      bar.className = 'rp-gradient-bar';
+      bar.style.background = strips[i].gradient;
+      var ticks = document.createElement('div');
+      ticks.className = 'rp-gradient-ticks';
+      ticks.innerHTML = tickHtml(strips[i].ticks);
+      body.appendChild(bar);
+      body.appendChild(ticks);
+      row.appendChild(label);
+      row.appendChild(body);
+      stackEl.appendChild(row);
+    }
   }
 
   function apply() {
@@ -60,8 +89,13 @@
     if (!plot || !plot.data || !window.Plotly) { setTimeout(apply, 100); return; }
 
     if (titleEl) titleEl.textContent = v.title;
-    if (barEl) barEl.style.background = v.gradient;
-    if (ticksEl) renderTicks(v.ticks);
+    var stacked = !!(v.strips && stackEl);
+    if (barEl) { barEl.style.background = v.gradient; barEl.style.display = stacked ? 'none' : ''; }
+    if (ticksEl) { renderTicks(v.ticks); ticksEl.style.display = stacked ? 'none' : ''; }
+    if (stackEl) {
+      stackEl.style.display = stacked ? '' : 'none';
+      if (stacked) renderStack(v.strips);
+    }
 
     var idx = markerTraces(plot);
     if (!idx.length) return;

@@ -196,24 +196,7 @@ def select(
     )
 
 
-def gradient_strip(
-    strip_id: str,
-    *,
-    title_text: str,
-    gradient: str,
-    ticks: Sequence[tuple],
-) -> str:
-    """Horizontal colour-gradient legend with labels along it.
-
-    ``gradient`` is a CSS ``linear-gradient(...)`` value (build it with
-    ``plotting.gradients.css_gradient`` so the stop positions come from
-    the anchor values). ``ticks`` are ``(position_fraction, label)``
-    pairs, 0.0 = left edge, 1.0 = right edge; positions between the ends
-    are what lets the solar strip mark Dawn and Dusk at 25% / 75%.
-
-    The ids on the three parts let a plot's JS re-point all of them when
-    the encoded variable changes.
-    """
+def _tick_marks(ticks: Sequence[tuple]) -> str:
     # End labels carry data-at instead of an inline `left`: the CSS pins them
     # to the bar's edges, and an inline `left: 100%` would win over that
     # stylesheet rule (inline beats selector) and push the label off the
@@ -227,14 +210,60 @@ def gradient_strip(
             marks.append(f'<span data-at="1">{label}</span>')
         else:
             marks.append(f'<span style="left: {100.0 * pos:.4g}%">{label}</span>')
+    return "".join(marks)
+
+
+def gradient_rows(strips: Sequence[dict]) -> str:
+    """Stacked labelled gradient bars (one per ``{title, gradient, ticks}``
+    dict) for a legend that superimposes several ramps. Mirrored by
+    ``renderStack`` in ``_scaffold/color_by.js``."""
+    return "".join(
+        f'<div class="rp-gradient-row">'
+        f'<span class="rp-gradient-label">{st["title"]}</span>'
+        f'<div><div class="rp-gradient-bar" style="background: {st["gradient"]}"></div>'
+        f'<div class="rp-gradient-ticks">{_tick_marks(st["ticks"])}</div></div>'
+        f'</div>'
+        for st in strips)
+
+
+def gradient_strip(
+    strip_id: str,
+    *,
+    title_text: str,
+    gradient: str,
+    ticks: Sequence[tuple],
+    stack_id: str | None = None,
+    stack_html: str = '',
+    stacked: bool = False,
+) -> str:
+    """Horizontal colour-gradient legend with labels along it.
+
+    ``gradient`` is a CSS ``linear-gradient(...)`` value (build it with
+    ``plotting.gradients.css_gradient`` so the stop positions come from
+    the anchor values). ``ticks`` are ``(position_fraction, label)``
+    pairs, 0.0 = left edge, 1.0 = right edge; positions between the ends
+    are what lets the solar strip mark Dawn and Dusk at 25% / 75%.
+
+    The ids on the three parts let a plot's JS re-point all of them when
+    the encoded variable changes. ``stack_id`` adds a container for a
+    multi-ramp legend (``gradient_rows``) under the same title; ``stacked``
+    shows it instead of the single bar at load.
+    """
+    single = ' style="display:none"' if stacked else ''
+    stack = ''
+    if stack_id:
+        hide = '' if stacked else ' style="display:none"'
+        stack = f'  <div id="{stack_id}"{hide}>{stack_html}</div>\n'
+    bar_style = f'background: {gradient}' + ('; display:none' if stacked else '')
     return (
         f'<div id="{strip_id}" class="rp-gradient">\n'
         f'  <div class="rp-sidebar-title" id="{strip_id}-title"'
         f' style="font-size:11px; margin-bottom:5px">{title_text}</div>\n'
         f'  <div class="rp-gradient-bar" id="{strip_id}-bar"'
-        f' style="background: {gradient}"></div>\n'
-        f'  <div class="rp-gradient-ticks" id="{strip_id}-ticks">'
-        f'{"".join(marks)}</div>\n'
+        f' style="{bar_style}"></div>\n'
+        f'  <div class="rp-gradient-ticks" id="{strip_id}-ticks"{single}>'
+        f'{_tick_marks(ticks)}</div>\n'
+        f'{stack}'
         f'</div>'
     )
 
