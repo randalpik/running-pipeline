@@ -13,7 +13,6 @@ Model (fit on the era-detrended residual = pace − CS − era_trend):
                      + β_race    · fatigue_race_short
                      + β_tod     · tod_is_pm
                      + (pinned) trail_frac·β + alt_kft·β + fractional elev_cost
-                     + (pinned) wind_mph · β_wind
 
 The temperature term (``temp_centered_feature``, key still ``temp_centered``)
 is a one-sided heat hinge ``max(0, air_temp − TEMP_HEAT_ONSET_C)``: cold
@@ -22,10 +21,13 @@ apparent-temp-centered-at-12 term (June 2026) whose sub-12°C arm credited a
 phantom cold speedup mirroring the heat penalty. Long runs reuse the same SHAPE
 with a free (steeper) slope. Humidity was tested as a separate regressor and
 dropped — weak, and the heat index (its physical encoding) never beat plain air
-temp, so this is air temperature, not feels-like. Wind enters as a pooled,
-pinned per-mph cost (``wind_beta``) applied where a watch wind reading exists —
-both estimated on the watch-enriched subset but applied as fixed offsets so the
-main fit keeps the full corpus (June 2026).
+temp, so this is air temperature, not feels-like. Watch-era temperature is the HRRR
+run-window mean (src/coros/weather_hrrr.py), not the Coros start-of-run
+snapshot. Wind was REMOVED (Oct 2026): the pinned per-mph term (June 2026)
+had decayed to +0.16 s/mi/mph (t=1.5) on Coros wind, fell to +0.02 (t=0.3) on
+the better-measured HRRR wind, and its within-city slopes were NEGATIVE in
+Nashville and Boulder for both sources — the pooled positive slope came only
+from mixing cities. See docs/weather-source-reference.md.
 
 Three classes of rows are pruned from BOTH the era-trend window contents AND
 the OLS fit (flags are independent — a row can be in multiple classes):
@@ -139,10 +141,6 @@ TEMP_REFERENCE_C       = 12.0
 # from 2356 well-normalized recovery runs (flat cold plateau, monotonic rise
 # from ~6C). Recovery and long runs share this SHAPE; only the slope differs.
 TEMP_HEAT_ONSET_C      = 6.0
-# Wind enters as a pooled, pinned per-mph cost (wind_beta) applied symmetrically
-# around the MEDIAN observed recovery wind (wind_reference_mph): unlogged days
-# are filled with that median (a neutral, zero-offset assumption — not dead
-# calm), below-median wind is a small credit and above-median a small cost.
 # Recent-effort fatigue (Sept 2026 — docs/recovery-runs-reference.md "Recent
 # effort"): three terms, each ANCHORED AT DAY 1 so its fitted beta reads as the
 # next-day effect — contribution = beta · dose · exp(−(t − 1)/τ) on day t ≥ 1
@@ -1057,7 +1055,7 @@ def physical_route_betas():
         # Recovery side: self-fit (pin_physical=False) ONLY to build the frame
         # — this is the call that breaks the recursion.
         fr = fit_recovery_model(daily, races, cs, verbose=False,
-                                pin_physical=False, apply_wind=False)
+                                pin_physical=False)
         if fr is None:
             _PHYS_BETAS_CACHE[key] = out
             return out
@@ -1171,100 +1169,8 @@ def physical_route_betas():
     return out
 
 
-_WIND_BETA_CACHE: dict = {}
-
-
-def wind_beta():
-    """Pooled wind pace cost (s/mi per mph) estimated on the watch-enriched
-    recovery rows (those carrying a ``wind_mph`` reading, ~2021+).
-
-    Wind is near-orthogonal to temp/fatigue/TOD, so — like the physical route
-    betas — it's pinned and applied as an additive offset only where wind is
-    known (0 elsewhere). That keeps the main fit on the full corpus instead of
-    collapsing it to the ~60% of rows with a watch wind value. Estimated by
-    re-fitting the base features + wind on the watch subset against the model's
-    own fit target (``residual_raw − era − route``), so the slope is net of the
-    other factors (matches the validated diagnostic, +0.29 s/mi per mph).
-
-    Cached per data dir. Degrades to 0.0 (a no-op correction) when there's no
-    watch wind data — e.g. CI without a details cache — so the model still fits,
-    just without the wind channel."""
-    key = str(DATA_DIR)
-    if key in _WIND_BETA_CACHE:
-        return _WIND_BETA_CACHE[key]
-    out = 0.0
-    try:
-        daily = pd.read_csv(DATA_DIR / 'daily.csv', parse_dates=['date'])
-        races = pd.read_csv(DATA_DIR / 'races.csv', parse_dates=['date'])
-        cs = pd.read_csv(DATA_DIR / 'bayes_cs_summary.csv', parse_dates=['date'])
-        if 'cs_pace_sec' not in cs.columns:
-            cs['cs_pace_sec'] = cs['cs_pace_med'] * 60.0
-        # Standard fit WITHOUT wind — breaks the wind→fit→wind recursion and
-        # gives a residual that's the genuine leftover after every other factor.
-        fr = fit_recovery_model(daily, races, cs, verbose=False,
-                                apply_wind=False)
-        if fr is None:
-            _WIND_BETA_CACHE[key] = out
-            return out
-        rec = fr.rec.copy()
-        rec['target'] = (rec['residual_raw'] - rec['era_trend']
-                         - rec['contrib_route'])
-        wsub = rec[(~rec['is_pruned']) & rec['wind_mph'].notna()]
-        base = ['temp_centered'] + identified_fatigue(wsub) + ['tod_is_pm']
-        m = (~rec['is_pruned']) & rec['wind_mph'].notna() & rec['target'].notna()
-        for c in base:
-            m = m & rec[c].notna()
-        s = rec[m]
-        if len(s) > len(base) + 2:
-            X = np.column_stack(
-                [np.ones(len(s))]
-                + [s[c].to_numpy(float) for c in base]
-                + [s['wind_mph'].to_numpy(float) - wind_reference_mph()])
-            coef, *_ = np.linalg.lstsq(X, s['target'].to_numpy(float),
-                                       rcond=None)
-            out = float(coef[-1])
-    except FileNotFoundError:
-        pass
-    except Exception as exc:
-        _degrade_warn('wind_beta', exc)
-    _WIND_BETA_CACHE[key] = out
-    return out
-
-
-_WIND_REF_CACHE: dict = {}
-
-
-def wind_reference_mph():
-    """Median observed recovery-run wind (mph) — the symmetric center of the
-    pinned wind term. The applied offset is ``wind_b·(wind_mph − ref)`` with
-    unlogged days filled with this ``ref``, so a missing reading is neutral
-    (zero offset), calmer-than-typical days get a small credit, and windier
-    days a small cost. Centering is reference-invariant for the fitted slope
-    (a constant shift of the regressor is absorbed by the intercept); it only
-    sets the fill value and the sign convention of the applied correction.
-
-    Cached per data dir; degrades to 0.0 (the old calm baseline, a harmless
-    no-op center) when there's no watch wind data — e.g. CI without a details
-    cache."""
-    key = str(DATA_DIR)
-    if key in _WIND_REF_CACHE:
-        return _WIND_REF_CACHE[key]
-    out = 0.0
-    try:
-        daily = pd.read_csv(DATA_DIR / 'daily.csv')
-        w = daily.loc[daily['run_type'] == 'recovery', 'wind_mph'].dropna()
-        if len(w):
-            out = float(w.median())
-    except FileNotFoundError:
-        pass
-    except Exception as exc:
-        _degrade_warn('wind_reference_mph', exc)
-    _WIND_REF_CACHE[key] = out
-    return out
-
-
 def fit_recovery_model(daily, races, cs_summary, verbose=True,
-                       pin_physical=True, apply_wind=True):
+                       pin_physical=True):
     """Fit the recovery factor model on loaded frames.
 
     ``daily`` is the (already era-filtered) daily log; ``races`` is
@@ -1517,22 +1423,6 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
         physical_features = ['trail_frac', 'alt_kft']
     feature_cols = base_features + physical_features
 
-    # Wind: pooled, pinned per-mph cost applied symmetrically around the median
-    # observed recovery wind (wind_reference_mph). Unlogged days are filled with
-    # that median, so they're neutral (zero offset) rather than assumed calm;
-    # calmer-than-median days get a small credit and windier days a small cost.
-    # The full corpus stays in the fit. apply_wind is False only on the
-    # bootstrap calls (wind_beta / physical_route_betas) that build the
-    # pools — breaks recursion.
-    if apply_wind:
-        wind_b = wind_beta()
-        wind_ref = wind_reference_mph()
-        wind_off = (wind_b * (rec['wind_mph'].fillna(wind_ref)
-                              - wind_ref)).to_numpy(float)
-    else:
-        wind_b = 0.0
-        wind_off = np.zeros(len(rec))
-
     rec_fit = rec[~rec['is_pruned']].dropna(
         subset=feature_cols + ['residual_raw', 'elev_cost']).copy()
     if len(rec_fit) <= len(feature_cols) + 1:
@@ -1556,9 +1446,9 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
     Xall = np.hstack([np.ones((len(rec), 1)),
                       rec[feature_cols].fillna(0.0).to_numpy(float)])
     # Pinned offset: grade-aware elev_cost + (when pinned) pooled
-    # footing/altitude + the pinned wind cost, all subtracted as fixed terms so
-    # the backfit isolates the era trend + fast factors.
-    elev_all = rec['elev_cost'].to_numpy(float) + pinned_phys + wind_off
+    # footing/altitude, all subtracted as fixed terms so the backfit isolates
+    # the era trend + fast factors.
+    elev_all = rec['elev_cost'].to_numpy(float) + pinned_phys
     raw_all = rec['residual_raw'].to_numpy(float)
     dates_all = rec['date'].tolist()
     pool_dates = rec.loc[pool_mask, 'date'].tolist()
@@ -1580,7 +1470,6 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
         betas['temp_centered'] = float(pooled['temp_centered'])
         for c in FATIGUE_CATS:
             betas[f'fat_{c}'] = float(pooled[f'fat_{c}'])
-    betas['wind_mph'] = wind_b
 
     rec['era_trend'] = era_all
     rec['residual_detrended'] = rec['residual_raw'] - rec['era_trend']
@@ -1592,10 +1481,9 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
               f'(mean era level; era fit on the physically-cleaned residual)')
 
     rec_fit = rec[fit_mask].copy()
-    # Includes the pinned footing/altitude AND wind offsets so yhat predicts the
-    # full model when those terms are pinned rather than fit.
-    elev_fit = (rec_fit['elev_cost'].to_numpy(float) + pinned_phys[fit_mask]
-                + wind_off[fit_mask])
+    # Includes the pinned footing/altitude offsets so yhat predicts the full
+    # model when those terms are pinned rather than fit.
+    elev_fit = rec_fit['elev_cost'].to_numpy(float) + pinned_phys[fit_mask]
     era_fit = rec_fit['era_trend'].to_numpy(float)
     resid_target = rec_fit['residual_raw'].to_numpy(float) - era_fit
     yhat = Xf @ coef + elev_fit  # predicts the era-detrended residual
@@ -1622,9 +1510,6 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
             print(f'    {f:18s}  β = {betas[f]:+.3f}{pinned_tag}')
         for f in ['tod_is_pm']:
             print(f'    {f:18s}  β = {betas[f]:+.3f}')
-        if apply_wind:
-            print(f'    {"wind_mph":18s}  β = {betas["wind_mph"]:+.3f} s/mi per '
-                  f'mph (pinned; applied where a watch reading exists)')
         print(f'\n  Physical route model (replaces per-route dummies):')
         print(f'    elevation grade: PINNED fractional engine '
               f'(shared.elevation_cost); mean {rec_fit["elev_cost"].mean():+.1f} '
@@ -1639,8 +1524,8 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
               f'at Magnolia)')
 
     # ---------- per-point contributions ----------
-    # Reference the temperature ADJUSTMENT to the median clean-day hinge (like
-    # wind around its median): the one-sided hinge is >= 0 everywhere, so an
+    # Reference the temperature ADJUSTMENT to the median clean-day hinge: the
+    # one-sided hinge is >= 0 everywhere, so an
     # uncentered contribution would move EVERY run one way when normalized
     # (temp touches every run, unlike altitude/footing). Centering makes hot
     # days move faster and cool days slower, the median day unchanged. This
@@ -1654,8 +1539,6 @@ def fit_recovery_model(daily, races, cs_summary, verbose=True,
     rec['contrib_quality'] = sum(
         betas.get(f'fat_{c}', 0.0) * rec[f'fat_{c}'].fillna(0) for c in FATIGUE_CATS)
     rec['contrib_tod'] = betas['tod_is_pm'] * rec['tod_is_pm'].fillna(0)
-    # Wind cost (s/mi); 0 where no watch wind reading exists or on calm days.
-    rec['contrib_wind'] = wind_off
 
     # Physical route cost, split into independently-toggleable channels:
     #   elevation = the FULL grade cost from the fractional engine (terrain-

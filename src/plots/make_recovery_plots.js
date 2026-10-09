@@ -1,7 +1,7 @@
 // Normalization sidebar for the recovery plot.
 //
 // Toggles normalization factors (temp, elevation, terrain, altitude,
-// recent_effort, time_of_day, era, wind) and 3 visibility filters (bad conditions,
+// recent_effort, time_of_day, era) and 3 visibility filters (bad conditions,
 // non-solo, outliers). On each change, walks every recovery point's
 // customdata, subtracts the selected factor contributions, and
 // restyles both the pace panel and the residual panel. Trend lines
@@ -12,15 +12,16 @@
 // Hidden points get y=null + opacity=0 so hover hit-testing skips them
 // AND the rolling-mean trend ignores them.
 (function () {
-  // ORDER MUST MATCH customdata channel order in Python (channels 0-7)
+  // ORDER MUST MATCH customdata channel order in Python (channels 0-6)
   var FACTOR_ORDER = ['temp', 'elevation', 'terrain', 'altitude',
-                      'recent_effort', 'time_of_day', 'era', 'wind'];
+                      'recent_effort', 'time_of_day', 'era'];
   var ERA_INDEX = FACTOR_ORDER.indexOf('era');
-  // Channel 8: mixed/trail descent-braking refund — an elevation×terrain
-  // interaction with no checkbox of its own. Applied only when BOTH the
-  // Elevation and Terrain toggles are on (it exists only because a route
-  // both descends and is rough, so normalizing it requires removing both).
-  var TERRAIN_DESCENT_INDEX = 8;
+  // Channel after the factors: mixed/trail descent-braking refund — an
+  // elevation×terrain interaction with no checkbox of its own. Applied only
+  // when BOTH the Elevation and Terrain toggles are on (it exists only because
+  // a route both descends and is rough, so normalizing it requires removing
+  // both). Derived, so adding/removing a factor can't misalign it.
+  var TERRAIN_DESCENT_INDEX = FACTOR_ORDER.length;
 
   var TREND_SIGMA_MS = window.__PLOT_TREND_SIGMA_DAYS * 86400000;
   var TREND_TRUNC_MS = 4 * TREND_SIGMA_MS;  // truncate kernel at 4σ

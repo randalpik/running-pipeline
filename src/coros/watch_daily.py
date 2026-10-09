@@ -25,6 +25,7 @@ import pandas as pd
 
 from src.coros import mappings as M
 from src.coros import watch_cache as wc
+from src.coros import weather_hrrr
 from src.coros.build_current_log import (Activity, build_current_log,
                                          strip_paused)
 from src.coros.long_runs import measure_day
@@ -33,15 +34,16 @@ from src.shared.paths import DATA_DIR
 
 # Bump when the set of derived columns / their derivation changes — forces a
 # full rebuild on the next run (mtimes can't see a code change).
-SCHEMA_VERSION = 6   # 6: gps_prefix_moving_s / gps_loop_excess_m (late-lock recovery)
+SCHEMA_VERSION = 7   # 7: HRRR run-window weather + weather_src (weather_hrrr.py)
+                     # 6: gps_prefix_moving_s / gps_loop_excess_m (late-lock recovery)
                      # 5: gps_lag_s / gps_coverage (late-lock distance gate)
                      # 4: wind_ms -> wind_mph (raw/10 is km/h, displayed in mph)
 
 WATCH_DAILY_COLUMNS = [
     "date", "n_acts", "status",
     "temp_c", "weather_bin", "wind_mph", "humidity_pct", "time_of_day",
-    "any_indoor", "watch_miles", "watch_moving_s", "watch_total_s",
-    "pause_s", "stall_s", "n_segs", "d_eff_frac", "longest_seg_mi",
+    "weather_src", "any_indoor", "watch_miles", "watch_moving_s",
+    "watch_total_s", "pause_s", "stall_s", "n_segs", "d_eff_frac", "longest_seg_mi",
     "gps_lag_s", "gps_coverage", "gps_prefix_moving_s", "gps_loop_excess_m",
     "label_ids", "schema_version",
 ]
@@ -57,15 +59,18 @@ WEATHER_MEASURED_COLUMNS = ["date", "temp_c", "wind_mph", "humidity_pct",
                             "time_of_day"]
 
 
-def _build_rows(targets):
+def _build_rows(targets, details_dir):
     """Derive watch_daily rows for the target days. One build_current_log call
-    over all target details yields the per-day weather; n_acts/status/label_ids
-    come from the day's file set."""
-    all_details = [d for items in targets.values() for (_lid, d) in items]
-    wrows = {}
+    over all target details yields the per-day weather (HRRR run-window values
+    from each activity's wx sidecar, Coros snapshot fallback — see
+    weather_hrrr.py); n_acts/status/label_ids come from the day's file set."""
+    all_details = [weather_hrrr.attach(d, details_dir, lid)
+                   for items in targets.values() for (lid, d) in items]
+    wrows, wsrc = {}, {}
     if all_details:
-        df, _ = build_current_log(all_details, geocode=False)
+        df, meta = build_current_log(all_details, geocode=False)
         wrows = {r["date"]: r for _, r in df.iterrows()}
+        wsrc = meta["weather_src"]
 
     rows, index_rows = [], []
     for day, items in targets.items():
@@ -93,6 +98,7 @@ def _build_rows(targets):
             "wind_mph": w["wind_mph"],
             "humidity_pct": w["humidity_pct"],
             "time_of_day": w["time_of_day"],
+            "weather_src": wsrc.get(day),
             "any_indoor": m["any_indoor"],
             "watch_miles": m["watch_miles"],
             "watch_moving_s": m["watch_moving_s"],
@@ -139,6 +145,15 @@ def build(*, force=False, full_regen=False):
         else:
             for _, r in existing.iterrows():
                 existing_ids_by_date[r["date"]] = set(str(r["label_ids"]).split())
+            # A day derived while any of its runs lacked a FINAL weather
+            # sidecar ('pending') is re-derived once every sidecar is final —
+            # a few small-file reads, no stream parse. Forgetting the day's
+            # consumed ids makes plan() treat it as new.
+            for _, r in existing[existing["weather_src"] == "pending"].iterrows():
+                ids = str(r["label_ids"]).split()
+                if all(weather_hrrr.is_final(weather_hrrr.load(details_dir, i))
+                       for i in ids):
+                    existing_ids_by_date.pop(r["date"], None)
 
     targets, dropped, _ = wc.plan(existing_ids_by_date, details_dir, full=full)
 
@@ -147,7 +162,7 @@ def build(*, force=False, full_regen=False):
         print(f"[watch_daily] up to date ({len(existing)} days) — no parse")
         return existing
 
-    new_rows, new_index = _build_rows(targets)
+    new_rows, new_index = _build_rows(targets, details_dir)
     new_df = pd.DataFrame(new_rows, columns=WATCH_DAILY_COLUMNS)
     new_idx = pd.DataFrame(new_index, columns=WATCH_ACTIVITIES_COLUMNS)
     if full or existing is None:

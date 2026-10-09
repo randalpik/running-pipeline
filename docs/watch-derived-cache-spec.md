@@ -68,8 +68,9 @@ not compression of the stream but **not re-parsing immutable history**.
 ```
 date,
 n_acts, status,                 # status = rich | slim (best stream available)
-# --- weather (from the day's rep activity) ---
-temp_c, weather_bin, wind_mph, humidity_pct, time_of_day,
+# --- weather: HRRR run-window means, run-time-weighted over the day's outdoor
+#     runs, Coros snapshot fallback (schema 7; weather-source-reference.md) ---
+temp_c, weather_bin, wind_mph, humidity_pct, time_of_day, weather_src,
 # --- distance / structure (whole-day, watch-measured) ---
 watch_miles, watch_moving_s, watch_total_s, pause_s, stall_s,
 n_segs, d_eff_frac, longest_seg_mi,

@@ -33,6 +33,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.coros import mappings as M
+from src.coros import weather_hrrr
 from src.coros.build_current_log import build_current_log, rich_detail, slim_detail
 from src.coros.client import CorosClient
 from src.parsers.snapshot import CURRENT_LOG_COLUMNS
@@ -107,7 +108,8 @@ def _upgrade_slim_runs(client, details_dir: Path):
 
 
 def _load_all_details(details_dir: Path):
-    """Load every cached detail record, migrating legacy full files."""
+    """Load every cached detail record, migrating legacy full files. Each
+    record carries its HRRR run-window weather sidecar (``wx``) in memory."""
     out = []
     for p in sorted(details_dir.glob("*.json")):
         if p.stem in M.EXCLUDED_LABEL_IDS:
@@ -119,7 +121,7 @@ def _load_all_details(details_dir: Path):
         rec = _project(raw, (raw.get("summary") or {}).get("sportType"))
         if "frequencyList" in raw:
             p.write_text(json.dumps(rec))
-        out.append(rec)
+        out.append(weather_hrrr.attach(rec, details_dir, p.stem))
     return out
 
 
@@ -170,6 +172,11 @@ def sync_current_log(*, email, password, region, current_log_path, details_dir,
         _upgrade_slim_runs(client, details_dir)
     else:
         print("[coros-sync] rebuild: skipping API fetch")
+
+    # Run-window weather (HRRR via Open-Meteo, not the Coros API — so it runs
+    # on rebuild too): fetch sidecars for activities that lack a final one.
+    # Idempotent and incremental; a failure just leaves the Coros snapshot.
+    weather_hrrr.ensure(details_dir)
 
     # The current_log is ALWAYS the full derivation of the local detail cache,
     # so every row reflects the current extraction (no stale historical rows).

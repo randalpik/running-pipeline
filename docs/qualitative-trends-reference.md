@@ -135,3 +135,11 @@ Two additions live in `gradients.py` and have no consumer here:
 > `plot_qualitative_trends.py` is the accurate summary. Only "Time panel —
 > canonical location & timezone" and "Weight gap discipline" still match the
 > code.
+
+## Weather source (Oct 2026)
+
+Watch-era temperature, humidity and wind are HRRR run-window means (Coros
+snapshot fallback abroad), not the Coros start-of-run snapshot — wind reads
+~1.7× its old Coros level. Pre-2021 temperature is still the hand log. See
+`weather-source-reference.md`.
+

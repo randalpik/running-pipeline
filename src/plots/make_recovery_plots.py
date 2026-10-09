@@ -32,16 +32,16 @@ Per-day factors are fit via OLS on the era-detrended residual:
                      + β_race    · fatigue_race_short
                      + β_tod     · tod_is_pm
                      + (pinned) footing + altitude + grade-aware elevation
-                     + (pinned) wind_mph · β_wind
 
 The temperature term is a one-sided heat hinge, max(0, air_temp − 6°C): cold
 contributes zero, only heat above ~6°C slows recovery (see
 recovery_model.temp_centered_feature; long runs reuse the same shape with a
 free slope). It replaced a symmetric apparent-temp term whose sub-12°C arm
 credited a phantom cold speedup. Humidity was tested as a separate regressor
-and dropped (weak; the heat index never beat plain air temp). Wind is a pinned
-per-mph cost applied where a watch wind reading exists. See the model module
-for the pooled/pinned mechanics.
+and dropped (weak; the heat index never beat plain air temp). Wind was a
+pinned per-mph cost until Oct 2026, when it was removed (not identified on the
+HRRR wind; wrong-signed within cities). See the model module for the
+pooled/pinned mechanics.
 
 Sleep cycles and recovery distance were tested in earlier model versions
 and produced near-zero coefficients with no useful explanatory power. They
@@ -338,12 +338,13 @@ def main():
         meta={'role': 'trend_resid'},
     ), row=1, col=2)
 
-    # Customdata channels — channels 0-7 ORDER MUST MATCH FACTOR_ORDER in JS:
+    # Customdata channels — channels 0-6 ORDER MUST MATCH FACTOR_ORDER in JS:
     # 0=temp, 1=elevation, 2=terrain, 3=altitude, 4=recent_effort, 5=tod,
-    # 6=era, 7=wind. Channel 8 (terrain_descent) is NOT a FACTOR_ORDER entry
+    # 6=era. Channel 7 (terrain_descent, the last) is NOT a FACTOR_ORDER entry
     # and has no checkbox: it's the mixed/trail descent-braking refund, an
     # elevation×terrain interaction the JS applies only when BOTH the Elevation
-    # and Terrain toggles are on.
+    # and Terrain toggles are on. (Wind was channel 7 until it was removed from
+    # the model, Oct 2026.)
     contrib_arr = np.stack([
         rec['contrib_temp'].to_numpy(),
         rec['contrib_elevation'].to_numpy(),
@@ -352,7 +353,6 @@ def main():
         rec['contrib_quality'].to_numpy(),
         rec['contrib_tod'].to_numpy(),
         rec['contrib_era'].to_numpy(),
-        rec['contrib_wind'].to_numpy(),
         rec['contrib_terrain_descent'].to_numpy(),
     ], axis=1).tolist()
 
@@ -741,7 +741,6 @@ def _available_norm_factors(rec, qualifying_routes):
         'altitude':      has_signal('contrib_altitude'),
         'recent_effort': has_signal('contrib_quality'),
         'time_of_day':   has_signal('contrib_tod'),
-        'wind':          has_signal('contrib_wind'),
     }
 
 
@@ -775,7 +774,6 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
         ('altitude',      'Altitude'),
         ('recent_effort', 'Recent effort'),
         ('time_of_day',   'Time of day'),
-        ('wind',          'Wind'),
     ) if av.get(k, True)]
     norm_rows = widgets.checkbox_rows(
         factors_norm, data_attr='factor', checked=False
@@ -845,16 +843,12 @@ def build_normalization_ui(betas, intercept, r2_detrended, r2_raw, n_fit,
             'Time of day',
             f': β = {betas["tod_is_pm"]:+.2f} s/mi for afternoon/late '
             '(vs early/morning)'))
-    if av.get('wind', True):
-        detail_rows.append(widgets.detail_row(
-            'Wind',
-            f': β = {betas.get("wind_mph", 0):+.2f} sec/mi per mph '))
 
     details_body = (
         ''.join(detail_rows)
         + widgets.noteworthy(
-            'Sleep cycles, run distance, shoes, weather and humidity were tested and '
-            'excluded as non-factors.')
+            'Sleep cycles, run distance, shoes, weather, humidity and wind were '
+            'tested and excluded as non-factors.')
     )
 
     parts = []

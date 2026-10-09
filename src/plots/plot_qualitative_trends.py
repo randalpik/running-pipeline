@@ -332,9 +332,9 @@ def build_panels(full):
         return [0.0 if floor0 else lo - p, hi + p]
 
     temp_range = pad_range(full['temp_c'])
-    # Wind is AccuWeather ground truth (mph; raw/10 km/h x KMH_TO_MPH at the
-    # source) — taken at face value, no cap. Genuine outliers get invalidated by
-    # hand via the changes sheet, not clipped here.
+    # Wind is the HRRR 10 m run-window mean in mph (src/coros/weather_hrrr.py;
+    # Coros snapshot fallback abroad) — taken at face value, no cap. Genuine
+    # outliers get invalidated by hand via the changes sheet, not clipped here.
     w_v = pd.Series(full['wind_mph']).dropna()
     wind_max = float(w_v.max()) if len(w_v) else 1.0
     # Altitude floors at 0: uncalibrated-barometer dips below sea level are

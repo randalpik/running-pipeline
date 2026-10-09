@@ -16,6 +16,7 @@ This is a personal running-data pipeline: parsers and transformations turning da
 | `qualitative-trends-reference.md` | Misc. Trends panels |
 | `location-colour-reference.md` | location-group colours (Locations, World Map) |
 | `watch-derived-cache-spec.md` | the watch-derived cache |
+| `weather-source-reference.md` | watch-era temp/wind/humidity (HRRR run-window sidecars, Coros fallback) |
 
 
 > **People — pronouns (non-negotiable):** **Maddy uses they/them.** Maddy is Max's partner and the second dashboard runner (the `maddy` profile).

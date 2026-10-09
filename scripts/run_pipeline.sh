@@ -83,7 +83,11 @@ quiet_step "drive_fetch (snapshot)"  python src/parsers/drive_fetch.py snapshot 
 # Unified watch-derived per-day table (incremental, presence-based; parses only
 # new activities). Projects weather_measured.csv, which build_dataset joins.
 # Must precede build_dataset. Skipped when the cache is absent (graceful no-op).
+# weather_hrrr first: fetches the HRRR run-window weather sidecar for any
+# activity lacking a final one (normally none or one — sync already fetched;
+# loud so a first-run backfill shows progress instead of looking like a hang).
 if [[ -d data/profiles/coros/details ]]; then
+  loud_step  "weather_hrrr"          python -m src.coros.weather_hrrr
   quiet_step "watch_daily"           python -m src.coros.watch_daily
 fi
 quiet_step "build_dataset"           python src/parsers/build_dataset.py

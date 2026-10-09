@@ -66,7 +66,7 @@ A residual layer on top of CS. Translates each workout, long run, and hill effor
 
 ### Layer 3 — Recovery
 
-Era-windowed regression on recovery-run pace, with a small set of OLS features (a one-sided heat hinge on air temperature — `max(0, air_temp − 6°C)`, with humidity/heat-index dropped after June 2026; recent race exposure, time-of-day, pinned physical footing/altitude/elevation, and a pinned wind cost on watch-measured days). Volume normalizers and bodyweight features were explored and rejected. Captures the slow drift in baseline aerobic fitness independent of race performance.
+Era-windowed regression on recovery-run pace, with a small set of OLS features (a one-sided heat hinge on air temperature — `max(0, air_temp − 6°C)`, with humidity/heat-index dropped after June 2026; recent race exposure, time-of-day, and pinned physical footing/altitude/elevation; the wind cost was removed Oct 2026 — see `weather-source-reference.md`). Volume normalizers and bodyweight features were explored and rejected. Captures the slow drift in baseline aerobic fitness independent of race performance.
 
 → See `recovery-runs-reference.md`
 

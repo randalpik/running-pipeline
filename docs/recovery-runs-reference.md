@@ -79,7 +79,9 @@ altitude, grade) are pinned from `recovery_model.physical_route_betas()` and
 consumed via `fit_recovery_model(pin_physical=True)`.
 
 - **Temperature**: one-sided heat hinge `max(0, T − 6 °C)`, slope pinned from
-  the pooled fit (≈ +0.34 s/mi per °C, Sept 2026). Real but small; most of the
+  the pooled fit (≈ +0.33 s/mi per °C, Oct 2026 — was +0.34 before watch-era
+  temps moved from the Coros start-of-run snapshot to HRRR run-window means;
+  `weather-source-reference.md`). Real but small; most of the
   seasonal pace pattern is summer-training-intensity confound that the era
   trend absorbs.
 
@@ -434,7 +436,17 @@ evidence.** Each entry below documents the test and rationale.
   truly anomalous days, and adding a binary feature for a small
   structural shift wasn't worth the knob.
 
-- **Wind — ADOPTED June 2026.** The April 2026 qualitative-bin test
+- **Wind — REMOVED Oct 2026** (adopted June 2026; history below). When the
+  watch-era weather moved to HRRR run-window means
+  (`weather-source-reference.md`), wind stopped being identified: the live
+  Coros-wind beta had decayed to +0.16 s/mi/mph (t=1.5), HRRR wind — the
+  better measurement of regional wind by collocation — fit +0.02 (t=0.3), and
+  within city windier days were *faster* in Nashville and Boulder for both
+  sources (t −2.2 … −3.4); the pooled positive slope came only from mixing
+  cities. `wind_beta` / `wind_reference_mph` / the plot's Wind toggle are
+  gone; `wind_mph` stays as displayed data. Don't re-fit a scalar wind-speed
+  term; a future attempt needs a different form (route-relative headwind).
+  *History:* the April 2026 qualitative-bin test
   (n=23, Δmean +0.27 vs clear, p=0.93) failed on power, not effect: hand
   logging only captured ~15% of runs. With continuous watch `wind_mph`
   now on ~60% of recovery days (n=1446 unpruned), wind comes in at
@@ -456,7 +468,7 @@ evidence.** Each entry below documents the test and rationale.
   heat rise from ~6°C, fit only above the onset (β ≈ +0.31 s/mi per °C above 6,
   the slope unchanged by the form). The contribution is re-referenced to the
   **median clean-day hinge** so normalizing temperature moves hot days faster
-  and cool days slower around a typical day (like wind), not the whole cloud one
+  and cool days slower around a typical day, not the whole cloud one
   direction. **Humidity / the heat index were DROPPED:** a separate humidity
   term is weak (~+0.04 s/mi/%, t=2.6) and the heat index — humidity's physical
   encoding — never beat plain air temp in the corrected comparison, so this is
@@ -1144,8 +1156,9 @@ isolates one channel), not with another functional form.
   questions — its segment store is long-run-only and it is duration-weighted,
   which is backwards for easy running (Sept 2026)
 - Rejected sleep features without a concrete new hypothesis or data
-  improvement (wind and humidity were re-tested with richer watch data
-  and adopted June 2026 — see rejected/adopted list above)
+  improvement (wind and humidity were re-tested with richer watch data in
+  June 2026; humidity was dropped then, wind adopted and then removed Oct 2026
+  — see the list above)
 
 ## Naming notes
 

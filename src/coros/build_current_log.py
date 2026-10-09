@@ -14,6 +14,12 @@ and synthesize a ``workout_raw`` string the existing parser understands:
 
 Sleep, partners, conditions, shoes and weight are out of scope for watch
 imports and left blank. Output columns match snapshot.CURRENT_LOG_COLUMNS.
+
+Weather: temp_c / wind_mph / humidity_pct are the run-time-weighted HRRR
+run-window means of the day's outdoor runs (``_day_weather``; per-activity
+sidecars from weather_hrrr.py), with the Coros snapshot — taken at the run's
+start — as the per-run fallback. The weather and wind bins stay on the first
+run's Coros snapshot. See docs/weather-source-reference.md.
 """
 from __future__ import annotations
 
@@ -142,7 +148,7 @@ class Activity:
 
     __slots__ = ("sport_type", "distance_m", "moving_s", "total_s",
                  "start_utc", "tz_min", "lat", "lon", "temp_c",
-                 "wind_mph", "weather_type", "humidity_pct")
+                 "wind_mph", "weather_type", "humidity_pct", "wx")
 
     def __init__(self, record: dict):
         rec = slim_detail(record)
@@ -166,6 +172,9 @@ class Activity:
         self.weather_type = w.get("weatherType")
         self.humidity_pct = (_num(w.get("humidity")) / M.WEATHER_DIV
                              if w.get("humidity") is not None else None)
+        # HRRR run-window sidecar (weather_hrrr.attach puts it on the in-memory
+        # record; never stored in the detail file). None until fetched.
+        self.wx = record.get("wx")
 
     @property
     def local_date(self):
@@ -317,6 +326,7 @@ def build_current_log(details, *, geocode=True):
         geo = {day: resolved.get(pt) for day, pt in rep_points.items()}
 
     weather_types = Counter()
+    weather_src = {}
     rows = []
     for day in sorted(runs_by_day):
         runs = runs_by_day[day]
@@ -326,20 +336,22 @@ def build_current_log(details, *, geocode=True):
         miles = sum(a.distance_m for a in runs) / M.METERS_PER_MILE
         minutes = sum(a.moving_s for a in runs) / 60.0
         weather = "indoors" if rep.is_indoor else M.weather_bin(rep.weather_type)
+        wx_vals, weather_src[day.isoformat()] = _day_weather(runs)
         rows.append({
             "date": day.isoformat(),
             "sleep_cycles": None,
             "miles": round(miles, 2),
             "minutes": round(minutes, 1),
-            "temp_c": None if rep.is_indoor else _round_or_none(rep.temp_c, 1),
+            "temp_c": None if rep.is_indoor else _round_or_none(wx_vals["temp_c"], 1),
             "weather": weather,
             "workout_raw": _workout_raw(runs, recs_by_day.get(day)),
             "partners": None,
             "conditions": None,
             "wind": None if rep.is_indoor else M.wind_bin(rep.wind_mph),
-            "wind_mph": None if rep.is_indoor else _round_or_none(rep.wind_mph, 1),
+            "wind_mph": None if rep.is_indoor
+                        else _round_or_none(wx_vals["wind_mph"], 1),
             "humidity_pct": None if rep.is_indoor
-                            else _round_or_none(rep.humidity_pct, 0),
+                            else _round_or_none(wx_vals["humidity_pct"], 0),
             "time_of_day": _day_time_of_day(runs),
             "shoes": None,
             "location": geo.get(day),
@@ -352,8 +364,46 @@ def build_current_log(details, *, geocode=True):
         "run_activities": sum(len(v) for v in runs_by_day.values()),
         "days": len(rows),
         "weather_types_seen": dict(weather_types),
+        "weather_src": weather_src,
     }
     return df, meta
+
+
+def _day_weather(runs):
+    """Day-level temp_c / wind_mph / humidity_pct: the run-time-weighted mean
+    over the day's OUTDOOR runs of each run's HRRR run-window values (its
+    ``wx`` sidecar, src 'hrrr' — see weather_hrrr.py), falling back per run to
+    the Coros snapshot, which is taken at the run's START (biased cold on
+    warming mornings). Replaces the old "first run's snapshot" rule, which
+    ignored every later activity on race days and doubles.
+
+    Returns (values, src): src is 'hrrr' / 'coros' / 'mixed' for the sources
+    used, or 'pending' while any outdoor run lacks a FINAL sidecar (not yet
+    fetched, or provisional) — watch_daily re-derives those days later. The
+    wind *bin* stays on the Coros snapshot (its thresholds are Coros-scale)."""
+    acc = {"temp_c": [], "wind_mph": [], "humidity_pct": []}
+    srcs, pending = set(), False
+    for a in runs:
+        if a.is_indoor:
+            continue
+        wx = a.wx or {}
+        if wx.get("src") == "hrrr":
+            vals = (wx.get("temp_c"), wx.get("wind_mph"), wx.get("rh_pct"))
+            srcs.add("hrrr")
+        else:
+            vals = (a.temp_c, a.wind_mph, a.humidity_pct)
+            srcs.add("coros")
+        pending = pending or not wx.get("final")
+        w = max(a.total_s or a.moving_s or 0.0, 1.0)
+        for k, v in zip(acc, vals):
+            if v is not None:
+                acc[k].append((float(v), w))
+    values = {k: (sum(v * w for v, w in xs) / sum(w for _, w in xs) if xs else None)
+              for k, xs in acc.items()}
+    if not srcs:
+        return values, None
+    src = "pending" if pending else ("mixed" if len(srcs) > 1 else srcs.pop())
+    return values, src
 
 
 def _round_or_none(v, ndigits):
