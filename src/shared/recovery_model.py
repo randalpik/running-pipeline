@@ -579,7 +579,9 @@ def per_run_elevation(rec):
                 em['gpm'] > 3 * em['location'].map(gmed))
             for col, med in (('gpm', gmed), ('lpm', lmed),
                              ('gu', gum), ('gd', gdm)):
-                em.loc[bad, col] = em.loc[bad, 'location'].map(med)
+                # astype: pandas >= 3.1 maps an EMPTY selection to object
+                # dtype, which a float column rejects when `bad` matches none.
+                em.loc[bad, col] = em.loc[bad, 'location'].map(med).astype(float)
             per_run = (em.dropna(subset=['date'])
                        .drop_duplicates('date').set_index('date'))
             gain = rec['date'].map(per_run['gpm']).fillna(
