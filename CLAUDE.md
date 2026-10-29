@@ -17,7 +17,7 @@ This is a personal running-data pipeline: parsers and transformations turning da
 | `location-colour-reference.md` | location-group colours (Locations, World Map) |
 | `watch-derived-cache-spec.md` | the watch-derived cache |
 | `weather-source-reference.md` | watch-era temp/wind/humidity (HRRR run-window sidecars, Coros fallback) |
-| `shoes-reference.md` | shoe roles, physical pairs, spike/warm-up mileage, the current-shoe dashboard row |
+| `shoes-reference.md` | shoe roles, physical pairs, spike/warm-up mileage, the current-shoe dashboard row, the Shoes tab |
 
 
 > **People — pronouns (non-negotiable):** **Maddy uses they/them.** Maddy is Max's partner and the second dashboard runner (the `maddy` profile).
@@ -173,9 +173,11 @@ src/plotting/
   color_by.py          the 8 selectable marker encodings (Recovery / Long Runs)
   location_palette.py  location-group colours (Locations + World Map) —
                        derived, never hand-picked; see below
+  brand_palette.py     shoe-brand colours (Shoes) — same derivation, pinnable
   _scaffold/           shared CSS/JS loaded by every plot
     base.css           dark-theme chrome + .rp-* design system
-    cursor_tooltip.js  smart spikeline + smooth/snap tooltip
+    cursor_tooltip.js  smart spikeline + smooth/snap tooltip (+ opt-in
+                       __TT_HIT_TEST / __TT_ON_HIDE hooks)
     overlay_anchor.js  positions overlays below the legend
     color_by.js        generic colour-by dropdown handler (opt-in)
     shell.css shell.js tab shell — loaded by build_shell.py
@@ -199,10 +201,11 @@ src/plots/
 - `PR_EXCLUDED_SURFACES = {'Downhill'}` — plotted but PR-ineligible.
 - `GAP_BREAK_DAYS` — 90 for the TQ smoother; preserves the 2020–21 labrum gap.
 
-**Colour has two owners, both documented elsewhere.** Categorical location
+**Colour has three owners, all documented elsewhere.** Categorical location
 colours (Locations, World Map) → `docs/location-colour-reference.md`. The
 selectable marker encodings (Recovery, Long Runs) → the colour-by section of
-`docs/recovery-runs-reference.md`. Don't restate either here.
+`docs/recovery-runs-reference.md`. Shoe-brand colours (Shoes) → the Shoes tab
+section of `docs/shoes-reference.md`. Don't restate them here.
 
 **Plotly numeric-array gotcha:** numeric arrays in figure JSON serialize as `{dtype, bdata, _inputArray}`. `_inputArray` is a `Float64Array`, so `Array.isArray(...)` returns false. Use length checks. PR recompute via the `plotly_restyle` listener; skip when `indices == [prIdx]`.
 

@@ -6,7 +6,21 @@ sec_to_mss(signed=True)).
 """
 from __future__ import annotations
 
+import calendar
 import math
+
+
+def fmt_date_range(d_min, d_max) -> str:
+    """Coarse span of two Timestamps, as the World Map and Shoes tooltips
+    show it: 'Jul 12, 2023' / 'Jul 2023' / 'Mar-Jul 2023' / '2021-2023'."""
+    if d_min == d_max:
+        return d_min.strftime('%b %-d, %Y')
+    if d_min.year == d_max.year and d_min.month == d_max.month:
+        return d_min.strftime('%b %Y')
+    if d_min.year == d_max.year:
+        return (f'{calendar.month_abbr[d_min.month]}-'
+                f'{calendar.month_abbr[d_max.month]} {d_min.year}')
+    return f'{d_min.year}-{d_max.year}'
 
 
 def _is_missing(s) -> bool:

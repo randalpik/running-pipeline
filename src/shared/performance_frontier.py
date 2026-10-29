@@ -147,7 +147,9 @@ def standard_demos(daily_summary, beta_long, d_thresh, xc_correction,
 def _race_demos(daily_summary, beta_long, d_thresh, xc_correction,
                 races_path=None):
     """Race demonstrations (fit conventions: hard eligibility, XC correction,
-    projection) as (date, pace_min, src, category, detail). Shared by
+    projection) as (date, pace_min, src, category, detail), plus the race as
+    run — distance_m, time_sec (uncorrected), time_dec, surface — for
+    tooltips that print the actual result (the Shoes tab). Shared by
     standard_demos and the structure gate.
 
     EVERY eligible race is a demonstration — there is no exclusion step. The
@@ -191,6 +193,10 @@ def _race_demos(daily_summary, beta_long, d_thresh, xc_correction,
         'category': 'race',
         'detail': (elig['event'].fillna('(no event)').astype(str)
                    if 'event' in elig.columns else '(race)'),
+        'distance_m': elig['distance_m'],
+        'time_sec': elig['time_sec_original'],
+        'time_dec': elig['time_dec'] if 'time_dec' in elig.columns else np.nan,
+        'surface': elig['surface'],
     })
 
 

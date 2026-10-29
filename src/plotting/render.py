@@ -178,6 +178,10 @@ class CursorTooltip:
     day the tooltip describes (one position per calendar day) instead of
     following the cursor pixel — use when the x-axis is day-granular and
     a free-floating spike reads as false precision (e.g. annual).
+
+    Plots whose marks aren't points (Shoes' day-segment bars) define
+    ``window.__TT_HIT_TEST`` / ``window.__TT_ON_HIDE`` in their own JS
+    instead of tagging snap-eligible traces — see cursor_tooltip.js.
     """
     payload: object = None
     build_js: str = ''

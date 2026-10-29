@@ -17,6 +17,14 @@
  * Multi-panel support: each trace carries `xaxis` + `yaxis` ids ('x', 'x2',
  * etc.); we look up the corresponding _fullLayout.xaxis / xaxis2 / ... so
  * pixel positions are computed via the right subplot's c2p.
+ *
+ * Opt-in hooks, read on every event (so script order doesn't matter):
+ *   - window.__TT_HIT_TEST(pdiv, clientX, clientY, isTouch) replaces point
+ *     snapping for plots whose marks aren't points (Shoes: day-segment bars).
+ *     Return { html } to show it at the pointer, or null to hide. The
+ *     scaffold still owns sizing, placement and tap-as-hover.
+ *   - window.__TT_ON_HIDE() runs whenever the tooltip hides (pointer off a
+ *     mark, mouseleave, tap-away, scroll), so a plot can clear hover styling.
  */
 (function () {
   var SNAP_PX        = window.__TT_SNAP_PX || 30;
@@ -217,6 +225,8 @@
         spike.style.height = '100vh';
       }
       spike.style.display = 'block';
+    } else if (spike && pending.spikeX == null) {
+      spike.style.display = 'none';
     }
   }
   function schedule() {
@@ -412,6 +422,7 @@
   function hide() {
     pending.show = false;
     if (window.__RP_TT_STATE) window.__RP_TT_STATE.shown = false;
+    if (typeof window.__TT_ON_HIDE === 'function') window.__TT_ON_HIDE();
     schedule();
   }
 
@@ -426,6 +437,19 @@
     var sp = findSubplotAt(pdiv, clientX, clientY, isTouch ? TOUCH_SLOP_PX : 0);
     if (!sp) { hide(); return; }
     var place = isTouch ? 'touch' : 'cursor';
+    if (typeof window.__TT_HIT_TEST === 'function') {
+      var hit = window.__TT_HIT_TEST(pdiv, clientX, clientY, isTouch);
+      if (!hit || !hit.html) { hide(); return; }
+      pending.html   = hit.html;
+      pending.x      = clientX;
+      pending.y      = clientY;
+      pending.place  = place;
+      pending.spikeX = null;
+      pending.show   = true;
+      window.__RP_TT_STATE = { shown: true, isSnap: true, place: place };
+      schedule();
+      return;
+    }
     var snap = findNearestSnapPoint(pdiv, clientX, clientY,
                                     isTouch ? TOUCH_SNAP_PX : SNAP_PX);
     if (snap) {

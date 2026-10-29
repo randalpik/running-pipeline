@@ -2,12 +2,13 @@
 
 How a logged shoe becomes a physical pair with a mileage total. Owner:
 `src/shared/shoes.py` (`build_shoes`). Consumers: the dashboard's current
-training shoe (`src/plots/dashboard.py`) and the Shoes tab. Both read the same
-`Shoes` object, so they cannot disagree about which pair a day belongs to or
-how many miles it carries.
+training shoe (`src/plots/dashboard.py`) and the Shoes tab
+(`src/plots/plot_shoes.{py,js}`). Both read the same `Shoes` object, so they
+cannot disagree about which pair a day belongs to or how many miles it
+carries.
 
-Read this before touching shoe roles, pair identity, or the spike/warm-up
-mileage split.
+Read this before touching shoe roles, pair identity, the spike/warm-up
+mileage split, or the Shoes tab.
 
 ## What the log gives us
 
@@ -105,3 +106,58 @@ consecutive recovery runs. Its mileage is the allocated total of the pair worn
 on the latest of those runs, warm-ups included. A trail shoe worn 3 recovery
 runs in a row shows here by design (e.g. 2025-01-31, mid snow stretch: Hoka
 Speedgoat 5, 309.9 mi).
+
+## Shoes tab
+
+`src/plots/plot_shoes.py` + `plot_shoes.js`, slug `shoes`, after Annual.
+A profile with no shoe data writes nothing (and removes a stale page), so the
+shell hides the tab.
+
+**Bars.** One horizontal segment per worn day (inferred warm-up days
+included); runs of consecutive days merge into one segment, which looks
+identical. Coloured by brand: the label's first word, except `BRAND_ALIASES`
+(`New` -> `New Balance`). Colours come from `src/plotting/brand_palette.py`,
+which uses the location palette's method with one colour per brand, placed in
+first-wear order; `BRAND_PINS` hand-pins a brand. The legend toggles brands.
+
+**Rows.** Two blocks of rows: trainers on top and everything else (racers,
+spikes) below, separated by a half-row gap (`BLOCK_GAP`), so the training
+lineage reads as one cascade (Max, Oct 2026). Each block packs on its own:
+pairs in first-wear order take the lowest row whose previous pair was last
+worn more than `ROW_REUSE_DAYS` (365) earlier. Oct 2026: 8 trainer rows plus
+6 others. Rows carry no meaning beyond that, so there are no labels and no
+y-zoom.
+
+**1px minimum.** After every Plotly render the JS redraws each bar from its
+segment dates, floored at 1px wide; it doesn't parse Plotly's paths, because
+Plotly may round a sub-pixel bar away. Index segments by the bar datum's `.i`
+(point index), **not `.p`**: on horizontal bars `.p` is the row, and using it
+drew every segment of a pair at one spot. `tests/tooltip/shoes.spec.ts`
+guards this.
+
+**Hover.** The plot replaces the scaffold's point snapping through the
+opt-in `window.__TT_HIT_TEST` hook. A pair's target is its **whole region**:
+first wear to last (1px-floored, plus 2px of mouse slop or 10px for touch)
+and the full height of its row, not the individual segments. That way
+dragging across seams and the gaps between sparse race days never makes the
+tooltip flash (Max, Oct 2026). Regions in a row never overlap, because rows
+are reused only after a year. Rows sit at fractional positions because of
+the block gap, so the row is the nearest centre within half a row. A hit
+outlines every segment of that pair; `window.__TT_ON_HIDE` clears the
+outline whenever the tooltip hides. Pairs hidden from the legend aren't
+hoverable.
+
+**Tooltip.**
+- **Name:** the display name.
+- **Worn:** `fmt_date_range`, the World Map's logic.
+- **Days and Miles:** from the allocation.
+- **PRs set:** shown only for pairs that raced. Uses the dashboard's
+  `pr_candidates` rules; a race counts when it beats every earlier eligible
+  race in its bin, all of races.csv included, so pre-2020 bests set the bar.
+- **Best performance:** the lowest 5K-equivalent among everything the
+  Fitness tab (its races, so no Downhill) and the Training tab (the kept
+  corpus: workouts, long runs, hills) plot. It shows the result as run plus
+  its 5K equivalent, except for a 5000m race, where the 5K equivalent would
+  only repeat the time (the Fitness tab's rule).
+
+PRs and performances are credited through `Shoes.logged_pair()` only.

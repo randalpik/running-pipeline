@@ -11,7 +11,6 @@ from a per-scope envelope + the actual data bbox + plot-div aspect ratio
 (see _build_scope_toggle's JS).
 """
 import argparse
-import calendar
 import json
 import os
 import sys
@@ -31,6 +30,7 @@ from src.shared.country_codes import country_abbrev
 from src.shared.effective_mileage import effective_daily_miles
 from src.plotting import render_plot, apply_default_layout
 from src.plotting import widgets
+from src.plotting.formatters import fmt_date_range
 from src.plots.make_geography_plot import build_categories
 from snapshot import (find_snapshot, read_snapshot,  # type: ignore
                       coord_overrides_from_sections)
@@ -212,16 +212,6 @@ def _historical_bounds_from_sections(sections: dict) -> list[dict]:
                     'max_hist': max_h})
     return out
 
-
-def fmt_date_range(d_min: pd.Timestamp, d_max: pd.Timestamp) -> str:
-    if d_min == d_max:
-        return d_min.strftime('%b %-d, %Y')
-    if d_min.year == d_max.year and d_min.month == d_max.month:
-        return d_min.strftime('%b %Y')
-    if d_min.year == d_max.year:
-        return (f'{calendar.month_abbr[d_min.month]}-'
-                f'{calendar.month_abbr[d_max.month]} {d_min.year}')
-    return f'{d_min.year}-{d_max.year}'
 
 
 def _cities_trace(agg_filtered: pd.DataFrame, size_mult: float = 1.0) -> dict:

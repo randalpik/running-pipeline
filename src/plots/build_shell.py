@@ -34,6 +34,7 @@ TABS = [
     ("recovery_pace",          "Recovery"),
     ("qualitative_trends",     "Misc. Trends"),
     ("annual",                 "Annual"),
+    ("shoes",                  "Shoes"),
     ("mileage_by_geography",   "Locations"),
     ("world_map",              "World Map"),
 ]

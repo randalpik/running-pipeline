@@ -86,6 +86,9 @@ for panel in conditions temp humidity wind volume altitude time weight; do
     python src/plots/plot_qualitative_trends.py --panel "$panel"
 done
 quiet_step "make_annual_plot"        python src/plots/make_annual_plot.py
+# After training_quality (its corpus feeds each shoe's best performance). Writes
+# nothing for a profile that logs no shoes, which hides the tab.
+quiet_step "plot_shoes"              python src/plots/plot_shoes.py
 quiet_step "make_recovery_plots"     python src/plots/make_recovery_plots.py "${diag_flag[@]}"
 quiet_step "make_race_plots"         python src/plots/make_race_plots.py
 quiet_step "make_geography_plot"     python src/plots/make_geography_plot.py

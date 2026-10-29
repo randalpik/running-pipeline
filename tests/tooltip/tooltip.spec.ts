@@ -157,6 +157,21 @@ const FIXTURES: Fixture[] = [
       + '<b>Watch:</b> 1600@5:30 · 1600@5:31 · 1600@5:29 · 1600@5:32</div>'
       + '<div class="tt-section"><div class="tt-row"><span>5K fitness</span><b>5:01/mi</b></div></div>',
   },
+  {
+    // Shoes tab: name header, rows, and a best-performance section whose
+    // long-run detail carries <br>-joined bold sub-lines.
+    name: 'shoes — pair rows + best-performance section',
+    html: '<div class="tt-date">Saucony Endorphin Speed 4 (pair 2)</div>'
+      + '<div class="tt-row"><span>Worn</span><b>Jun-Oct 2025</b></div>'
+      + '<div class="tt-row"><span>Days</span><b>117</b></div>'
+      + '<div class="tt-row"><span>Miles</span><b>1,037.3</b></div>'
+      + '<div class="tt-section"><div class="tt-section-title">Best performance</div>'
+      + '<div><b>Long run</b> (Shelby Bottoms Greenway, Nashville, TN)</div>'
+      + '<div>20.7 mi @ 5:42/mi · est. 30:06 paused<br><b>Pause-adjusted distance:</b> '
+      + 'est. 13.1 mi<br><b>Elevation:</b> +769 ft (+2:06) / −769 ft (−0:36)</div>'
+      + "<div>5K equivalent: <b>15:43</b> <span class='tt-mute'>(5:04/mi)</span></div>"
+      + "<div><span class='tt-mute'>Jan 14, 2022</span></div></div>",
+  },
 ];
 
 test.beforeEach(async ({ page }) => {

@@ -312,7 +312,10 @@ def _find_racing_shoe(races):
 
 
 # ----- Personal Records -----
-def compute_prs(races):
+def pr_candidates(races):
+    """Races that can hold a PR, with their FILTER_BINS ``bin`` and a
+    comparable ``pace`` (sec/mi; lower = better). The one PR rule — the PR
+    table below and the Shoes tab's per-shoe PR count both read it."""
     races = races.dropna(subset=['distance_m', 'time_sec', 'date']).copy()
     races = races[~races['surface'].isin(PR_EXCLUDED_SURFACES)]
     # Time trials aren't real races — they're benchmark efforts solo or in
@@ -320,12 +323,14 @@ def compute_prs(races):
     is_tt = races['event'].fillna('').astype(str).str.contains(
         'time trial', case=False, regex=False)
     races = races[~is_tt]
+    races['bin'] = races['distance_m'].map(_snap_bin)
+    races['pace'] = races['pace_sec_per_mi'].fillna(
+        races['time_sec'] * METERS_PER_MILE / races['distance_m'])
+    return races
 
-    # Snap each race to the closest FILTER_BINS distance (no tolerance cap).
-    def snap(d):
-        return min(FILTER_BINS, key=lambda nt: abs(nt[1] - float(d)))[0]
-    races['bin'] = races['distance_m'].map(snap)
 
+def compute_prs(races):
+    races = pr_candidates(races)
     out = []
     for name, _ in FILTER_BINS:
         sub = races[races['bin'] == name]
@@ -333,10 +338,6 @@ def compute_prs(races):
             out.append({'distance': name, 'time_sec': None, 'date': None,
                         'event': None, 'location': None})
             continue
-        # PR = lowest pace_sec_per_mi (faster = smaller = better).
-        sub = sub.copy()
-        sub['pace'] = sub['pace_sec_per_mi'].fillna(
-            sub['time_sec'] * METERS_PER_MILE / sub['distance_m'])
         best = sub.sort_values('pace').iloc[0]
         out.append({
             'distance': name,
