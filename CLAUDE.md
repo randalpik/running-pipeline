@@ -17,6 +17,7 @@ This is a personal running-data pipeline: parsers and transformations turning da
 | `location-colour-reference.md` | location-group colours (Locations, World Map) |
 | `watch-derived-cache-spec.md` | the watch-derived cache |
 | `weather-source-reference.md` | watch-era temp/wind/humidity (HRRR run-window sidecars, Coros fallback) |
+| `shoes-reference.md` | shoe roles, physical pairs, spike/warm-up mileage, the current-shoe dashboard row |
 
 
 > **People — pronouns (non-negotiable):** **Maddy uses they/them.** Maddy is Max's partner and the second dashboard runner (the `maddy` profile).
@@ -45,7 +46,7 @@ This is a personal running-data pipeline: parsers and transformations turning da
 - **Temperature:** Celsius.
 - **Paces:** per-mile, always — both recovery and quality.
 - **Race distances:** meters, always (21097 = HM, 42195 = marathon).
-- **Asterisk on shoe name:** disambiguates two physical pairs of the same model in the same year.
+- **Asterisk on shoe name:** marks a distinct physical pair. From Oct 2026, consecutive pairs of a model alternate asterisk / no asterisk, even across years; earlier same-label re-buys are hardcoded (`LEGACY_PAIR_STARTS`, see `docs/shoes-reference.md`).
 - **Workout jog segments (`Nj`):** N is **minutes**, not miles.
 - **Quality distances (`Nt@`/`Ni@`/`Nr@`/`Nf@`):** N is **meters**.
 - **Daily Miles column** is always the authoritative total — don't recompute from segments.

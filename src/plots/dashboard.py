@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.shared.paths import DATA_DIR, OUTPUT_DIR
 from src.shared.units import METERS_PER_MILE
 from src.shared.effective_mileage import effective_daily_miles
+from src.shared.shoes import build_shoes, scrub_asterisk
 from src.shared.workouts import (
     TAU,
     load_cs, project_long_runs,
@@ -78,10 +79,6 @@ UNLOGGED_MILES = {
     2015: 667,
 }
 TRAINING_SHOE_RUN_THRESHOLD = 3  # consecutive recovery runs to qualify
-# The current pair's mileage block ends once this many recovery runs in a row
-# use a different shoe. Counting *runs* (not days) means a no-running gap can't
-# split a pair, and it works whether or not asterisks disambiguate the model.
-SHOE_BLOCK_DIFF_RUNS = 14
 
 # Short distances are handled structurally by the CP3 projection layer
 # (cs_projection.cp3_*) — the former β_short stretch is gone; see
@@ -95,15 +92,6 @@ _DASHBOARD_JS = (_DASHBOARD_DIR / 'dashboard.js').read_text()
 
 
 # ----- helpers -----
-def scrub_asterisk(name):
-    if name is None or (isinstance(name, float) and math.isnan(name)):
-        return None
-    s = str(name).strip()
-    if not s or s.lower() in ('nan', 'none'):
-        return None
-    return s.rstrip('*').strip()
-
-
 def is_streak_active(last_log_date, now_utc):
     today_utc = now_utc.date()
     threshold_days = 2 if now_utc.hour >= 12 else 3
@@ -255,13 +243,19 @@ def compute_stats(daily, races, now_utc):
     past_7_miles = past7['miles'].sum()
 
     # --- current training shoe ---
+    # Pairs and their mileage come from src/shared/shoes.py (shared with the
+    # Shoes tab), so the current pair includes the warm-ups it lent to spike
+    # days.
+    shoes = build_shoes(daily, races)
     rec = contemporary[contemporary['run_type'] == 'recovery'].copy()
     rec['shoes_clean'] = rec['shoes'].map(scrub_asterisk)
     rec = rec.dropna(subset=['shoes_clean']).sort_values('date').reset_index(drop=True)
     training_shoe = _find_training_shoe(rec)
     if training_shoe is not None:
-        training_miles = _current_shoe_block_miles(
-            daily, rec, training_shoe, last_log_date)
+        # The pair on the latest recovery run in that model.
+        latest = rec.loc[rec['shoes_clean'] == training_shoe, 'date'].iloc[-1]
+        pair = shoes.logged_pair()[latest]
+        training_miles = float(shoes.pairs.at[pair, 'miles'])
     else:
         training_miles = None
 
@@ -306,35 +300,6 @@ def _find_training_shoe(rec):
         # at index i, looking for a different candidate.
         end = i
     return None
-
-
-def _current_shoe_block_miles(daily, rec, shoe, last_log_date):
-    """Miles on the *current physical pair* of `shoe`.
-
-    Walk recovery runs latest-first (`rec` is sorted ascending with a
-    `shoes_clean` column). The current block extends back until we hit
-    SHOE_BLOCK_DIFF_RUNS recovery runs in a row in a different shoe — counting
-    runs, not days, so a stretch of not running never splits a pair. Then sum
-    every daily mile in `shoe` from the block's first day through the last log
-    date, which naturally excludes earlier pairs of the same model."""
-    block_start = None
-    diff_streak = 0
-    for r in rec.iloc[::-1].itertuples(index=False):
-        if r.shoes_clean == shoe:
-            diff_streak = 0
-            block_start = r.date.date() if hasattr(r.date, 'date') else r.date
-        else:
-            diff_streak += 1
-            if diff_streak >= SHOE_BLOCK_DIFF_RUNS:
-                break
-    if block_start is None:
-        return 0.0
-    df = daily.copy()
-    df['shoes_clean'] = df['shoes'].map(scrub_asterisk)
-    mask = ((df['shoes_clean'] == shoe)
-            & (df['date'] >= pd.Timestamp(block_start))
-            & (df['date'] <= pd.Timestamp(last_log_date)))
-    return float(df.loc[mask, 'miles'].sum())
 
 
 def _find_racing_shoe(races):
